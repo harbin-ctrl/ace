@@ -1,0 +1,330 @@
+#define _XOPEN_SOURCE 700
+#define _POSIX_C_SOURCE 200809L
+
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <dos/stdio.h>
+#include <proto/dos.h>
+#include <proto/exec.h>
+
+#ifdef LINE_MAX
+#undef LINE_MAX
+#endif
+#include "broker_client.h"
+#include "Shell.h"
+
+#undef DOSBase
+#undef SysBase
+
+#define HOST_MAX_WORDS 128
+
+static int shell_done;
+static char shell_directory[PATH_MAX];
+
+static int split_words(char *line, char **words, size_t capacity)
+{
+    char *read = line;
+    size_t count = 0;
+
+    while (*read) {
+        char *write;
+        BOOL quoted = FALSE;
+
+        while (isspace((unsigned char)*read))
+            read++;
+        if (!*read)
+            break;
+        if (count + 1 >= capacity)
+            return -1;
+        words[count++] = write = read;
+        while (*read) {
+            if (*read == '"') {
+                quoted = !quoted;
+                read++;
+            } else if (*read == '\\' && read[1]) {
+                *write++ = *++read;
+                read++;
+            } else if (!quoted && isspace((unsigned char)*read)) {
+                read++;
+                break;
+            } else {
+                *write++ = *read++;
+            }
+        }
+        if (quoted)
+            return -1;
+        *write = '\0';
+    }
+    words[count] = NULL;
+    return (int)count;
+}
+
+static int find_in_directory(const char *directory, const char *command,
+                             char *result, size_t result_size)
+{
+    DIR *listing;
+    struct dirent *entry;
+    char path[PATH_MAX];
+    const char *name = command;
+
+    listing = opendir(directory);
+    if (!listing)
+        return -1;
+    while ((entry = readdir(listing)) != NULL) {
+        if (strcasecmp(entry->d_name, command) == 0) {
+            name = entry->d_name;
+            break;
+        }
+    }
+    if (!entry || snprintf(path, sizeof(path), "%s/%s", directory, name) < 0 ||
+        strlen(path) >= result_size || access(path, X_OK) != 0) {
+        closedir(listing);
+        return -1;
+    }
+    closedir(listing);
+    strcpy(result, path);
+    return 0;
+}
+
+static int find_command(const char *command, char *result, size_t result_size)
+{
+    const char *path = getenv("PATH");
+    char *copy, *cursor;
+
+    if (strchr(command, '/')) {
+        if (access(command, X_OK) != 0 || strlen(command) >= result_size)
+            return -1;
+        strcpy(result, command);
+        return 0;
+    }
+    if (shell_directory[0] &&
+        find_in_directory(shell_directory, command, result, result_size) == 0)
+        return 0;
+    if (!path)
+        return -1;
+    copy = strdup(path);
+    if (!copy)
+        return -1;
+    cursor = copy;
+    while (cursor) {
+        char *next = strchr(cursor, ':');
+        const char *directory = cursor;
+
+        if (next)
+            *next = '\0';
+        if (!*directory)
+            directory = ".";
+        if (find_in_directory(directory, command, result, result_size) == 0) {
+            free(copy);
+            return 0;
+        }
+        if (!next)
+            break;
+        cursor = next + 1;
+    }
+    free(copy);
+    return -1;
+}
+
+static LONG executeLine(ShellState *ss, STRPTR command_args)
+{
+    char command_path[PATH_MAX];
+    char line[4096];
+    char *words[HOST_MAX_WORDS] = {0};
+    int count;
+    pid_t child;
+    int status;
+    const char *command = ss->command + 2;
+
+    if (!strcasecmp(command, "ENDCLI") || !strcasecmp(command, "ENDSHELL") ||
+        !strcasecmp(command, "QUIT")) {
+        shell_done = 1;
+        return 0;
+    }
+    if (snprintf(line, sizeof(line), "%s %s", command,
+                 command_args ? command_args : "") >= (int)sizeof(line))
+        return ERROR_LINE_TOO_LONG;
+    count = split_words(line, words, HOST_MAX_WORDS);
+    if (count <= 0)
+        return ERROR_OBJECT_NOT_FOUND;
+
+    SetProgramName(command);
+    child = fork();
+    if (child < 0)
+        return ERROR_NO_FREE_STORE;
+    if (child == 0) {
+        char cwd[PATH_MAX];
+        FILE *input = (FILE *)Input();
+        FILE *output = (FILE *)Output();
+
+        if (input)
+            dup2(fileno(input), STDIN_FILENO);
+        if (output)
+            dup2(fileno(output), STDOUT_FILENO);
+        if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
+            (void)chdir(cwd);
+        if (find_command(words[0], command_path, sizeof(command_path)) == 0) {
+            words[0] = command_path;
+            execv(command_path, words);
+        } else {
+            execl("/bin/bash", "bash", "-c", line, (char *)NULL);
+        }
+        _exit(RETURN_FAIL);
+    }
+    if (waitpid(child, &status, 0) < 0)
+        return ERROR_OBJECT_NOT_FOUND;
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status) == 0 ? 0 : WEXITSTATUS(status);
+    return RETURN_FAIL;
+}
+
+LONG readLine(ShellState *ss, struct CommandLineInterface *cli,
+              Buffer *out, BOOL *more_left)
+{
+    char line[LINE_MAX];
+    LONG character, length = 0;
+    BOOL comment = FALSE, quoted = FALSE, escaped = FALSE;
+    (void)ss;
+
+    while (length < LINE_MAX - 1) {
+        character = FGetC(cli->cli_CurrentInput);
+        if (character == ENDSTREAMCH)
+            break;
+        if (character == '"' && !escaped)
+            quoted = !quoted;
+        if (character == '*' && !escaped)
+            escaped = TRUE;
+        else
+            escaped = FALSE;
+        if (!quoted && character == ';') {
+            comment = TRUE;
+            continue;
+        }
+        if (character == '\n')
+            comment = FALSE;
+        else if (comment)
+            continue;
+        line[length++] = (char)character;
+        if (character == '\n')
+            break;
+    }
+    if (length >= LINE_MAX - 1) {
+        line[0] = '\0';
+        return ERROR_LINE_TOO_LONG;
+    }
+    line[length] = '\0';
+    out->len = 0;
+    out->cur = 0;
+    if (length && bufferAppend(line, length, out, ss) != 0)
+        return ERROR_NO_FREE_STORE;
+    *more_left = character != ENDSTREAMCH;
+    return 0;
+}
+
+BOOL setInteractive(struct CommandLineInterface *cli, ShellState *ss)
+{
+    (void)ss;
+    cli->cli_Interactive = cli->cli_Background ? DOSFALSE : DOSTRUE;
+    return cli->cli_Interactive;
+}
+
+LONG checkLine(ShellState *ss, Buffer *in, Buffer *out, BOOL echo)
+{
+    struct CommandLineInterface *cli = Cli();
+    BOOL have_command = FALSE;
+    LONG result = convertLine(ss, in, out, &have_command);
+
+    if (!result && have_command) {
+        if (echo)
+            cliEcho(ss, out->buf);
+        result = executeLine(ss, out->buf);
+        cli->cli_ReturnCode = result;
+        cli->cli_Result2 = result ? IoErr() : 0;
+    }
+    SelectInput(cli->cli_StandardInput);
+    SelectOutput(cli->cli_StandardOutput);
+    cliVarNum(ss, "RC", cli->cli_ReturnCode);
+    cliVarNum(ss, "Result2", cli->cli_Result2);
+    if (result && result != RETURN_FAIL)
+        PrintFault(result, NULL);
+    return result;
+}
+
+LONG interact(ShellState *ss)
+{
+    struct CommandLineInterface *cli = Cli();
+    Buffer in = {0}, out = {0};
+    BOOL more_left = FALSE;
+    LONG error = bufferAppend("?", 1, &in, ss);
+
+    setInteractive(cli, ss);
+    while (!error && !shell_done) {
+        Redirection_init(ss);
+        cliPrompt(ss);
+        bufferReset(&in);
+        bufferReset(&out);
+        error = readLine(ss, cli, &in, &more_left);
+        if (!error && in.len)
+            error = checkLine(ss, &in, &out, TRUE);
+        Redirection_release(ss);
+        if (!more_left)
+            break;
+    }
+    bufferFree(&in, ss);
+    bufferFree(&out, ss);
+    return error;
+}
+
+int main(int argc, char **argv)
+{
+    struct Process *process;
+    struct CommandLineInterface *cli;
+    ShellState *state;
+    struct Library *dos_library;
+    char executable[PATH_MAX];
+
+    (void)argc;
+    (void)argv;
+    if (realpath(argv[0], executable)) {
+        char *slash = strrchr(executable, '/');
+        if (slash) {
+            *slash = '\0';
+            snprintf(shell_directory, sizeof(shell_directory), "%s", executable);
+        }
+    }
+    dos_library = OpenLibrary("dos.library", 36);
+    if (!dos_library)
+        return RETURN_FAIL;
+    state = AllocMem(sizeof(*state), MEMF_CLEAR);
+    process = (struct Process *)FindTask(NULL);
+    cli = Cli();
+    if (!state || !cli)
+        return RETURN_FAIL;
+    state->ss_DOSBase = DOSBase;
+    state->ss_SysBase = SysBase;
+    state->cliNumber = process->pr_TaskNum ? process->pr_TaskNum : 1;
+    cli->cli_StandardInput = Input();
+    cli->cli_CurrentInput = cli->cli_StandardInput;
+    cli->cli_StandardOutput = Output();
+    cli->cli_CurrentOutput = cli->cli_StandardOutput;
+    cli->cli_Background = DOSFALSE;
+    initDefaultInterpreterState(state);
+    cliVarNum(state, "process", state->cliNumber);
+    if (interact(state) != 0)
+        cli->cli_ReturnCode = RETURN_FAIL;
+    popInterpreterState(state);
+    if (state->arg_rd)
+        FreeDosObject(DOS_RDARGS, state->arg_rd);
+    FreeMem(state, sizeof(*state));
+    CloseLibrary(dos_library);
+    return cli->cli_ReturnCode;
+}

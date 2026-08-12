@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+
+sourced=0
+[[ ${BASH_SOURCE[0]} != "$0" ]] && sourced=1
+if (( ! sourced )); then
+    set +e
+fi
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+broker_socket=${AMIGA_SHELL_BROKER_SOCKET:-/tmp/amiga-shell-broker.sock}
+broker_pid_file=${AMIGA_SHELL_BROKER_PIDFILE:-${broker_socket}.pid}
+experimental_commands=$script_dir/build
+broker_pids=()
+
+remove_experimental_commands_from_path()
+{
+    local entry
+    local rebuilt_path=
+    local old_ifs=$IFS
+
+    IFS=:
+    read -r -a path_entries <<< "${PATH-}"
+    IFS=$old_ifs
+    for entry in "${path_entries[@]}"; do
+        [[ $entry == "$experimental_commands" ]] && continue
+        if [[ -z $rebuilt_path ]]; then
+            rebuilt_path=$entry
+        else
+            rebuilt_path=$rebuilt_path:$entry
+        fi
+    done
+    PATH=$rebuilt_path
+    export PATH
+}
+
+is_broker_pid()
+{
+    local candidate=$1
+    local command_line
+
+    [[ $candidate =~ ^[0-9]+$ ]] || return 1
+    [[ -r /proc/$candidate/cmdline ]] || return 1
+    command_line=$(tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null) || return 1
+    [[ $command_line == */amiga-shell-broker\ "$broker_socket"* ]]
+}
+
+remember_pid()
+{
+    local candidate=$1
+    local existing
+
+    is_broker_pid "$candidate" || return 0
+    for existing in "${broker_pids[@]}"; do
+        [[ $existing == "$candidate" ]] && return 0
+    done
+    broker_pids+=("$candidate")
+}
+
+if [[ -r $broker_pid_file ]]; then
+    read -r broker_pid < "$broker_pid_file"
+    remember_pid "$broker_pid"
+fi
+
+for process_dir in /proc/[0-9]*; do
+    [[ -r $process_dir/cmdline ]] || continue
+    remember_pid "${process_dir##*/}"
+done
+
+broker_was_running=0
+for broker_pid in "${broker_pids[@]}"; do
+    if kill -0 "$broker_pid" 2>/dev/null; then
+        broker_was_running=1
+        kill -TERM "$broker_pid" 2>/dev/null
+    fi
+done
+
+if (( broker_was_running )); then
+    for wait_count in {1..50}; do
+        broker_is_alive=0
+        for broker_pid in "${broker_pids[@]}"; do
+            if kill -0 "$broker_pid" 2>/dev/null; then
+                broker_is_alive=1
+                break
+            fi
+        done
+        (( broker_is_alive )) || break
+        sleep 0.02
+    done
+
+    if (( broker_is_alive )); then
+        for broker_pid in "${broker_pids[@]}"; do
+            kill -KILL "$broker_pid" 2>/dev/null
+        done
+    fi
+fi
+
+rm -f -- "$broker_pid_file" 2>/dev/null
+
+if (( sourced )); then
+    remove_experimental_commands_from_path
+fi
+
+if (( broker_was_running )); then
+    printf '%s\n' 'broker stopped'
+else
+    printf '%s\n' 'no broker running'
+fi

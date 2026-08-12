@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+
+sourced=0
+[[ ${BASH_SOURCE[0]} != "$0" ]] && sourced=1
+if (( ! sourced )); then
+    set +e
+fi
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+broker_binary=$script_dir/build/amiga-shell-broker
+broker_socket=${AMIGA_SHELL_BROKER_SOCKET:-/tmp/amiga-shell-broker.sock}
+broker_pid_file=${AMIGA_SHELL_BROKER_PIDFILE:-${broker_socket}.pid}
+experimental_commands=$script_dir/build
+
+add_experimental_commands_to_path()
+{
+    case ":${PATH-}:" in
+        *":$experimental_commands:"*) ;;
+        *) PATH="$experimental_commands${PATH:+:$PATH}"; export PATH ;;
+    esac
+}
+
+start_failed()
+{
+    printf '%s\n' 'broker start failed'
+    if (( sourced )); then
+        return 1
+    fi
+    exit 1
+}
+
+"$script_dir/broker-stop" >/dev/null 2>&1
+
+if [[ ! -x $broker_binary ]]; then
+    start_failed
+    (( sourced )) && return 1
+fi
+
+umask 077
+nohup "$broker_binary" "$broker_socket" \
+    >/dev/null 2>&1 </dev/null &
+broker_pid=$!
+
+if ! printf '%s\n' "$broker_pid" > "$broker_pid_file" 2>/dev/null; then
+    kill -TERM "$broker_pid" 2>/dev/null
+    start_failed
+    (( sourced )) && return 1
+fi
+
+broker_ready=0
+for wait_count in {1..100}; do
+    if [[ -S $broker_socket ]] && kill -0 "$broker_pid" 2>/dev/null; then
+        broker_ready=1
+        break
+    fi
+    sleep 0.02
+done
+
+if (( ! broker_ready )); then
+    kill -TERM "$broker_pid" 2>/dev/null
+    sleep 0.05
+    kill -KILL "$broker_pid" 2>/dev/null
+    rm -f -- "$broker_pid_file" 2>/dev/null
+    start_failed
+    (( sourced )) && return 1
+fi
+
+add_experimental_commands_to_path
+printf '%s\n' 'broker started'
