@@ -9,8 +9,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 static const char *broker_socket_path(void)
@@ -85,6 +89,124 @@ static int connect_broker(void)
         return -1;
     }
     return fd;
+}
+
+static int broker_is_reachable(void)
+{
+    int fd = connect_broker();
+
+    if (fd < 0)
+        return -1;
+    close(fd);
+    return 0;
+}
+
+static int broker_executable(char *result, size_t result_size)
+{
+    const char *configured = getenv("ACE_BROKER_BINARY");
+    char executable[PATH_MAX];
+    char *slash;
+    ssize_t length;
+
+    if (configured && *configured) {
+        if (strlen(configured) >= result_size)
+            return -1;
+        strcpy(result, configured);
+        return 0;
+    }
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length < 0 || (size_t)length >= sizeof(executable) - 1)
+        return -1;
+    executable[length] = '\0';
+    slash = strrchr(executable, '/');
+    if (!slash)
+        return -1;
+    *slash = '\0';
+    if (snprintf(result, result_size, "%s/ace-broker", executable) >=
+        (int)result_size)
+        return -1;
+    return 0;
+}
+
+static void broker_sleep(void)
+{
+    struct timespec delay = {0, 20000000L};
+
+    while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
+        ;
+}
+
+static int broker_wait_until_reachable(void)
+{
+    for (int attempt = 0; attempt < 100; attempt++) {
+        if (broker_is_reachable() == 0)
+            return 0;
+        broker_sleep();
+    }
+    return -1;
+}
+
+int native_broker_ensure(void)
+{
+    char lock_path[PATH_MAX];
+    char executable[PATH_MAX];
+    int lock_fd;
+    pid_t child;
+
+    if (broker_is_reachable() == 0)
+        return 0;
+    if (snprintf(lock_path, sizeof(lock_path), "%s.start.lock",
+                 broker_socket_path()) >= (int)sizeof(lock_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    if (lock_fd < 0)
+        return -1;
+    if (flock(lock_fd, LOCK_EX) != 0) {
+        close(lock_fd);
+        return -1;
+    }
+    if (broker_is_reachable() == 0) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return 0;
+    }
+    if (broker_executable(executable, sizeof(executable)) != 0) {
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        errno = ENOENT;
+        return -1;
+    }
+
+    child = fork();
+    if (child == 0) {
+        int null_fd;
+
+        if (setsid() < 0)
+            _exit(127);
+        null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDIN_FILENO);
+            (void)dup2(null_fd, STDOUT_FILENO);
+            (void)dup2(null_fd, STDERR_FILENO);
+            if (null_fd > STDERR_FILENO)
+                close(null_fd);
+        }
+        execl(executable, executable, broker_socket_path(), (char *)NULL);
+        _exit(127);
+    }
+    if (child < 0 || broker_wait_until_reachable() != 0) {
+        if (child > 0)
+            (void)kill(child, SIGTERM);
+        flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        errno = ECONNREFUSED;
+        return -1;
+    }
+    flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    return 0;
 }
 
 static int broker_request(uint32_t operation, const char *path,

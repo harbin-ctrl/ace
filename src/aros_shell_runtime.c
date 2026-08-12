@@ -301,6 +301,10 @@ int main(int argc, char **argv)
             snprintf(shell_directory, sizeof(shell_directory), "%s", executable);
         }
     }
+    if (native_broker_ensure() != 0) {
+        fputs("ace-shell: broker unavailable\n", stderr);
+        return RETURN_FAIL;
+    }
     dos_library = OpenLibrary("dos.library", 36);
     if (!dos_library)
         return RETURN_FAIL;
