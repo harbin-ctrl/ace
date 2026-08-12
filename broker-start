@@ -7,9 +7,9 @@ if (( ! sourced )); then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
-broker_binary=$script_dir/build/amiga-shell-broker
-broker_socket=${AMIGA_SHELL_BROKER_SOCKET:-/tmp/amiga-shell-broker.sock}
-broker_pid_file=${AMIGA_SHELL_BROKER_PIDFILE:-${broker_socket}.pid}
+broker_binary=$script_dir/build/ace-broker
+broker_socket=${ACE_BROKER_SOCKET:-/tmp/ace-broker.sock}
+broker_pid_file=${ACE_BROKER_PIDFILE:-${broker_socket}.pid}
 experimental_commands=$script_dir/build
 
 add_experimental_commands_to_path()

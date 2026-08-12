@@ -50,7 +50,7 @@ struct broker_session {
 static struct broker_session sessions[MAX_SESSIONS];
 static struct variable_entry global_vars[MAX_VARS];
 static int server_fd = -1;
-static const char *socket_path = "/tmp/amiga-shell-broker.sock";
+static const char *socket_path = "/tmp/ace-broker.sock";
 
 static int write_all(int fd, const void *buffer, size_t length)
 {

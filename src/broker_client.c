@@ -15,13 +15,13 @@
 
 static const char *broker_socket_path(void)
 {
-    const char *path = getenv("AMIGA_SHELL_BROKER_SOCKET");
-    return path && *path ? path : "/tmp/amiga-shell-broker.sock";
+    const char *path = getenv("ACE_BROKER_SOCKET");
+    return path && *path ? path : "/tmp/ace-broker.sock";
 }
 
 static const char *broker_session(void)
 {
-    const char *session = getenv("AMIGA_SHELL_SESSION");
+    const char *session = getenv("ACE_SESSION");
     return session && *session ? session : "default";
 }
 

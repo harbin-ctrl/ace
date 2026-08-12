@@ -42,14 +42,14 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
     if (executable_directory(argv[0], directory, sizeof(directory)) != 0 ||
-        snprintf(console_path, sizeof(console_path), "%s/amiga-console", directory) >=
+        snprintf(console_path, sizeof(console_path), "%s/ace-console", directory) >=
         (int)sizeof(console_path)) {
         fputs("NewCLI: console unavailable\n", stderr);
         return 20;
     }
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
         return 20;
-    parent_session = getenv("AMIGA_SHELL_SESSION");
+    parent_session = getenv("ACE_SESSION");
     if (!parent_session || !*parent_session)
         parent_session = "default";
     snprintf(child_session, sizeof(child_session), "%s-child-%ld-%ld",

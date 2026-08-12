@@ -24,7 +24,7 @@ AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
                     convertRedir convertVar interpreter redirection
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/amiga-shell $(BUILD)/amiga-console $(BUILD)/NewCLI $(BUILD)/amiga-shell-broker $(BUILD)/brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-shell
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/ace-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 
 $(BUILD):
 	mkdir -p $@
@@ -161,22 +161,19 @@ $(BUILD)/Why: $(BUILD)/Why.o $(BUILD)/native_dos.o $(BUILD)/native_args.o $(BUIL
 $(BUILD)/Prompt: $(BUILD)/Prompt.o $(BUILD)/native_dos.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/amiga-shell-broker: $(BUILD)/broker.o
+$(BUILD)/ace-broker: $(BUILD)/broker.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
+$(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/amiga-shell: $(BUILD)/amiga_shell.o $(BUILD)/broker_client.o
-	$(CC) $(CFLAGS) $^ -o $@
-
-$(BUILD)/amiga-console: $(BUILD)/amiga_console.o $(BUILD)/console_device.o $(BUILD)/con_handler.o
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_device.o $(BUILD)/con_handler.o
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) -o $@
 
 $(BUILD)/NewCLI: $(BUILD)/newcli.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/aros-shell: $(BUILD)/aros-shell-runtime.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/broker_client.o
+$(BUILD)/ace-shell: $(BUILD)/aros-shell-runtime.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:

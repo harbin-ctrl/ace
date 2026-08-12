@@ -10,7 +10,7 @@ command sources are compiled against the compatibility headers in
 
 ```sh
 make
-./build/amiga-shell-broker /tmp/amiga-shell-broker.sock
+./build/ace-broker /tmp/ace-broker.sock
 ```
 
 For testing, the project also provides quiet lifecycle commands:
@@ -26,18 +26,18 @@ child script cannot modify its parent shell's environment. Both commands also
 work as ordinary executables for broker lifecycle control, but only the
 source form changes `PATH`.
 
-Both commands honor `AMIGA_SHELL_BROKER_SOCKET`; an optional
-`AMIGA_SHELL_BROKER_PIDFILE` selects the PID-file location. If the socket
+Both commands honor `ACE_BROKER_SOCKET`; an optional
+`ACE_BROKER_PIDFILE` selects the PID-file location. If the socket
 variable is unset, they use the same default as the DOS client.
 
 In another terminal:
 
 ```sh
-export AMIGA_SHELL_BROKER_SOCKET=/tmp/amiga-shell-broker.sock
-export AMIGA_SHELL_SESSION=my-shell
+export ACE_BROKER_SOCKET=/tmp/ace-broker.sock
+export ACE_SESSION=my-shell
 ./build/CD .
-./build/brokerctl assign WORK: /tmp
-./build/Echo hello from AROS TO WORK:amiga-shell-test
+./build/ace-brokerctl assign WORK: /tmp
+./build/Echo hello from AROS TO WORK:ace-shell-test
 ./build/PathPart FILE Work:dir/file.txt
 ./build/PathPart DIR Work:dir/file.txt
 ./build/PathPart ADD Work: dir2 file.txt
@@ -85,14 +85,14 @@ native console stream plus the `utility.library` compatibility surface.
 
 The broker's first CLI-state draft provides session-local and broker-global
 variables through `GetVar`, `SetVar`, and `DeleteVar`, plus a per-session
-return-code/result2 record. `brokerctl` can exercise these directly:
+return-code/result2 record. `ace-brokerctl` can exercise these directly:
 
 ```sh
-./build/brokerctl setvar LOCAL value
-./build/brokerctl setgvar GLOBAL value
-./build/brokerctl getvar LOCAL
-./build/brokerctl setresult 10 205
-./build/brokerctl result
+./build/ace-brokerctl setvar LOCAL value
+./build/ace-brokerctl setgvar GLOBAL value
+./build/ace-brokerctl getvar LOCAL
+./build/ace-brokerctl setresult 10 205
+./build/ace-brokerctl result
 ```
 
 The original AROS `Set`, `Unset`, `Alias`, and `Unalias` commands are now
@@ -123,7 +123,7 @@ FailAt 5
 Prompt 'AMIGA> '
 Get MISSING
 Why
-./build/brokerctl cli
+./build/ace-brokerctl cli
 ```
 
 The diagnostic `cli` output is four lines: return code, `Result2`, fail
@@ -151,8 +151,8 @@ profile.
 
 ```sh
 source ./broker-start
-export AMIGA_SHELL_SESSION=main-shell
-./build/amiga-shell
+export ACE_SESSION=main-shell
+./build/ace-shell
 ```
 
 Inside that shell, command names are case-insensitive and AROS commands are
