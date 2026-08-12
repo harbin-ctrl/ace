@@ -727,14 +727,12 @@ int main(int argc, char **argv)
         return 20;
 
     /*
-     * The desktop exports appmenu-gtk-module, but this console has no GTK
-     * menus.  On the X11 backend used by our session, that module still
-     * attempts to apply Wayland-only window properties and emits a GDK
-     * critical when a NewCLI window is realized.  Keep desktop menu
-     * integration out of the deliberately menu-free ACE console.
+     * ACE runs as a native Wayland console, even when DISPLAY is also set.
+     * It has no GTK menus, so avoid loading the desktop appmenu module; on
+     * this session that optional module emits a GDK critical during realize.
      */
+    setenv("GDK_BACKEND", "wayland", 1);
     setenv("GTK_MODULES", "", 1);
-    setenv("UBUNTU_MENUPROXY", "0", 1);
     gtk_init(&argc, &argv);
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
         return 20;
