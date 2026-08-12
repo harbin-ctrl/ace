@@ -52,6 +52,7 @@ struct terminal {
 
 struct console_window {
     struct terminal terminal;
+    GtkWidget *window;
     GtkWidget *drawing_area;
     int stream_fd;
     pid_t child_pid;
@@ -642,11 +643,17 @@ static gboolean read_console(GIOChannel *channel, GIOCondition condition,
     ssize_t length;
 
     (void)channel;
-    if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))
+    if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
+        if (console->window)
+            gtk_widget_destroy(console->window);
         return G_SOURCE_REMOVE;
+    }
     length = read(console->stream_fd, buffer, sizeof(buffer));
-    if (length <= 0)
+    if (length <= 0) {
+        if (console->window)
+            gtk_widget_destroy(console->window);
         return G_SOURCE_REMOVE;
+    }
     if (amiga_con_handler_Write(&console->handler, buffer, (size_t)length,
                                 &actual) !=
             AMIGA_IOERR_OK || actual != (size_t)length)
@@ -741,6 +748,7 @@ int main(int argc, char **argv)
     console.stream_fd = sockets[0];
 
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    console.window = window;
     gtk_window_set_title(GTK_WINDOW(window), "ACE Shell");
     gtk_window_set_default_size(GTK_WINDOW(window), 900, 576);
     g_signal_connect(window, "destroy", G_CALLBACK(console_destroy), &console);
