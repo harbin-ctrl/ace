@@ -730,10 +730,9 @@ int main(int argc, char **argv)
      * ACE runs as a native Wayland console, even when DISPLAY is also set.
      * It has no GTK menus, so avoid loading the desktop appmenu module; on
      * this session that optional module emits a GDK critical during realize.
-     */
+    */
     setenv("GDK_BACKEND", "wayland", 1);
     setenv("GTK_MODULES", "", 1);
-    gtk_init(&argc, &argv);
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
         return 20;
     console.child_pid = fork();
@@ -754,6 +753,7 @@ int main(int argc, char **argv)
     close(sockets[1]);
     console.stream_fd = sockets[0];
 
+    gtk_init(&argc, &argv);
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     console.window = window;
     gtk_window_set_title(GTK_WINDOW(window), "ACE Shell");
