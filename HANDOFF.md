@@ -1,5 +1,18 @@
 # ACE handoff
 
+## Where it is installed
+
+Two hosts are set up, both building and passing the full test suite:
+
+* a Raspberry Pi (aarch64, Debian, labwc) at `~/repo/ace`, run from `build/`;
+* `blackberry` (x86_64, Debian 13) at `~/repo/ace`, also installed into
+  `/usr/local/bin` with `sudo make AROS_ROOT="$HOME/aros" install`.
+
+`AROS_ROOT` has to be passed explicitly through `sudo`, because `sudo` resets
+`$HOME` and the Makefile defaults `AROS_ROOT` to `$HOME/aros`; without it the
+build looks for AROS under `/root` and the install fails before it copies
+anything.
+
 ## Current state
 
 ACE is committed on `main` and pushed to `https://github.com/harbin-ctrl/ace`.
