@@ -172,6 +172,11 @@ export ACE_SESSION=main-shell
 ./build/ace-shell
 ```
 
+Running `ace-shell` opens a separate menu-free console window and returns to
+the launching terminal. The window runs the real AROS Shell port through its
+private `--console-child` entry point; that mode is internal and should not be
+launched directly.
+
 `ace-shell` can also bootstrap the broker itself.  It starts the sibling
 `ace-broker` only when the configured `ACE_BROKER_SOCKET` is unreachable,
 waits for it to accept connections, and reuses an existing broker.  The

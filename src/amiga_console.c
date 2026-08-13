@@ -753,7 +753,7 @@ int main(int argc, char **argv)
         if (sockets[1] > STDERR_FILENO)
             close(sockets[1]);
         setenv("ACE_SESSION", session, 1);
-        execl(shell_path, shell_path, (char *)NULL);
+        execl(shell_path, shell_path, "--console-child", (char *)NULL);
         _exit(20);
     }
     close(sockets[1]);

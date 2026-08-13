@@ -298,6 +298,46 @@ LONG interact(ShellState *ss)
     return error;
 }
 
+static int launch_console(const char *argv0)
+{
+    char executable[PATH_MAX];
+    char console_path[PATH_MAX];
+    char *slash;
+    const char *session = getenv("ACE_SESSION");
+    pid_t child;
+
+    if (!session || !*session)
+        session = "default";
+    if (!realpath(argv0, executable)) {
+        fputs("ace-shell: console unavailable\n", stderr);
+        return RETURN_FAIL;
+    }
+    slash = strrchr(executable, '/');
+    if (!slash || slash == executable ||
+        (size_t)(slash - executable) >= sizeof(executable)) {
+        fputs("ace-shell: console unavailable\n", stderr);
+        return RETURN_FAIL;
+    }
+    *slash = '\0';
+    if (snprintf(console_path, sizeof(console_path), "%s/ace-console",
+                 executable) >= (int)sizeof(console_path)) {
+        fputs("ace-shell: console unavailable\n", stderr);
+        return RETURN_FAIL;
+    }
+    child = fork();
+    if (child < 0) {
+        fputs("ace-shell: console unavailable\n", stderr);
+        return RETURN_FAIL;
+    }
+    if (child == 0) {
+        (void)setsid();
+        execl(console_path, console_path, "--session", session,
+              (char *)NULL);
+        _exit(RETURN_FAIL);
+    }
+    return RETURN_OK;
+}
+
 int main(int argc, char **argv)
 {
     struct Process *process;
@@ -306,8 +346,12 @@ int main(int argc, char **argv)
     struct Library *dos_library;
     char executable[PATH_MAX];
 
-    (void)argc;
-    (void)argv;
+    if (argc == 1)
+        return launch_console(argv[0]);
+    if (argc != 2 || strcmp(argv[1], "--console-child") != 0) {
+        fprintf(stderr, "usage: %s [--console-child]\n", argv[0]);
+        return RETURN_FAIL;
+    }
     if (realpath(argv[0], executable)) {
         char *slash = strrchr(executable, '/');
         if (slash) {
