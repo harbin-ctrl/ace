@@ -1,0 +1,169 @@
+diff --git a/rom/filesys/console_handler/con_handler.c b/rom/filesys/console_handler/con_handler.c
+index 6889a87f3b..c648534198 100644
+--- a/rom/filesys/console_handler/con_handler.c
++++ b/rom/filesys/console_handler/con_handler.c
+@@ -8,15 +8,21 @@
+ #define DEBUG 0
+ #include <aros/debug.h>
+ 
++#if !defined(ACE_NO_CONSOLE_MENU)
+ #define CONSOLE_SHOW_MENU
++#endif
+ 
+ #include <proto/exec.h>
+ #include <proto/dos.h>
+ #include <proto/utility.h>
+ #include <proto/console.h>
+ #include <proto/intuition.h>
++#if !defined(ACE_NO_CONSOLE_MENU)
+ #include <proto/gadtools.h>
++#endif
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+ #include <proto/workbench.h>
++#endif
+ 
+ #include <exec/libraries.h>
+ #include <exec/resident.h>
+@@ -284,10 +290,12 @@ static LONG MakeConWindow(struct filehandle *fh)
+ 
+             DoIO(ioReq(&fh->conwriteio));
+ 
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+             if (fh->workbenchbase && (fh->appmsgport = CreateMsgPort())) {
+                 if ((fh->appwindow = AddAppWindow(0, 0, fh->window, fh->appmsgport, NULL)))
+                     D(bug("[con:handler] %s: promoted to AppWindow\n", __func__));
+             }
++#endif
+ 
+         } /* if (0 == OpenDevice("console.device", CONU_STANDARD, ioReq(fh->conreadio), 0)) */
+         else
+@@ -372,6 +380,7 @@ static void close_con(struct filehandle *fh)
+         CloseDevice((struct IORequest *) fh->conreadio);
+     }
+ 
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+     if (fh->appwindow) {
+         D(bug("[con:handler] Unpromote console window from being an AppWindow\n"));
+         RemoveAppWindow(fh->appwindow);
+@@ -383,6 +392,7 @@ static void close_con(struct filehandle *fh)
+         D(bug("[con:handler] Delete MsgPort for AppWindow\n"));
+         DeleteMsgPort(fh->appmsgport);
+     }
++#endif
+ 
+     D(bug("[con:handler] Closing window 0x%p\n", fh->window));
+     if (fh->window)
+@@ -403,7 +413,9 @@ static void close_con(struct filehandle *fh)
+ 
+     CloseLibrary((struct Library*) fh->intuibase);
+     CloseLibrary((struct Library*) fh->dosbase);
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+     CloseLibrary((struct Library*) fh->workbenchbase);
++#endif
+ 
+     /* These libraries are opened only if completion was used */
+     if (fh->gfxbase)
+@@ -465,10 +477,14 @@ static struct filehandle *open_con(struct DosPacket *dp, LONG *perr)
+     }
+ 
+     fh->intuibase = (APTR) TaggedOpenLibrary(TAGGEDOPEN_INTUITION);
++#if !defined(ACE_NO_CONSOLE_MENU)
+     fh->gtbase = (APTR) TaggedOpenLibrary(TAGGEDOPEN_GADTOOLS);
++#endif
+     fh->dosbase = (APTR) TaggedOpenLibrary(TAGGEDOPEN_DOS);
+     fh->utilbase = (APTR) TaggedOpenLibrary(TAGGEDOPEN_UTILITY);
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+     fh->workbenchbase = (APTR) TaggedOpenLibrary(TAGGEDOPEN_WORKBENCH);
++#endif
+ 
+ #if defined(__AROSPLATFORM_SMP__)
+     if (ExecLockBase)
+@@ -497,7 +513,9 @@ static struct filehandle *open_con(struct DosPacket *dp, LONG *perr)
+         CloseLibrary((APTR) fh->utilbase);
+        CloseLibrary((APTR) fh->dosbase);
+         CloseLibrary((APTR) fh->intuibase);
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+         CloseLibrary((APTR) fh->workbenchbase);
++#endif
+         FreeVec(fh);
+         return NULL;
+     }
+@@ -720,17 +738,28 @@ LONG CONMain(struct ExecBase *SysBase)
+         ULONG timermask = 1L << fh->timermp->mp_SigBit;
+         ULONG packetmask = (1L << mp->mp_SigBit) | (1L << procmp->mp_SigBit);
+         ULONG winmask = fh->window ? 1L << fh->window->UserPort->mp_SigBit : 0L;
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+         ULONG appwindowmask = fh->appmsgport ? 1L << fh->appmsgport->mp_SigBit : 0L;
++#else
++        ULONG appwindowmask = 0;
++#endif
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+         ULONG i, insertedlen;
++#endif
+         ULONG sigs;
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+         UBYTE iconpath[INPUTBUFFER_SIZE];
+         WORD currentpos, currentrest;
++#endif
+ 
+         for (;;) {
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+             i = 0;
+             insertedlen = 0;
++#endif
+             sigs = Wait(packetmask | conreadmask | timermask | winmask | appwindowmask);
+ 
++#if !defined(ACE_NO_CONSOLE_APPWINDOW)
+             if ((appwindowmask) && (sigs & appwindowmask)) {
+                 D(bug("[con:handler] %s: appwindow msg signal\n", __func__));
+                 while ((fh->appmsg = (struct AppMessage *)GetMsg(fh->appmsgport))) {
+@@ -780,6 +809,7 @@ LONG CONMain(struct ExecBase *SysBase)
+                 }
+                 ActivateWindow(fh->window);
+             }
++#endif
+ 
+     #if defined(CONSOLE_SHOW_MENU)
+             if ((winmask) && (sigs & winmask)) {
+diff --git a/rom/filesys/console_handler/support.c b/rom/filesys/console_handler/support.c
+index 2f8e55d9a3..5efd900593 100644
+--- a/rom/filesys/console_handler/support.c
++++ b/rom/filesys/console_handler/support.c
+@@ -34,17 +34,19 @@
+ #include <devices/conunit.h>
+ 
+ #include <string.h>
+ #include <stdio.h>
+ #include <ctype.h>
+ 
+ #include "con_handler_intern.h"
+ #include "support.h"
++#if !defined(ACE_NO_CONSOLE_COMPLETION)
+ #include "completion.h"
++#endif
+ 
+ #define ioReq(x) ((struct IORequest *)x)
+@@ -1065,21 +1065,25 @@ BOOL process_input(struct filehandle *fh)
+         case INP_CTRL_F:
+             if (fh->breaktask)
+             {
+                 Signal(fh->breaktask, 1L << (12 + inp - INP_CTRL_C));
+             }
+             break;
+ 
+         case INP_TAB:
++#if !defined(ACE_NO_CONSOLE_COMPLETION)
+             Completion(fh, FALSE);
++#endif
+             break;
+ 
+         case INP_SHIFT_TAB:
++#if !defined(ACE_NO_CONSOLE_COMPLETION)
+             Completion(fh, TRUE);
++#endif
+             break;
+ 
+         case INP_PASTE:
+             D(bug("[con:handler] %s: INP_PASTE\n", __func__));
+             do_paste(fh);
+             break;
