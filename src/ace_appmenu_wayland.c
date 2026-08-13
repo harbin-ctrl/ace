@@ -148,6 +148,12 @@ gboolean ace_appmenu_wayland_advertise(GtkWindow *window,
     display = gtk_widget_get_display(GTK_WIDGET(window));
     if (!GDK_IS_WAYLAND_DISPLAY(display))
         return FALSE;
+    /* labwc associates the protocol object with its view when create() is
+     * received. Before the GTK toplevel is mapped there is no view yet and
+     * set_address is intentionally ignored, so do not create a one-shot
+     * object that cannot be repaired by later address updates. */
+    if (!gtk_widget_get_mapped(GTK_WIDGET(window)))
+        return FALSE;
     gdk_window = gtk_widget_get_window(GTK_WIDGET(window));
     if (!gdk_window || !GDK_IS_WAYLAND_WINDOW(gdk_window))
         return FALSE;

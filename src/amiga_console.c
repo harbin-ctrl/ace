@@ -477,32 +477,30 @@ static GtkWidget *build_menu(struct console_window *console)
 static void prepare_appmenu_environment(void)
 {
     const char *modules = getenv("GTK_MODULES");
-    gboolean has_appmenu = FALSE;
+    GString *filtered = g_string_new(NULL);
 
     if (modules && *modules) {
         char **names = g_strsplit(modules, ":", -1);
         int i;
 
         for (i = 0; names[i]; i++) {
-            if (strcmp(names[i], "appmenu-gtk-module") == 0) {
-                has_appmenu = TRUE;
-                break;
-            }
+            if (!names[i][0] || strcmp(names[i], "appmenu-gtk-module") == 0)
+                continue;
+            if (filtered->len)
+                g_string_append_c(filtered, ':');
+            g_string_append(filtered, names[i]);
         }
         g_strfreev(names);
     }
 
-    if (!has_appmenu && (!modules || !*modules)) {
-        setenv("GTK_MODULES", "appmenu-gtk-module", 1);
-    } else if (!has_appmenu) {
-        char combined[1024];
-
-        if (snprintf(combined, sizeof(combined), "%s:appmenu-gtk-module",
-                     modules) < (int)sizeof(combined))
-            setenv("GTK_MODULES", combined, 1);
-    }
-    if (!getenv("UBUNTU_MENUPROXY"))
-        setenv("UBUNTU_MENUPROXY", "1", 1);
+    /* ACE exports its own GMenu/GAction pair and advertises that one address
+     * over org_kde_kwin_appmenu. Loading appmenu-gtk-module as well creates a
+     * second model/action group for the same surface. The compositor stores a
+     * single address per view, so the two advertisements race and can leave
+     * the displayed menu backed by the module's stale GTK action state. Keep
+     * unrelated GTK modules, but make ACE's menu the only provider. */
+    setenv("GTK_MODULES", filtered->str, 1);
+    g_string_free(filtered, TRUE);
 }
 
 static gboolean update_menu_visibility(gpointer data)
@@ -831,12 +829,9 @@ int main(int argc, char **argv)
         (int)sizeof(shell_path))
         return 20;
 
-    /*
-     * ACE runs as a native Wayland console, even when DISPLAY is also set.
-     * The GTK appmenu module exports the GtkMenuBar over D-Bus when the
-     * desktop registrar is available; GtkMenuBar itself remains the local
-     * fallback when it is not.
-     */
+    /* ACE runs as a native Wayland console, even when DISPLAY is also set.
+     * ACE owns the exported menu/action pair; GtkMenuBar remains the local
+     * fallback when no appmenu compositor is available. */
     setenv("GDK_BACKEND", "wayland", 1);
     prepare_appmenu_environment();
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
