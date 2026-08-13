@@ -9,12 +9,14 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/stdio.h>
 #include <dos/var.h>
 #include <exec/lists.h>
+#include <exec/execbase.h>
 #include <utility/utility.h>
 #include "broker_client.h"
 #include "native_host.h"
@@ -24,6 +26,7 @@ static LONG native_ioerr;
 
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
+static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
 static struct DosLibrary native_dos_base;
 static struct CommandLineInterface native_cli;
@@ -163,6 +166,7 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 APTR FindTask(CONST_STRPTR name)
 {
     (void)name;
+    SysBase = &native_exec_base;
     native_refresh_local_vars();
     return &native_process;
 }
@@ -491,6 +495,11 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         return NULL;
     }
     file = fopen(resolved, access);
+    if (!file && mode == MODE_OLDFILE && name && !strchr(name, '/') &&
+        !strchr(name, ':')) {
+        if (native_command_path(name, resolved, sizeof(resolved)) == 0)
+            file = fopen(resolved, access);
+    }
     if (!file)
         native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
     return (BPTR)file;
@@ -507,6 +516,24 @@ LONG Close(BPTR handle)
         return DOSFALSE;
     }
     return DOSTRUE;
+}
+
+LONG DeleteFile(CONST_STRPTR name)
+{
+    char resolved[PATH_MAX];
+
+    if (!name || native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
+        unlink(resolved) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    return DOSTRUE;
+}
+
+BOOL IsInteractive(BPTR handle)
+{
+    return handle == (BPTR)stdin || handle == (BPTR)stdout ||
+           handle == (BPTR)stderr;
 }
 
 LONG FPutC(BPTR handle, LONG character)
@@ -575,6 +602,9 @@ struct CommandLineInterface *Cli(void)
     char *fail_level;
     char *prompt;
 
+    if (native_broker_ensure() != 0)
+        return NULL;
+
     if (native_broker_getcli(state, sizeof(state)) != 0)
         return NULL;
     return_code = strtok_r(state, "\n", &save);
@@ -603,10 +633,44 @@ struct CommandLineInterface *Cli(void)
     native_cli.cli_CurrentInput = (BPTR)stdin;
     native_cli.cli_StandardOutput = (BPTR)stdout;
     native_cli.cli_CurrentOutput = (BPTR)stdout;
+    native_cli.cli_StandardError = (BPTR)stderr;
+    native_cli.cli_DefaultStack = 8192 / CLI_DEFAULTSTACK_UNIT;
+    native_process.pr_CES = (BPTR)stderr;
     native_process.pr_CLI = (BPTR)&native_cli;
     native_process.pr_TaskNum = 1;
     native_cli_loaded = 1;
     return &native_cli;
+}
+
+void Forbid(void)
+{
+}
+
+void Permit(void)
+{
+}
+
+ULONG SetSignal(ULONG set_mask, ULONG clear_mask)
+{
+    (void)set_mask;
+    (void)clear_mask;
+    return 0;
+}
+
+ULONG CheckSignal(ULONG mask)
+{
+    (void)mask;
+    return 0;
+}
+
+LONG AllocSignal(LONG signal_number)
+{
+    return signal_number;
+}
+
+void FreeSignal(LONG signal_number)
+{
+    (void)signal_number;
 }
 
 BOOL SetPrompt(CONST_STRPTR prompt)
@@ -902,6 +966,39 @@ BPTR SetProgramDir(BPTR lock)
     BPTR old = native_program_dir;
     native_program_dir = lock;
     return old;
+}
+
+BPTR ParentOfFH(BPTR file)
+{
+    char current[PATH_MAX];
+    struct native_lock *lock;
+
+    (void)file;
+    if (native_broker_getcwd(current, sizeof(current)) != 0)
+        return BNULL;
+    lock = malloc(sizeof(*lock));
+    if (!lock)
+        return BNULL;
+    snprintf(lock->path, sizeof(lock->path), "%s", current);
+    return lock;
+}
+
+LONG ExamineFH(BPTR file, struct FileInfoBlock *fib)
+{
+    struct stat information;
+
+    if (!file || !fib || fstat(fileno(as_file(file)), &information) != 0) {
+        native_ioerr = errno;
+        return DOSFALSE;
+    }
+    fib->fib_DirEntryType = S_ISDIR(information.st_mode) ? 1 : -1;
+    fib->fib_Protection = 0;
+    return DOSTRUE;
+}
+
+void bug(const char *format, ...)
+{
+    (void)format;
 }
 
 struct native_arg_spec {

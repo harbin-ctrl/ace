@@ -173,35 +173,36 @@ export ACE_SESSION=main-shell
 ```
 
 Running `ace-shell` opens a separate menu-free console window and returns to
-the launching terminal. The window runs the real AROS Shell port through its
-private `--console-child` entry point; that mode is internal and should not be
-launched directly.
+the launching terminal. The window runs the original AROS `Shell.c` through
+the installed `ace-user-shell` binary.
 
-`ace-shell` can also bootstrap the broker itself.  It starts the sibling
-`ace-broker` only when the configured `ACE_BROKER_SOCKET` is unreachable,
-waits for it to accept connections, and reuses an existing broker.  The
-startup lock prevents concurrent shells from starting duplicates.  Set
-`ACE_BROKER_BINARY` only when the broker is not beside `ace-shell`.
+The real shell starts the sibling `ace-broker` only when the configured
+`ACE_BROKER_SOCKET` is unreachable, waits for it to accept connections, and
+reuses an existing broker. The startup lock prevents concurrent shells from
+starting duplicates. Set `ACE_BROKER_BINARY` only when the broker is not
+beside `ace-user-shell`.
 
-Inside that shell, command names are case-insensitive and AROS commands are
-preferred over the Bash fallback. `NewCLI` opens a separate window and starts
-another shell with a cloned initial session:
+Inside that shell, command parsing, prompting, redirection, aliases, and
+command errors are handled by the original AROS Shell code. At its command
+loading boundary, ACE resolves a Linux executable and implements AROS
+`LoadSeg()`/`RunCommand()` with host path lookup and `fork()`/`exec()`.
+There is no Bash fallback. `NewCLI` opens a separate window and starts
+another real AROS shell with a cloned initial session:
 
 ```text
 AMIGA> SET FOO parent
 AMIGA> NEWCLI
-AMIGA> ENDSHELL
 ```
 
 `build/NewCLI` is compiled from the original AROS `NewCLI.c` (which includes
 `NewShell.c`).  Its unchanged `Open("CON:...")` and `SystemTagList()` calls
 are currently backed by the host compatibility layer; the compatibility
-layer launches the existing ACE console and clones the broker session.
+layer launches the ACE console and clones the broker session. `ENDCLI` is not
+yet included as a separate AROS command, so an interactive shell currently
+ends on EOF or by closing its window.
 
-This window and dispatcher are the host bootstrap layer. They establish the
-classic window/session behavior while the real AROS Shell and `CON:` handler
-are being ported behind the same interfaces. The GTK surface deliberately
-has no AROS menus, Workbench integration, or clipboard extensions.
+The GTK surface deliberately has no AROS menus, Workbench integration, or
+clipboard extensions.
 
 Global variables currently last only for the lifetime of the broker. The
 `SAVE`/`ENVARC:` persistence behavior is still reserved for a later draft.

@@ -10,7 +10,7 @@ typedef int16_t WORD;
 typedef uint16_t UWORD;
 typedef int32_t LONG;
 typedef uint32_t ULONG;
-typedef int BOOL;
+typedef int16_t BOOL;
 typedef intptr_t IPTR;
 typedef uintptr_t ULONGPTR;
 typedef void *APTR;
@@ -21,6 +21,10 @@ typedef void *BPTR;
 typedef char *BSTR;
 typedef int64_t QUAD;
 typedef uint64_t UQUAD;
+
+#define BADDR(value) (value)
+#define MKBADDR(value) ((BPTR)(value))
+
 typedef intptr_t SIPTR;
 typedef char TEXT;
 typedef void *RAWARG;

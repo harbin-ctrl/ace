@@ -40,6 +40,11 @@
 #define ERROR_OBJECT_EXISTS     203
 #define ERROR_DEVICE_NOT_MOUNTED 218
 
+#define SIGBREAKF_CTRL_C (1u << 12)
+#define SIGBREAKF_CTRL_D (1u << 13)
+#define SIGBREAKF_CTRL_E (1u << 14)
+#define SIGBREAKF_CTRL_F (1u << 15)
+
 #define DOS_FIB    1
 #define DOS_RDARGS 2
 
@@ -53,6 +58,10 @@ struct FileInfoBlock {
     LONG fib_DirEntryType;
     ULONG fib_Protection;
 };
+
+#define FIBF_SCRIPT (1u << 6)
+
+#define FIBB_SCRIPT 6
 
 struct CSource;
 
@@ -75,6 +84,8 @@ BPTR Output(void);
 BPTR Input(void);
 BPTR Open(CONST_STRPTR name, LONG mode);
 LONG Close(BPTR file);
+LONG DeleteFile(CONST_STRPTR name);
+BOOL IsInteractive(BPTR file);
 LONG FPutC(BPTR file, LONG character);
 LONG FPuts(BPTR file, CONST_STRPTR string);
 STRPTR FGets(BPTR file, STRPTR buffer, LONG length);
@@ -99,6 +110,14 @@ LONG ReadItem(STRPTR buffer, LONG size, struct CSource *source);
 LONG Seek(BPTR file, LONG position, LONG mode);
 void SetProgramName(CONST_STRPTR name);
 BPTR SetProgramDir(BPTR lock);
+struct Segment;
+struct Segment *FindSegment(CONST_STRPTR name, struct Segment *last,
+                            BOOL system);
+BPTR LoadSeg(CONST_STRPTR name);
+void UnLoadSeg(BPTR segment);
+LONG RunCommand(BPTR segment, ULONG stack, STRPTR arguments, LONG length);
+BPTR ParentOfFH(BPTR file);
+LONG ExamineFH(BPTR file, struct FileInfoBlock *fib);
 struct RDArgs;
 struct RDArgs *ReadArgs(CONST_STRPTR template, IPTR *arguments,
                         struct RDArgs *rdargs);

@@ -728,7 +728,7 @@ int main(int argc, char **argv)
     session = argv[2];
     if (executable_directory(argv[0], directory, sizeof(directory)) != 0)
         return 20;
-    if (snprintf(shell_path, sizeof(shell_path), "%s/ace-shell", directory) >=
+    if (snprintf(shell_path, sizeof(shell_path), "%s/ace-user-shell", directory) >=
         (int)sizeof(shell_path))
         return 20;
 
@@ -753,7 +753,7 @@ int main(int argc, char **argv)
         if (sockets[1] > STDERR_FILENO)
             close(sockets[1]);
         setenv("ACE_SESSION", session, 1);
-        execl(shell_path, shell_path, "--console-child", (char *)NULL);
+        execl(shell_path, shell_path, (char *)NULL);
         _exit(20);
     }
     close(sockets[1]);

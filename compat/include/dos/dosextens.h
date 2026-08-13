@@ -30,6 +30,14 @@ struct Process {
     struct List pr_LocalVars;
 };
 
+struct Segment {
+    BPTR seg_Next;
+    LONG seg_UC;
+    BPTR seg_Seg;
+};
+
+#define CMD_INTERNAL (-2)
+
 struct CommandLineInterface {
     LONG cli_Result2;
     BSTR cli_SetName;

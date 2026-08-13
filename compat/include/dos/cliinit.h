@@ -15,4 +15,11 @@
 #define CLI_DEFAULTSTACK_UNIT 4
 #define AROS_STACKSIZE 8192
 
+/* The host shell enters through an ordinary Unix main() rather than an
+   AROS process startup packet. */
+#define __startup
+#define AROS_CLI(entry) int main(int argc, char **argv)
+#define AROS_CLI_Flags 0
+#define AROS_CLI_Type 0
+
 #endif

@@ -1,8 +1,12 @@
 #ifndef AMIGA_SHELL_EXECBASE_H
 #define AMIGA_SHELL_EXECBASE_H
 
+#include <exec/types.h>
+
 struct ExecBase {
-    int unused;
+    ULONG ex_DebugFlags;
 };
+
+#define EXECDEBUGF_SHELL (1u << 0)
 
 #endif
