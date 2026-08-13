@@ -118,6 +118,12 @@ static void terminal_scroll(struct terminal *terminal)
 
 static void terminal_linefeed(struct terminal *terminal)
 {
+    /*
+     * AROS DOS commands write '\n' for a console line ending.  The Amiga
+     * CON: handler performs the carriage-return part as well; a raw Linux
+     * stream would otherwise leave the cursor in its old column.
+     */
+    terminal->column = 0;
     terminal->row++;
     if (terminal->row >= TERM_ROWS)
         terminal_scroll(terminal);
