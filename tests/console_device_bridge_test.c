@@ -63,19 +63,25 @@ static uint32_t frame_pixel(const uint8_t *frame, int width, int x, int y)
     return ((uint32_t)pixel[0] << 16) | ((uint32_t)pixel[1] << 8) | pixel[2];
 }
 
-static int band_has_ink(const uint8_t *frame, int width, int y0, int y1,
-                        uint32_t background)
+static int region_has_ink(const uint8_t *frame, int width, int x0, int y0,
+                          int x1, int y1, uint32_t background)
 {
     int x;
     int y;
 
     for (y = y0; y <= y1; y++) {
-        for (x = 0; x < width; x++) {
+        for (x = x0; x <= x1; x++) {
             if (frame_pixel(frame, width, x, y) != background)
                 return 1;
         }
     }
     return 0;
+}
+
+static int band_has_ink(const uint8_t *frame, int width, int y0, int y1,
+                        uint32_t background)
+{
+    return region_has_ink(frame, width, 0, y0, width - 1, y1, background);
 }
 
 static int frame_has_ink(const uint8_t *frame, int width, int height,
@@ -178,13 +184,24 @@ int main(void)
     assert(band_has_ink(frame, width, 0, height / 2, 0x123456u));
     free(frame);
 
+    /*
+     * Growing re-wraps the retained text against the wider grid instead of
+     * leaving it laid out for the narrow one. Lines long enough to wrap at
+     * 320 pixels, but not at 900, are written first, so the columns the
+     * console gains must end up with text in them -- "the text stays
+     * squashed into the top left corner" is exactly the absence of ink out
+     * there.
+     */
+    for (i = 0; i < 40; i++)
+        write_text(device,
+                   "a line long enough that it has to wrap in a narrow "
+                   "console but not in a wide one\n");
     width = 900;
     height = 560;
     assert(ace_console_device_resize(device, width, height) == 0);
     frame = read_frame(device, width, height);
-    /* The area the console just gained is background, not stale pixels. */
-    assert(frame_pixel(frame, width, width - 2, height - 2) == 0x123456u);
-    assert(frame_pixel(frame, width, width - 2, 2) == 0x123456u);
+    assert(region_has_ink(frame, width, 500, 0, width - 1, height / 2,
+                          0x123456u));
     free(frame);
 
     assert(ace_console_device_set_font(device, "Liberation Mono", 20) == 0 ||

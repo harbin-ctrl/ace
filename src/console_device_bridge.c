@@ -182,19 +182,38 @@ void ace_console_device_close(struct ace_console_device *device)
 #define ACE_CONSOLE_HISTORY_MIN (32u * 1024u)
 #define ACE_CONSOLE_HISTORY_MAX (256u * 1024u)
 
-static size_t history_limit(struct ace_console_device *device)
+/*
+ * A repaint only has to reproduce what ends up visible, so it replays a few
+ * screenfuls of the tail rather than everything retained. More than one
+ * screenful, because a stream does not divide into screens evenly -- long
+ * lines wrap, escape sequences occupy bytes but no cells -- and the extra
+ * scrolls off the top exactly as it did the first time round.
+ */
+#define ACE_CONSOLE_REPLAY_SCREENS 3
+
+/* Bytes of stream it takes to fill the console once. Zero if unknown. */
+static size_t console_screenful(struct ace_console_device *device)
 {
     size_t columns;
     size_t rows;
-    size_t limit;
 
     if (!device->font || device->font->tf_XSize == 0 ||
         device->font->tf_YSize == 0)
-        return ACE_CONSOLE_HISTORY_MIN;
+        return 0;
     columns = (size_t)device->amiga_window.Width / device->font->tf_XSize;
     rows = (size_t)device->amiga_window.Height / device->font->tf_YSize;
     /* One newline per line on top of the cells themselves. */
-    limit = ACE_CONSOLE_HISTORY_SCREENS * rows * (columns + 1);
+    return rows * (columns + 1);
+}
+
+static size_t history_limit(struct ace_console_device *device)
+{
+    size_t screenful = console_screenful(device);
+    size_t limit;
+
+    if (screenful == 0)
+        return ACE_CONSOLE_HISTORY_MIN;
+    limit = ACE_CONSOLE_HISTORY_SCREENS * screenful;
     if (limit < ACE_CONSOLE_HISTORY_MIN)
         limit = ACE_CONSOLE_HISTORY_MIN;
     if (limit > ACE_CONSOLE_HISTORY_MAX)
@@ -282,10 +301,41 @@ static void write_direct(struct ace_console_device *device, Object *unit,
     }
 }
 
+/*
+ * Where in the retained stream a repaint should start: far enough back to
+ * fill the console several times over, cut at a line boundary so a partial
+ * escape sequence is never replayed as stray text. Everything older than
+ * that would only scroll off the top again, and re-rendering it is the whole
+ * cost of a repaint.
+ */
+static size_t replay_start(struct ace_console_device *device)
+{
+    size_t screenful = console_screenful(device);
+    size_t want;
+    size_t cut;
+
+    if (screenful == 0)
+        return 0;
+    want = ACE_CONSOLE_REPLAY_SCREENS * screenful;
+    if (device->history_length <= want)
+        return 0;
+
+    cut = device->history_length - want;
+    while (cut < device->history_length && device->history[cut] != '\n')
+        cut++;
+    if (cut < device->history_length)
+        cut++; /* start just after the newline, not on it */
+    /* No line boundary in the tail: replaying all of it is still correct. */
+    return cut < device->history_length ? cut : 0;
+}
+
 static void replay_history(struct ace_console_device *device, Object *unit)
 {
-    if (device->history_length != 0)
-        write_direct(device, unit, device->history, device->history_length);
+    size_t start = replay_start(device);
+
+    if (device->history_length > start)
+        write_direct(device, unit, device->history + start,
+                     device->history_length - start);
 }
 
 /*
@@ -422,8 +472,8 @@ int ace_console_device_resize(struct ace_console_device *device,
                               int width, int height)
 {
     struct ConUnit *unit;
-    WORD old_xcp;
-    WORD old_ycp;
+    WORD old_xmax;
+    WORD old_ymax;
 
     if (!device || width <= 0 || height <= 0)
         return -1;
@@ -436,33 +486,39 @@ int ace_console_device_resize(struct ace_console_device *device,
     device->amiga_window.Height = (UWORD)height;
 
     /*
-     * A window resize does not move any character cell -- the font is
-     * unchanged, so every cell keeps its pixel position and only the number
-     * of rows and columns changes -- so the pixels already on screen stay
-     * valid across the geometry update, and this does not have to repaint.
+     * A resize that leaves the character grid the same size -- anything
+     * smaller than one cell, which is most of the steps a drag delivers --
+     * changes nothing about the layout. The font is unchanged, so every cell
+     * keeps its pixel position, and the pixels already on screen stay valid
+     * across the geometry update.
      *
-     * With one exception, which is real AROS behavior rather than ACE's.
-     * console_newwindowsize() clamps the cursor into the new grid (it only
-     * ever clamps downwards, so this cannot arise from enlarging a window),
-     * and stdcon_newwindowsize() responds to a cursor that moved by clearing
-     * the whole console and redrawing the cursor: a character-cell renderer
-     * with no retained character map has no way to tidy up the cursor it
-     * left at the old position without wiping what it cannot redraw. Whether
-     * that happened is exactly whether the cursor moved, which is the
-     * condition stdconclass.c itself tests, read from the same fields.
-     *
-     * Repainting the retained stream is what ACE has instead of the
+     * A resize that does change the grid has to repaint, because the text on
+     * screen was laid out against the old column count and the old bottom
+     * row. Repainting the retained stream is what ACE has instead of the
      * character map AROS's own charmapconclass would have used -- the same
-     * mechanism a typeface or palette change goes through. The console is
-     * cleared and homed first, with a real form feed, because the replay
-     * has to start from the top left and AROS has just left the cursor
-     * wherever it clamped it to.
+     * mechanism a typeface or palette change goes through -- and it is what
+     * re-wraps the text to the new width and puts the last line back on the
+     * last row.
+     *
+     * Shrinking would need this in any case: console_newwindowsize() clamps
+     * the cursor into the new grid, and stdcon_newwindowsize() responds to a
+     * cursor that moved by clearing the whole console and redrawing the
+     * cursor -- a character-cell renderer with no retained character map has
+     * no way to tidy up the cursor it left at the old position without
+     * wiping what it cannot redraw. Clamping only ever goes downwards, so
+     * enlarging never triggers that clear; it needs the repaint for the
+     * layout alone, which is why the test here is the grid rather than the
+     * cursor.
+     *
+     * The console is cleared and homed first, with a real form feed, because
+     * the replay has to start from the top left, wherever AROS has left the
+     * cursor.
      */
     unit = (struct ConUnit *)device->unit;
-    old_xcp = unit->cu_XCP;
-    old_ycp = unit->cu_YCP;
+    old_xmax = unit->cu_XMax;
+    old_ymax = unit->cu_YMax;
     Console_NewWindowSize(device->unit);
-    if ((unit->cu_XCP != old_xcp || unit->cu_YCP != old_ycp) &&
+    if ((unit->cu_XMax != old_xmax || unit->cu_YMax != old_ymax) &&
         device->history_length != 0) {
         static const unsigned char form_feed = 0x0c;
 

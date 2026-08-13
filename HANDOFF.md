@@ -249,29 +249,41 @@ delivered. Keeping the pixels is sound because a window resize moves no
 character cell: the font is unchanged, so every cell keeps its pixel position
 and only the number of rows and columns changes.
 
-**Except when AROS clears the console itself.** `console_newwindowsize()`
-clamps the cursor into the new grid, and `stdcon_newwindowsize()` responds to
-a cursor that moved by clearing the whole console and redrawing the cursor --
-a character-cell renderer with no retained character map has no way to tidy
-up the cursor it left at the old position without wiping what it cannot
-redraw. That is real AROS code doing what it has always done, and it is why
-shrinking a window made the text vanish once resize stopped replaying: the
+**Except when the character grid itself changes size.** The text on screen
+was laid out against the old column count and the old bottom row, so it has
+to be re-wrapped against the new ones. `ace_console_device_resize()` reads
+`cu_XMax`/`cu_YMax` around the `Console_NewWindowSize()` call and repaints
+the retained stream when either moved, clearing and homing first with a real
+form feed because the replay has to start at the top left. Most steps of a
+drag are smaller than one cell and change neither, so they stay free.
+
+Shrinking would need the repaint in any case, for a second reason that is
+real AROS code rather than ACE's. `console_newwindowsize()` clamps the cursor
+into the new grid, and `stdcon_newwindowsize()` responds to a cursor that
+moved by clearing the whole console and redrawing the cursor -- a
+character-cell renderer with no retained character map has no way to tidy up
+the cursor it left at the old position without wiping what it cannot redraw.
+That is why shrinking made the text vanish once resize stopped replaying: the
 old replay-everything path had been repainting what AROS had just erased,
-without anyone noticing AROS was erasing it.
+without anyone noticing AROS was erasing it. Clamping only ever goes
+downwards, so enlarging never hits that clear -- which is why the trigger
+here is the grid and not the cursor. Testing the cursor made growing keep the
+old narrow layout, with the text squashed into the top left of the wider
+window.
 
-`ace_console_device_resize()` therefore reads `cu_XCP`/`cu_YCP` around the
-`Console_NewWindowSize()` call -- the same two fields `stdconclass.c` itself
-tests -- and repaints the retained stream when they moved, sending a real
-form feed first because the replay has to start at the top left and AROS has
-just left the cursor wherever it clamped it to. Clamping is only ever
-downwards, so enlarging a window never triggers it and stays free; shrinking
-costs a repaint on the steps that cross a cell boundary, about 80 ms, and
-nothing on the steps in between.
+A repaint replays a few screenfuls of the tail of the retained stream rather
+than all of it (`replay_start()`). Anything older only scrolls off the top
+again, and re-rendering it was most of what a repaint cost.
 
-The bridge test checks this by looking for ink in the console's *upper half*
-after a shrink. A whole-frame ink check passes on a console that has been
-completely wiped, because the cursor block is itself non-background -- which
-is exactly why the original resize assertion did not catch this. GTK
+The bridge test covers both directions, and both checks are shaped around
+things that hid the bug the first time. After a shrink it looks for ink in
+the console's *upper half*: a whole-frame ink check passes on a console that
+has been completely wiped, because the cursor block is itself non-background,
+which is exactly why the original resize assertion did not catch the clear.
+After a grow it writes lines long enough to wrap in a narrow console but not
+a wide one, then looks for ink in the columns the console has just gained --
+text squashed into the top left is precisely the absence of ink out there.
+GTK
 `size-allocate` coalesces those to about one frame, and `draw_console()` fills
 whatever the window has gained with the console's background pen until the
 console catches up. The drawing area is no longer fixed at the initial
