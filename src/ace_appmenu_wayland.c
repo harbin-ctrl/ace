@@ -56,19 +56,7 @@ struct appmenu_state {
     uint32_t manager_name;
     struct org_kde_kwin_appmenu *appmenu;
     struct wl_surface *surface;
-    /*
-     * The address is re-sent for a short while after the surface appears,
-     * because a compositor may not have built its view for the surface at
-     * the moment ACE first offers one, and then left alone. Re-sending it
-     * several times a second for the life of the window is protocol traffic
-     * that buys nothing: a compositor restart replaces GDK's whole display
-     * and is picked up by ensure_manager(), and a manager that comes or goes
-     * is reported on the registry listener below.
-     */
-    int settle_ticks;
 };
-
-#define APPMENU_SETTLE_TICKS 8
 
 static struct appmenu_state state;
 
@@ -115,9 +103,6 @@ static void registry_global(void *data, struct wl_registry *registry,
         appmenu->manager = (struct org_kde_kwin_appmenu_manager *)
             wl_registry_bind(registry, name, &manager_interface,
                              version < 2 ? version : 2);
-        /* A manager that only just appeared has never been told ACE's
-         * address, so start the settle window over. */
-        appmenu->settle_ticks = 0;
     }
 }
 
@@ -171,10 +156,15 @@ static gboolean ensure_manager(GdkDisplay *display)
         /* One round trip, on ACE's own queue, to learn what the compositor
          * offers. */
         (void)wl_display_roundtrip_queue(state.display, state.queue);
+    } else if (!state.manager) {
+        /* Still no manager: keep asking, the way this did before ACE had its
+         * own queue. A compositor that gains the appmenu global after the
+         * window is up is one of the cases "keep appmenu live" is about. */
+        (void)wl_display_roundtrip_queue(state.display, state.queue);
     } else {
-        /* Pick up a manager that appeared or went away since the last check.
-         * This only dispatches events already delivered to ACE's queue, so
-         * it neither blocks nor touches GDK's. */
+        /* Pick up a manager that went away since the last check. This only
+         * dispatches events already delivered to ACE's queue, so it neither
+         * blocks nor touches GDK's. */
         (void)wl_display_dispatch_queue_pending(state.display, state.queue);
     }
     return state.manager != NULL;
@@ -215,14 +205,21 @@ gboolean ace_appmenu_wayland_advertise(GtkWindow *window,
     if (!state.appmenu) {
         state.appmenu = manager_create(state.manager, surface);
         state.surface = surface;
-        state.settle_ticks = 0;
     }
-    if (state.settle_ticks >= APPMENU_SETTLE_TICKS)
-        return TRUE;
 
+    /*
+     * The address is re-sent on every call, not once. This is deliberate and
+     * was hard won -- see "Persist shell appearance and keep appmenu live"
+     * and "Fix ACE appmenu provider lifecycle" -- so do not turn it into a
+     * one-shot again. The compositor can attach its view to the surface after
+     * ACE first offers an address, other providers on the desktop advertise
+     * against the same surface, and the compositor keeps only one address per
+     * view; a provider that stops re-asserting its own can be left displaying
+     * a menu bound to somebody else's stale action state, which shows up as a
+     * menu whose items are all present but greyed out.
+     */
     service_name = g_dbus_connection_get_unique_name(bus);
     appmenu_set_address(state.appmenu, service_name, object_path);
-    state.settle_ticks++;
     if (wl_display_flush(state.display) < 0)
         return FALSE;
     return TRUE;
@@ -250,5 +247,4 @@ void ace_appmenu_wayland_forget(void)
     }
     state.display = NULL;
     state.manager_name = 0;
-    state.settle_ticks = 0;
 }
