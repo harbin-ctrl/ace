@@ -242,6 +242,58 @@ layer launches the ACE console and clones the broker session.
 The GTK surface deliberately has no AROS menus, Workbench integration, or
 clipboard extensions.
 
+## BOOPSI
+
+The real AROS BOOPSI implementation is now built from unmodified AROS source:
+`rom/intuition/{rootclass,makeclass,freeclass,addclass,removeclass,findclass,
+newobjecta,disposeobject,setattrsa,getattr,nextobject}.c` and the amiga.lib
+method dispatchers in `compiler/alib/{domethod,dosupermethod,coercemethod,
+alib_util}.c`. That is roughly 1700 lines of AROS against 510 lines of ACE
+seam, and unlike the console handler it needs no patch at all — the AROS
+working tree is untouched by this build.
+
+BOOPSI is Commodore's, introduced with AmigaOS 2.0 and documented in the ROM
+Kernel Reference Manual: Libraries. AROS additionally uses it as the internal
+architecture of `console.device`, so the console classes ACE is working toward
+require it. It is also what `gadgetclass`, `imageclass`, `windowclasses` and
+`screenclass` are built from, should ACE ever grow a real Intuition layer.
+
+ACE supplies only what a real AROS build would generate or configure:
+
+* `compat/aros-real/include/aros/libcall.h` turns an AROS library entry point
+  into a plain C function. On AmigaOS the arguments arrive in named registers
+  and the library base arrives with the call; on the host they are ordinary
+  parameters and the base is a file-scope object.
+* `compat/aros-real/include/aros/asmcall.h` does the same for hook and user
+  functions, and supplies the `AROS_UFC*` forms that `CALLHOOKPKT()` in AROS's
+  own `utility/hooks.h` is built from. That macro is where every BOOPSI method
+  dispatch crosses the calling-convention boundary.
+* `compat/aros-real/include/aros/atomic.h` maps the class reference counts onto
+  the compiler's atomic builtins.
+* `compat/aros-real/include/ace_boopsi_intern.h` is force-included ahead of the
+  AROS sources and claims the include guard of
+  `rom/intuition/intuition_intern.h`, which is the private header of the entire
+  Intuition library. BOOPSI needs three fields out of its 1500 lines: the class
+  list, that list's lock, and the rootclass.
+* `src/aros_boopsi_runtime.c` is the Exec seam — memory, memory pools,
+  recursive semaphores and list handling — plus the one-time rootclass
+  bootstrap that `rom/intuition/intuition_init.c` performs on a real AROS
+  build.
+
+Whether the varargs method calls read their arguments straight off the stack or
+marshal them through `GetMsgFromStack()` is left to `AROS_SLOWSTACKMETHODS` in
+AROS's own `arch/<cpu>/include/aros/cpu.h`. AROS sets it for exactly those
+architectures whose ABI does not pass varargs contiguously, so aarch64 and
+x86_64 hosts get the marshalling path and i386 does not.
+
+The focused test builds a two-level class hierarchy through the real
+`MakeClass()` and checks AROS's dispatch, its instance-data layout, its
+reference counting and its teardown refusals:
+
+```sh
+make test-boopsi
+```
+
 Global variables currently last only for the lifetime of the broker. The
 `SAVE`/`ENVARC:` persistence behavior is still reserved for a later draft.
 Every command built through the native AROS shell-command wrapper now

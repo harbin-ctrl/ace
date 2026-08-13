@@ -43,6 +43,14 @@ INSTALL_LNX_SRC := src/lnx.c
 AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
+AROS_BOOPSI_DIR := $(AROS_ROOT)/rom/intuition
+AROS_ALIB_DIR := $(AROS_ROOT)/compiler/alib
+AROS_BOOPSI_NAMES := rootclass makeclass freeclass addclass removeclass \
+                     findclass newobjecta disposeobject setattrsa getattr \
+                     nextobject
+AROS_ALIB_NAMES := domethod dosupermethod coercemethod alib_util
+AROS_BOOPSI_OBJS := $(addprefix $(BUILD)/aros-boopsi-,$(addsuffix .o,$(AROS_BOOPSI_NAMES))) \
+                    $(addprefix $(BUILD)/aros-alib-,$(addsuffix .o,$(AROS_ALIB_NAMES)))
 AROS_CON_HANDLER_SRC := $(AROS_ROOT)/rom/filesys/console_handler/con_handler.c
 AROS_CON_SUPPORT_SRC := $(AROS_ROOT)/rom/filesys/console_handler/support.c
 AROS_CON_COMPLETION_SRC := $(AROS_ROOT)/rom/filesys/console_handler/completion.c
@@ -66,11 +74,27 @@ AROS_REAL_CFLAGS := -Wno-implicit-function-declaration \
                     -DACE_NO_CONSOLE_MENU -DACE_NO_CONSOLE_APPWINDOW \
                     -DACE_NO_CONSOLE_COMPLETION \
                     -include ace_handler_types.h
+# The BOOPSI sources are compiled against the ACE Intuition seam instead of the
+# console handler seam, so they take the same warning relaxations but their own
+# forced include.  See compat/aros-real/include/ace_boopsi_intern.h.
+AROS_BOOPSI_CFLAGS := -Wno-implicit-function-declaration \
+                      -Wno-int-conversion -Wno-int-to-pointer-cast \
+                      -Wno-pointer-sign -Wno-sign-compare \
+                      -Wno-missing-field-initializers \
+                      -Wno-unused-but-set-variable -Wno-strict-aliasing \
+                      -Wno-maybe-uninitialized \
+                      -include ace_boopsi_intern.h
+AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
+                        -I$(AROS_ROOT)/arch/all-pc/include \
+                        -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+                        -I$(AROS_ROOT)/compiler/arossupport/include \
+                        -I$(AROS_ROOT)/compiler/include \
+                        -I$(AROS_ALIB_DIR)
 INSTALL_BINS := Echo CD PathPart Fault Ask Get Getenv Set Unset Alias Unalias \
                 FailAt Why Prompt MakeDir EndCLI LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -137,6 +161,21 @@ $(BUILD)/aros-con-support.o: $(AROS_CON_SUPPORT_SRC) compat/aros-real/include/ac
 
 $(BUILD)/aros-con-completion.o: $(AROS_CON_COMPLETION_SRC) compat/aros-real/include/ace_handler_types.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-boopsi-%.o: $(AROS_BOOPSI_DIR)/%.c compat/aros-real/include/ace_boopsi_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_BOOPSI_CFLAGS) $(AROS_BOOPSI_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-alib-%.o: $(AROS_ALIB_DIR)/%.c compat/aros-real/include/ace_boopsi_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_BOOPSI_CFLAGS) $(AROS_BOOPSI_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-boopsi-runtime.o: src/aros_boopsi_runtime.c src/aros_boopsi_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AROS_BOOPSI_CFLAGS) $(AROS_BOOPSI_INCLUDES) -c $< -o $@
+
+$(BUILD)/boopsi-test.o: tests/boopsi_test.c src/aros_boopsi_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AROS_BOOPSI_CFLAGS) $(AROS_BOOPSI_INCLUDES) -Isrc -c $< -o $@
+
+$(BUILD)/boopsi-test: $(BUILD)/boopsi-test.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+	$(CC) $(CFLAGS) -pthread $^ -o $@
 
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
@@ -310,4 +349,7 @@ test-aros-console-editor: $(BUILD)/aros-console-editor-test
 test-exec-compat: $(BUILD)/exec-compat-test
 	$(BUILD)/exec-compat-test
 
-.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat
+test-boopsi: $(BUILD)/boopsi-test
+	$(BUILD)/boopsi-test
+
+.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi
