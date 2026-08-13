@@ -4,6 +4,7 @@
 #include <exec/types.h>
 #include <exec/lists.h>
 #include <exec/ports.h>
+#include <dos/cliinit.h>
 #include <string.h>
 
 #define AROS_BSTR_ADDR(value) (value)
@@ -49,16 +50,23 @@ struct CommandLineInterface {
     BPTR cli_StandardError;
 };
 
+struct CSource {
+    STRPTR CS_Buffer;
+    LONG CS_Length;
+    LONG CS_CurChr;
+};
+
 /* The real structure contains more bookkeeping.  The Shell only needs an
    owning object that can be released by FreeDosObject(DOS_RDARGS). */
 struct RDArgs {
-    APTR RDA_Source;
+    struct CSource RDA_Source;
     APTR RDA_Buffer;
     ULONG RDA_BufferSize;
     IPTR *RDA_Arguments;
     ULONG RDA_ArgumentCount;
     APTR RDA_Values[32];
     UBYTE RDA_Multiple[32];
+    UBYTE RDA_Owned;
 };
 
 #endif

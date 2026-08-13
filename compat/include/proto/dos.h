@@ -2,6 +2,7 @@
 #define AMIGA_SHELL_PROTO_DOS_H
 
 #include <dos/dos.h>
+#include <utility/tagitem.h>
 
 struct DosLibrary;
 extern struct DosLibrary *DOSBase;
@@ -12,5 +13,6 @@ APTR FindTask(CONST_STRPTR name);
 struct CommandLineInterface *Cli(void);
 BOOL SetPrompt(CONST_STRPTR prompt);
 LONG VPrintf(CONST_STRPTR format, APTR arguments);
+LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags);
 
 #endif

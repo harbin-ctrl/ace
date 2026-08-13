@@ -17,6 +17,7 @@
 #include <exec/lists.h>
 #include <utility/utility.h>
 #include "broker_client.h"
+#include "native_host.h"
 #include "broker_protocol.h"
 
 static LONG native_ioerr;
@@ -41,6 +42,8 @@ static FILE *native_input = NULL;
 static FILE *native_output = NULL;
 static BPTR native_program_dir;
 static char native_program_name[PATH_MAX];
+
+static void set_native_broker_error(void);
 
 static void native_refresh_local_vars(void)
 {
@@ -97,6 +100,48 @@ static void native_refresh_local_vars(void)
 struct native_lock {
     char path[PATH_MAX];
 };
+
+struct native_console_handle {
+    uint64_t magic;
+    char specification[PATH_MAX];
+};
+
+#define NATIVE_CONSOLE_MAGIC UINT64_C(0x414345434f4e3031)
+
+BPTR native_console_open(const char *specification)
+{
+    struct native_console_handle *handle;
+
+    handle = calloc(1, sizeof(*handle));
+    if (!handle) {
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return BNULL;
+    }
+    handle->magic = NATIVE_CONSOLE_MAGIC;
+    snprintf(handle->specification, sizeof(handle->specification), "%s",
+             specification ? specification : "CON:");
+    return handle;
+}
+
+int native_console_is_handle(BPTR handle)
+{
+    struct native_console_handle *candidate = handle;
+
+    return candidate && candidate->magic == NATIVE_CONSOLE_MAGIC;
+}
+
+const char *native_console_specification(BPTR handle)
+{
+    struct native_console_handle *console = handle;
+
+    return native_console_is_handle(handle) ? console->specification : NULL;
+}
+
+void native_console_close(BPTR handle)
+{
+    if (native_console_is_handle(handle))
+        free(handle);
+}
 
 static FILE *as_file(BPTR handle)
 {
@@ -262,23 +307,38 @@ BPTR AllocDosObject(LONG type, APTR tags)
     (void)tags;
     if (type == DOS_FIB)
         return calloc(1, sizeof(struct FileInfoBlock));
+    if (type == DOS_RDARGS)
+        return calloc(1, sizeof(struct RDArgs));
     return NULL;
+}
+
+static void native_free_rdargs_values(struct RDArgs *arguments)
+{
+    if (!arguments)
+        return;
+    for (ULONG i = 0; i < arguments->RDA_ArgumentCount && i < 32; i++) {
+        if (arguments->RDA_Multiple[i] && arguments->RDA_Values[i]) {
+            char **values = arguments->RDA_Values[i];
+            for (size_t j = 0; values[j]; j++)
+                free(values[j]);
+        }
+        free(arguments->RDA_Values[i]);
+        arguments->RDA_Values[i] = NULL;
+        arguments->RDA_Multiple[i] = 0;
+    }
+    if (arguments->RDA_Arguments) {
+        for (ULONG i = 0; i < arguments->RDA_ArgumentCount; i++)
+            arguments->RDA_Arguments[i] = 0;
+    }
+    arguments->RDA_ArgumentCount = 0;
 }
 
 void FreeDosObject(LONG type, APTR object)
 {
     struct RDArgs *arguments = object;
 
-    if (type == DOS_RDARGS && arguments) {
-        for (ULONG i = 0; i < arguments->RDA_ArgumentCount && i < 32; i++) {
-            if (arguments->RDA_Multiple[i] && arguments->RDA_Values[i]) {
-                char **values = arguments->RDA_Values[i];
-                for (size_t j = 0; values[j]; j++)
-                    free(values[j]);
-            }
-            free(arguments->RDA_Values[i]);
-        }
-    }
+    if (type == DOS_RDARGS)
+        native_free_rdargs_values(arguments);
     free(object);
 }
 
@@ -306,6 +366,39 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
 LONG UnLock(BPTR handle)
 {
     free(handle);
+    return DOSTRUE;
+}
+
+BPTR CreateDir(CONST_STRPTR name)
+{
+    char resolved[PATH_MAX];
+    struct native_lock *lock;
+
+    if (!name || native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+        native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        return BNULL;
+    }
+    if (mkdir(resolved, 0777) != 0) {
+        if (errno == EEXIST)
+            native_ioerr = ERROR_OBJECT_EXISTS;
+        else
+            set_native_broker_error();
+        return BNULL;
+    }
+    lock = malloc(sizeof(*lock));
+    if (!lock) {
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return BNULL;
+    }
+    snprintf(lock->path, sizeof(lock->path), "%s", resolved);
+    return lock;
+}
+
+LONG ChangeMode(LONG type, BPTR object, LONG mode)
+{
+    (void)type;
+    (void)object;
+    (void)mode;
     return DOSTRUE;
 }
 
@@ -390,6 +483,9 @@ BPTR Open(CONST_STRPTR name, LONG mode)
     char resolved[PATH_MAX];
     FILE *file;
 
+    if (name && strncasecmp(name, "CON:", 4) == 0)
+        return native_console_open(name);
+
     if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
         native_ioerr = errno;
         return NULL;
@@ -402,6 +498,10 @@ BPTR Open(CONST_STRPTR name, LONG mode)
 
 LONG Close(BPTR handle)
 {
+    if (native_console_is_handle(handle)) {
+        native_console_close(handle);
+        return DOSTRUE;
+    }
     if (!handle || fclose(as_file(handle)) != 0) {
         native_ioerr = errno;
         return DOSFALSE;
@@ -886,76 +986,251 @@ static size_t native_split_args(char *line, char **tokens, size_t capacity)
     return count;
 }
 
+static BOOL native_process_arguments(char *line, size_t line_size)
+{
+    unsigned char raw[AMIGA_BROKER_MAX_PAYLOAD];
+    FILE *source = fopen("/proc/self/cmdline", "rb");
+    size_t bytes, cursor = 0, argument = 0, used = 0;
+
+    if (!source)
+        return FALSE;
+    bytes = fread(raw, 1, sizeof(raw) - 1, source);
+    fclose(source);
+    while (cursor < bytes) {
+        unsigned char *end = memchr(raw + cursor, '\0', bytes - cursor);
+        size_t length = end ? (size_t)(end - (raw + cursor)) : bytes - cursor;
+
+        if (argument++ > 0 && length > 0) {
+            BOOL quote = FALSE;
+            if (used > 0 && used + 1 < line_size)
+                line[used++] = ' ';
+            for (size_t i = 0; i < length; i++)
+                if (isspace(raw[cursor + i]) || raw[cursor + i] == '"')
+                    quote = TRUE;
+            if (quote && used + 1 < line_size)
+                line[used++] = '"';
+            for (size_t i = 0; i < length && used + 2 < line_size; i++) {
+                if (raw[cursor + i] == '"' || raw[cursor + i] == '\\')
+                    line[used++] = '\\';
+                line[used++] = (char)raw[cursor + i];
+            }
+            if (quote && used + 1 < line_size)
+                line[used++] = '"';
+        }
+        cursor += length + 1;
+    }
+    line[used] = '\0';
+    return argument > 1;
+}
+
+static BOOL native_token_matches(CONST_STRPTR token,
+                                 const struct native_arg_spec *spec,
+                                 CONST_STRPTR *value)
+{
+    const char *equals = strchr(token, '=');
+    size_t name_length = equals ? (size_t)(equals - token) : strlen(token);
+
+    if (name_length != strlen(spec->name) ||
+        strncasecmp(token, spec->name, name_length) != 0)
+        return FALSE;
+    if (value)
+        *value = equals ? equals + 1 : "1";
+    return TRUE;
+}
+
+static BOOL native_is_keyword(char *token,
+                              const struct native_arg_spec *specs,
+                              size_t spec_count)
+{
+    for (size_t i = 0; i < spec_count; i++) {
+        if (specs[i].flags & (0x40 | 0x01 | 0x02)) {
+            CONST_STRPTR value;
+            if (native_token_matches(token, &specs[i], &value))
+                return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static BOOL native_store_arg(struct RDArgs *result, IPTR *arguments,
+                             size_t index, CONST_STRPTR value, unsigned flags)
+{
+    if (flags & (0x01 | 0x02)) {
+        arguments[index] = (IPTR)-1;
+        return TRUE;
+    }
+    if (flags & 0x20) {
+        char **values = calloc(2, sizeof(*values));
+        if (!values)
+            return FALSE;
+        values[0] = strdup(value);
+        if (!values[0]) {
+            free(values);
+            return FALSE;
+        }
+        result->RDA_Values[index] = values;
+        result->RDA_Multiple[index] = 1;
+        arguments[index] = (IPTR)values;
+    } else {
+        char *copy = strdup(value);
+        if (!copy)
+            return FALSE;
+        result->RDA_Values[index] = copy;
+        arguments[index] = (IPTR)copy;
+    }
+    return TRUE;
+}
+
 struct RDArgs *ReadArgs(CONST_STRPTR template, IPTR *arguments,
                         struct RDArgs *rdargs)
 {
     struct native_arg_spec specs[32] = {0};
     char line[AMIGA_BROKER_MAX_PAYLOAD];
     char *tokens[64] = {0};
+    BOOL used[64] = {0};
+    CONST_STRPTR keyed_values[32] = {0};
     size_t spec_count, token_count, positional = 0;
     struct RDArgs *result = rdargs;
+    BOOL allocated = FALSE;
+    struct CSource source = {0};
 
-    if (!template || !arguments || !FGets(Input(), line, sizeof(line))) {
+    if (!template || !arguments) {
         native_ioerr = ERROR_REQUIRED_ARG_MISSING;
         return NULL;
     }
-    if (!result)
+    if (result) {
+        source = result->RDA_Source;
+        native_free_rdargs_values(result);
+        memset(result, 0, sizeof(*result));
+        result->RDA_Source = source;
+    } else {
         result = calloc(1, sizeof(*result));
+        allocated = TRUE;
+    }
     if (!result) {
         native_ioerr = ERROR_NO_FREE_STORE;
         return NULL;
     }
+    result->RDA_Owned = allocated ? 1 : 0;
+
+    if (source.CS_Buffer) {
+        size_t length = source.CS_Length > source.CS_CurChr ?
+                        (size_t)(source.CS_Length - source.CS_CurChr) : 0;
+        if (length >= sizeof(line))
+            length = sizeof(line) - 1;
+        memcpy(line, source.CS_Buffer + source.CS_CurChr, length);
+        line[length] = '\0';
+    } else if (!native_process_arguments(line, sizeof(line)) &&
+               !FGets(Input(), line, sizeof(line))) {
+        native_ioerr = ERROR_REQUIRED_ARG_MISSING;
+        goto fail;
+    }
     spec_count = native_parse_template(template, specs, 32);
     token_count = native_split_args(line, tokens, 64);
+    for (size_t i = 0; i < token_count; i++) {
+        if (strcmp(tokens[i], "?") == 0) {
+            PutStr(template);
+            PutStr(": ");
+            Flush(Output());
+            if (!FGets(Input(), line, sizeof(line))) {
+                native_ioerr = ERROR_REQUIRED_ARG_MISSING;
+                goto fail;
+            }
+            token_count = native_split_args(line, tokens, 64);
+            break;
+        }
+    }
     result->RDA_Arguments = arguments;
     result->RDA_ArgumentCount = spec_count;
-    for (size_t i = 0; i < spec_count; i++) {
-        const char *value = NULL;
-        char *equals;
-        BOOL matched = FALSE;
 
+    /* First consume named switches and /K arguments. */
+    for (size_t i = 0; i < spec_count; i++) {
+        if (!(specs[i].flags & (0x40 | 0x01 | 0x02)))
+            continue;
         for (size_t j = 0; j < token_count; j++) {
-            equals = strchr(tokens[j], '=');
-            if ((equals && strncasecmp(tokens[j], specs[i].name,
-                                       (size_t)(equals - tokens[j])) == 0 &&
-                 specs[i].name[equals - tokens[j]] == '\0') ||
-                (!equals && strcasecmp(tokens[j], specs[i].name) == 0)) {
-                value = equals ? equals + 1 : "1";
-                matched = TRUE;
-                tokens[j] = "";
+            CONST_STRPTR value;
+            if (!used[j] && native_token_matches(tokens[j], &specs[i], &value)) {
+                used[j] = TRUE;
+                keyed_values[i] = value;
                 break;
             }
         }
-        if (!matched && !(specs[i].flags & (0x40 | 0x01 | 0x02))) {
-            while (positional < token_count && !tokens[positional][0])
-                positional++;
-            if (positional < token_count)
-                value = tokens[positional++];
-        }
-        if (!value)
+        if (keyed_values[i] &&
+            !native_store_arg(result, arguments, i, keyed_values[i], specs[i].flags))
+            goto fail;
+    }
+
+    /* Then assign remaining positional tokens.  /M consumes all of them
+       except tokens belonging to named switches. */
+    for (size_t i = 0; i < spec_count; i++) {
+        if (specs[i].flags & (0x40 | 0x01 | 0x02))
             continue;
-        if (specs[i].flags & (0x01 | 0x02)) {
-            arguments[i] = (IPTR)-1;
-        } else if (specs[i].flags & 0x20) {
-            char **values = calloc(2, sizeof(*values));
+        if (specs[i].flags & 0x20) {
+            size_t count = 0;
+            char **values;
+            for (size_t j = 0; j < token_count; j++)
+                if (!used[j] && !native_is_keyword(tokens[j], specs, spec_count))
+                    count++;
+            if (!count)
+                continue;
+            values = calloc(count + 1, sizeof(*values));
             if (!values)
                 goto fail;
-            values[0] = strdup(value);
+            for (size_t j = 0, value_index = 0; j < token_count; j++) {
+                if (!used[j] && !native_is_keyword(tokens[j], specs, spec_count)) {
+                    values[value_index] = strdup(tokens[j]);
+                    if (!values[value_index++]) {
+                        for (size_t k = 0; k < value_index; k++)
+                            free(values[k]);
+                        free(values);
+                        goto fail;
+                    }
+                    used[j] = TRUE;
+                }
+            }
             result->RDA_Values[i] = values;
             result->RDA_Multiple[i] = 1;
             arguments[i] = (IPTR)values;
         } else {
-            char *copy = strdup(value);
-            if (!copy)
-                goto fail;
-            result->RDA_Values[i] = copy;
-            arguments[i] = (IPTR)copy;
+            while (positional < token_count &&
+                   (used[positional] ||
+                    native_is_keyword(tokens[positional], specs, spec_count)))
+                positional++;
+            if (positional < token_count) {
+                if (!native_store_arg(result, arguments, i, tokens[positional],
+                                      specs[i].flags))
+                    goto fail;
+                used[positional++] = TRUE;
+            }
         }
     }
+    for (size_t i = 0; i < spec_count; i++)
+        if ((specs[i].flags & 0x80) && !arguments[i]) {
+            native_ioerr = ERROR_REQUIRED_ARG_MISSING;
+            goto fail;
+        }
+    for (size_t i = 0; i < token_count; i++)
+        if (!used[i] && !native_is_keyword(tokens[i], specs, spec_count)) {
+            native_ioerr = ERROR_TOO_MANY_ARGS;
+            goto fail;
+        }
     return result;
 
 fail:
-    FreeDosObject(DOS_RDARGS, result);
-    native_ioerr = ERROR_NO_FREE_STORE;
+    native_free_rdargs_values(result);
+    if (allocated)
+        free(result);
     return NULL;
+}
+
+void FreeArgs(struct RDArgs *rdargs)
+{
+    BOOL owned;
+
+    if (!rdargs)
+        return;
+    owned = rdargs->RDA_Owned;
+    native_free_rdargs_values(rdargs);
+    if (owned)
+        free(rdargs);
 }

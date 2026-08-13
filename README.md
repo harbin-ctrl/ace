@@ -37,6 +37,7 @@ export ACE_BROKER_SOCKET=/tmp/ace-broker.sock
 export ACE_SESSION=my-shell
 ./build/CD .
 ./build/ace-brokerctl assign WORK: /tmp
+./build/MakeDir WORK:ace-test-one WORK:ace-test-two ALL
 ./build/Echo hello from AROS TO WORK:ace-shell-test
 ./build/PathPart FILE Work:dir/file.txt
 ./build/PathPart DIR Work:dir/file.txt
@@ -55,6 +56,11 @@ printf 'FILE Work:dir/file.txt\n' | ./build/PathPart ?
 ```
 
 Entering another `?` redisplays the template, as in AmigaDOS.
+
+`MakeDir` is the first filesystem-mutating command ported from the original
+AROS source. It supports multiple directory names and the `ALL` switch for
+creating intermediate directories. Its DOS argument layer now supports
+multi-valued `/M` arguments and explicit `FreeArgs()` cleanup.
 
 The broker currently owns per-session current directories and Assigns.  Its
 protocol is deliberately small and binary; the DOS shim is the layer where
@@ -155,6 +161,12 @@ export ACE_SESSION=main-shell
 ./build/ace-shell
 ```
 
+`ace-shell` can also bootstrap the broker itself.  It starts the sibling
+`ace-broker` only when the configured `ACE_BROKER_SOCKET` is unreachable,
+waits for it to accept connections, and reuses an existing broker.  The
+startup lock prevents concurrent shells from starting duplicates.  Set
+`ACE_BROKER_BINARY` only when the broker is not beside `ace-shell`.
+
 Inside that shell, command names are case-insensitive and AROS commands are
 preferred over the Bash fallback. `NewCLI` opens a separate window and starts
 another shell with a cloned initial session:
@@ -164,6 +176,11 @@ AMIGA> SET FOO parent
 AMIGA> NEWCLI
 AMIGA> ENDSHELL
 ```
+
+`build/NewCLI` is compiled from the original AROS `NewCLI.c` (which includes
+`NewShell.c`).  Its unchanged `Open("CON:...")` and `SystemTagList()` calls
+are currently backed by the host compatibility layer; the compatibility
+layer launches the existing ACE console and clones the broker session.
 
 This window and dispatcher are the host bootstrap layer. They establish the
 classic window/session behavior while the real AROS Shell and `CON:` handler

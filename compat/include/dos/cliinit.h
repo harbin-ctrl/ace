@@ -13,5 +13,6 @@
 #define CLI_BOOT (-4)
 
 #define CLI_DEFAULTSTACK_UNIT 4
+#define AROS_STACKSIZE 8192
 
 #endif

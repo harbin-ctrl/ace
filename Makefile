@@ -19,12 +19,14 @@ AROS_UNALIAS_SRC := /home/erik/aros/workbench/c/shellcommands/Unalias.c
 AROS_FAILAT_SRC := /home/erik/aros/workbench/c/shellcommands/FailAt.c
 AROS_WHY_SRC := /home/erik/aros/workbench/c/shellcommands/Why.c
 AROS_PROMPT_SRC := /home/erik/aros/workbench/c/shellcommands/Prompt.c
+AROS_MAKEDIR_SRC := /home/erik/aros/workbench/c/MakeDir.c
+AROS_NEWCLI_SRC := /home/erik/aros/workbench/c/shellcommands/NewCLI.c
 AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
                     convertArg convertBackTicks convertLine convertLineDot \
                     convertRedir convertVar interpreter redirection
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/ace-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/ace-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 
 $(BUILD):
 	mkdir -p $@
@@ -33,6 +35,15 @@ $(BUILD)/native_dos.o: src/native_dos.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/native_args.o: src/native_args.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/native_process.o: src/native_process.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_makedir_main -c $< -o $@
+
+$(BUILD)/makedir_entry.o: src/makedir_entry.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/broker_client.o: src/broker_client.c | $(BUILD)
@@ -68,8 +79,8 @@ $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_devic
 $(BUILD)/exec-compat-test: tests/exec_compat_test.c $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 	$(CC) $(CFLAGS) -pthread -DAMIGA_EXEC_COMPAT_ENABLED -I$(COMPAT) -Isrc $^ -o $@
 
-$(BUILD)/newcli.o: src/newcli.c | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+$(BUILD)/aros-newcli.o: $(AROS_NEWCLI_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I/home/erik/aros/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
@@ -118,6 +129,9 @@ $(BUILD)/Why.o: $(AROS_WHY_SRC) | $(BUILD)
 
 $(BUILD)/Prompt.o: $(AROS_PROMPT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/makedir_entry.o $(BUILD)/native_dos.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Echo: $(BUILD)/Echo.o $(BUILD)/native_dos.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
@@ -170,7 +184,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 $(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_device.o $(BUILD)/con_handler.o
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) -o $@
 
-$(BUILD)/NewCLI: $(BUILD)/newcli.o $(BUILD)/broker_client.o
+$(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-shell: $(BUILD)/aros-shell-runtime.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/broker_client.o

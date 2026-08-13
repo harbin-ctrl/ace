@@ -11,6 +11,8 @@
 #define MODE_NEWFILE 1006
 #define MODE_READWRITE 1004
 #define SHARED_LOCK  -2
+#define ACCESS_READ  -2
+#define CHANGE_LOCK  1
 #define OFFSET_BEGINNING (-1)
 #define OFFSET_CURRENT 0
 #define OFFSET_END 1
@@ -35,6 +37,8 @@
 #define ERROR_INVALID_COMPONENT_NAME  212
 #define ERROR_NOT_EXECUTABLE    232
 #define ERROR_FILE_NOT_OBJECT   233
+#define ERROR_OBJECT_EXISTS     203
+#define ERROR_DEVICE_NOT_MOUNTED 218
 
 #define DOS_FIB    1
 #define DOS_RDARGS 2
@@ -50,11 +54,7 @@ struct FileInfoBlock {
     ULONG fib_Protection;
 };
 
-struct CSource {
-    STRPTR CS_Buffer;
-    LONG CS_Length;
-    LONG CS_CurChr;
-};
+struct CSource;
 
 #define ITEM_NOTHING 0
 #define ITEM_UNQUOTED 1
@@ -64,6 +64,8 @@ BPTR AllocDosObject(LONG type, APTR tags);
 void FreeDosObject(LONG type, APTR object);
 BPTR Lock(CONST_STRPTR name, LONG mode);
 LONG UnLock(BPTR lock);
+BPTR CreateDir(CONST_STRPTR name);
+LONG ChangeMode(LONG type, BPTR object, LONG mode);
 LONG Examine(BPTR lock, struct FileInfoBlock *fib);
 BPTR CurrentDir(BPTR lock);
 LONG NameFromLock(BPTR lock, STRPTR buffer, LONG length);
@@ -100,5 +102,6 @@ BPTR SetProgramDir(BPTR lock);
 struct RDArgs;
 struct RDArgs *ReadArgs(CONST_STRPTR template, IPTR *arguments,
                         struct RDArgs *rdargs);
+void FreeArgs(struct RDArgs *rdargs);
 
 #endif

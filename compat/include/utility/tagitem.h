@@ -5,7 +5,10 @@
 
 struct TagItem {
     ULONG ti_Tag;
-    ULONG ti_Data;
+    IPTR ti_Data;
 };
+
+#define TAG_DONE 0
+#define TAG_USER 0x80000000UL
 
 #endif
