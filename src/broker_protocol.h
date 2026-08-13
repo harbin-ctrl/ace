@@ -69,7 +69,19 @@ enum amiga_broker_operation {
     AMIGA_BROKER_SETFAILLEVEL = 12,
     AMIGA_BROKER_SETPROMPT = 13,
     AMIGA_BROKER_CLONESESSION = 14,
-    AMIGA_BROKER_LISTDOS = 15
+    AMIGA_BROKER_LISTDOS = 15,
+    /*
+     * Claim ownership of this connection's session.
+     *
+     * Every other operation is a transient use: a command process asks a
+     * question and exits, and the broker cannot tell whether the shell that
+     * owns the session is still alive. ATTACH is the shell saying "this
+     * session is mine, and it lives exactly as long as this connection
+     * does". The broker frees the session when the last attached connection
+     * closes, which the kernel reports whether the shell exits, is killed,
+     * or crashes.
+     */
+    AMIGA_BROKER_ATTACH = 16
 };
 
 #define AMIGA_BROKER_VAR_LOCAL  0x0001u

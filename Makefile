@@ -10,6 +10,9 @@ WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client)
 WAYLAND_LIBS := $(shell pkg-config --libs wayland-client)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+DATADIR ?= $(PREFIX)/share
+APPLICATIONSDIR ?= $(DATADIR)/applications
+ICONDIR ?= $(DATADIR)/icons/hicolor/512x512/apps
 INSTALL ?= install
 
 COMPAT := $(CURDIR)/compat/include
@@ -285,7 +288,10 @@ $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
 $(BUILD)/aros-real-shell.o: $(AROS_ROOT)/workbench/c/Shell/Shell.c | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
+	$(CC) $(CFLAGS) -Dmain=ace_aros_shell_main -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
+
+$(BUILD)/ace-user-shell.o: src/ace_user_shell.c src/broker_client.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-%.o: $(AROS_ROOT)/workbench/c/Shell/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
@@ -410,7 +416,7 @@ $(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_co
 $(BUILD)/ace-shell: $(BUILD)/ace-launcher.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/ace-user-shell: $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:
@@ -420,6 +426,9 @@ install: all
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
+	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR)
+	$(INSTALL) -m 0644 data/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
+	$(INSTALL) -m 0644 assets/ace.png $(DESTDIR)$(ICONDIR)/ace.png
 
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test

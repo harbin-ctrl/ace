@@ -350,6 +350,16 @@ int main(int argc, char **argv)
         fputs("ace-shell: broker unavailable\n", stderr);
         return RETURN_FAIL;
     }
+    /*
+     * This process is the shell, so this process's session belongs to it and
+     * ends with it. Commands deliberately do not do this: they are separate
+     * host processes using a session they do not own, and a session that
+     * outlives them is the whole reason the broker exists.
+     *
+     * A failure here is not fatal. The session simply stays ownerless, which
+     * is how every session behaved before, so the shell still runs.
+     */
+    (void)native_broker_attach();
     dos_library = OpenLibrary("dos.library", 36);
     if (!dos_library)
         return RETURN_FAIL;

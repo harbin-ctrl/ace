@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 int native_broker_ensure(void);
+int native_broker_attach(void);
 int native_broker_resolve_path(const char *path, char *result, size_t result_size);
 int native_broker_getcwd(char *result, size_t result_size);
 int native_broker_setcwd(const char *path);

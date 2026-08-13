@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=ACE Shell
+Comment=AROS Command Environment shell
+Exec=ace-shell
+TryExec=ace-shell
+Icon=ace
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=Amiga;AROS;shell;terminal;
+StartupNotify=true
+StartupWMClass=ace

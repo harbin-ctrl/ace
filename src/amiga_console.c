@@ -38,6 +38,7 @@ static const char *const default_font_candidates[] = {
 };
 #define DEFAULT_FONT_SIZE 16
 #define CONFIG_GROUP "ACE Shell"
+#define ACE_ICON_NAME "ace"
 #define CONFIG_FONT_FAMILY "font-family"
 #define CONFIG_FONT_SIZE "font-size"
 #define CONFIG_PALETTE_PREFIX "palette-"
@@ -926,10 +927,17 @@ int main(int argc, char **argv)
     close(sockets[1]);
     console.stream_fd = sockets[0];
 
+    /* Keep the Wayland app_id, X11 class, launcher desktop file, and
+     * icon-theme lookup under the same identity so the panel groups the
+     * running console with ACE Shell and displays its application icon. */
+    g_set_prgname(ACE_ICON_NAME);
+    g_set_application_name("ACE Shell");
+    gdk_set_program_class(ACE_ICON_NAME);
     gtk_init(&argc, &argv);
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     console.window = window;
     gtk_window_set_title(GTK_WINDOW(window), "ACE Shell");
+    gtk_window_set_icon_name(GTK_WINDOW(window), ACE_ICON_NAME);
     gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_UTILITY);
     gtk_window_set_default_size(GTK_WINDOW(window), CONSOLE_WIDTH, CONSOLE_HEIGHT);
     g_signal_connect(window, "destroy", G_CALLBACK(console_destroy), &console);

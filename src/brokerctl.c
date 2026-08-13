@@ -4,14 +4,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int usage(const char *program)
 {
     fprintf(stderr, "usage: %s pwd | cd PATH | assign NAME PATH | resolve PATH | "
                     "getvar NAME | setvar NAME VALUE | setgvar NAME VALUE | "
-                    "delvar NAME | result | cli | doslist | "
+                    "delvar NAME | result | cli | doslist | hold | "
                     "setresult RC RESULT2\n", program);
     return 2;
+}
+
+/*
+ * Claims the session the way a shell does and then does nothing until it is
+ * killed, which is what makes session lifetime observable without starting a
+ * window: the session exists while this runs and is gone once it stops.
+ */
+static int hold_session(void)
+{
+    if (native_broker_attach() != 0) {
+        perror("attach");
+        return 1;
+    }
+    puts("held");
+    fflush(stdout);
+    for (;;)
+        pause();
 }
 
 int main(int argc, char **argv)
@@ -64,6 +82,8 @@ int main(int argc, char **argv)
     if (argc == 4 && strcmp(argv[1], "setresult") == 0)
         return native_broker_setresult((int32_t)strtol(argv[2], NULL, 10),
                                        (int32_t)strtol(argv[3], NULL, 10)) == 0 ? 0 : 1;
+    if (argc == 2 && strcmp(argv[1], "hold") == 0)
+        return hold_session();
     if (argc == 2 && strcmp(argv[1], "doslist") == 0) {
         if (native_broker_listdos(result, sizeof(result)) != 0)
             return 1;

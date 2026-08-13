@@ -32,7 +32,11 @@ static int write_all(int fd, const void *buffer, size_t length)
 {
     const char *bytes = buffer;
     while (length) {
-        ssize_t written = write(fd, bytes, length);
+        /* A broker can disappear between requests. Do not let a stale or
+         * restarted broker turn that ordinary transport failure into a
+         * process-wide SIGPIPE; broker_request() can then reconnect or return
+         * a normal error to its caller. */
+        ssize_t written = send(fd, bytes, length, MSG_NOSIGNAL);
         if (written < 0) {
             if (errno == EINTR)
                 continue;
@@ -64,9 +68,18 @@ static int read_all(int fd, void *buffer, size_t length)
     return 0;
 }
 
+/*
+ * SOCK_CLOEXEC is not an optimisation here, it is what makes session
+ * ownership mean anything. The connection below is held open for the life of
+ * the process, and ACE runs every command by fork()ing and exec()ing a
+ * separate one (native_command.c). Without CLOEXEC each of those children
+ * would inherit the shell's connection, so a command that outlived its shell
+ * would hold the session open after the shell it belongs to was gone --
+ * exactly the leak this connection exists to close.
+ */
 static int connect_broker(void)
 {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     struct sockaddr_un address;
 
     if (fd < 0)
@@ -208,9 +221,39 @@ int native_broker_ensure(void)
     return 0;
 }
 
-static int broker_request(uint32_t operation, const char *path,
-                          const char *value, uint32_t flags,
-                          char *result, size_t result_size)
+/*
+ * The connection to the broker, held open for the life of the process.
+ *
+ * It used to be one connect()/close() per request, which meant the broker
+ * never learned that a shell had exited: sessions could only be reclaimed by
+ * guesswork (evict the least recently used one), and a live but idle shell
+ * could have its current directory, assigns and variables taken away from
+ * underneath it. A connection that lasts as long as the process turns that
+ * into something the kernel reports exactly.
+ */
+static int broker_fd = -1;
+/* Set once native_broker_attach() succeeds; makes a replacement connection
+   re-claim the session rather than silently becoming an ownerless user. */
+static int broker_attached;
+
+static void broker_disconnect(void)
+{
+    if (broker_fd >= 0)
+        close(broker_fd);
+    broker_fd = -1;
+}
+
+/*
+ * Outcome of one attempt on one connection:
+ *   0  the broker answered, successfully
+ *   1  the broker answered with an error status (errno set); the connection
+ *      is fine and the request must not be retried -- the failure is the
+ *      answer
+ *  -1  the exchange itself broke; the connection is unusable
+ */
+static int broker_exchange(int fd, uint32_t operation, const char *path,
+                           const char *value, uint32_t flags,
+                           char *result, size_t result_size)
 {
     const char *session = broker_session();
     size_t session_length = strlen(session);
@@ -218,17 +261,6 @@ static int broker_request(uint32_t operation, const char *path,
     size_t value_length = value ? strlen(value) : 0;
     struct amiga_broker_request request;
     struct amiga_broker_response response;
-    int fd;
-
-    if (session_length > UINT32_MAX || path_length > UINT32_MAX ||
-        value_length > UINT32_MAX) {
-        errno = EOVERFLOW;
-        return -1;
-    }
-
-    fd = connect_broker();
-    if (fd < 0)
-        return -1;
 
     request.magic = AMIGA_BROKER_MAGIC;
     request.operation = operation;
@@ -241,14 +273,11 @@ static int broker_request(uint32_t operation, const char *path,
         write_all(fd, session, session_length) != 0 ||
         write_all(fd, path, path_length) != 0 ||
         write_all(fd, value, value_length) != 0 ||
-        read_all(fd, &response, sizeof(response)) != 0) {
-        close(fd);
+        read_all(fd, &response, sizeof(response)) != 0)
         return -1;
-    }
 
     if (response.magic != AMIGA_BROKER_MAGIC ||
         response.payload_length > AMIGA_BROKER_MAX_PAYLOAD) {
-        close(fd);
         errno = EPROTO;
         return -1;
     }
@@ -256,30 +285,117 @@ static int broker_request(uint32_t operation, const char *path,
     if (response.status != 0) {
         int error = response.status;
         char ignored[AMIGA_BROKER_MAX_PAYLOAD];
+
         if (response.payload_length &&
-            read_all(fd, ignored, response.payload_length) != 0) {
-            close(fd);
+            read_all(fd, ignored, response.payload_length) != 0)
             return -1;
-        }
-        close(fd);
         errno = error;
-        return -1;
+        return 1;
     }
 
     if (response.payload_length >= result_size) {
         char ignored[AMIGA_BROKER_MAX_PAYLOAD];
-        read_all(fd, ignored, response.payload_length);
-        close(fd);
+
+        if (response.payload_length &&
+            read_all(fd, ignored, response.payload_length) != 0)
+            return -1;
         errno = ENAMETOOLONG;
-        return -1;
+        return 1;
     }
-    if (response.payload_length && read_all(fd, result, response.payload_length) != 0) {
-        close(fd);
+    if (response.payload_length &&
+        read_all(fd, result, response.payload_length) != 0)
         return -1;
-    }
     if (result)
         result[response.payload_length] = '\0';
-    close(fd);
+    return 0;
+}
+
+/*
+ * Returns the live connection, opening one if there is none. A connection
+ * opened here while this process owns a session re-sends ATTACH, so a broker
+ * that was restarted, or a connection lost for any other reason, does not
+ * quietly leave the session ownerless for the rest of the process's life.
+ */
+static int broker_connection(void)
+{
+    if (broker_fd >= 0)
+        return broker_fd;
+    broker_fd = connect_broker();
+    if (broker_fd < 0)
+        return -1;
+    if (broker_attached) {
+        char ignored[1];
+
+        if (broker_exchange(broker_fd, AMIGA_BROKER_ATTACH, NULL, NULL, 0,
+                            ignored, sizeof(ignored)) < 0)
+            broker_disconnect();
+    }
+    return broker_fd;
+}
+
+static int broker_request(uint32_t operation, const char *path,
+                          const char *value, uint32_t flags,
+                          char *result, size_t result_size)
+{
+    const char *session = broker_session();
+
+    if (strlen(session) > UINT32_MAX || (path && strlen(path) > UINT32_MAX) ||
+        (value && strlen(value) > UINT32_MAX)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+
+    /*
+     * Two attempts, because a held connection can die between requests --
+     * the broker was restarted, or stopped and started by broker-stop /
+     * broker-start. The first failure drops the dead connection and the
+     * second attempt opens a fresh one. An error *from* the broker is an
+     * answer, not a transport failure, and is never retried.
+     */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int fd = broker_connection();
+        int outcome;
+
+        if (fd < 0)
+            return -1;
+        outcome = broker_exchange(fd, operation, path, value, flags, result,
+                                  result_size);
+        if (outcome == 0)
+            return 0;
+        if (outcome > 0)
+            return -1;
+        broker_disconnect();
+    }
+    return -1;
+}
+
+/*
+ * Claims this process's session, tying its lifetime to this process.
+ *
+ * Only a shell should call this. Everything else -- commands, brokerctl --
+ * is a transient user of a session it does not own, and a session with no
+ * owner keeps the old behaviour of surviving between separate processes,
+ * which is what makes the documented standalone command sequences work.
+ */
+int native_broker_attach(void)
+{
+    char ignored[1];
+    int fd, outcome;
+
+    if (broker_attached)
+        return 0;
+    fd = broker_connection();
+    if (fd < 0)
+        return -1;
+    outcome = broker_exchange(fd, AMIGA_BROKER_ATTACH, NULL, NULL, 0, ignored,
+                              sizeof(ignored));
+    if (outcome < 0) {
+        broker_disconnect();
+        return -1;
+    }
+    if (outcome > 0)
+        return -1;
+    broker_attached = 1;
     return 0;
 }
 

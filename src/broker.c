@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -43,6 +44,12 @@ struct broker_session {
     /* Ordinal of the last request that touched this session, for reclaiming
      * the coldest one when every slot is taken. See get_session(). */
     uint64_t last_used;
+    /* Connections that have claimed this session with ATTACH -- normally the
+     * one shell the session belongs to, briefly two while a replacement
+     * connection re-attaches. While this is non-zero the session has a live
+     * owner: it is never reclaimed, and when it falls back to zero the
+     * session is freed on the spot. See release_session(). */
+    uint32_t anchors;
     char id[128];
     char cwd[PATH_MAX];
     struct assign_entry assigns[MAX_ASSIGNS];
@@ -96,6 +103,35 @@ static int read_all(int fd, void *buffer, size_t length)
     return 0;
 }
 
+/*
+ * Reads a whole message, distinguishing a peer that closed cleanly between
+ * requests from one that failed mid-message. With one request per connection
+ * that distinction did not exist -- every end of input was the end of the
+ * exchange -- but a held connection ends with exactly this, and a normal
+ * disconnect must not be reported as an error.
+ *
+ * Returns 1 for a complete message, 0 for a clean close, -1 for a failure.
+ */
+static int read_message(int fd, void *buffer, size_t length)
+{
+    char *bytes = buffer;
+    size_t received = 0;
+
+    while (received < length) {
+        ssize_t chunk = read(fd, bytes + received, length - received);
+
+        if (chunk < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (!chunk)
+            return received ? -1 : 0;
+        received += (size_t)chunk;
+    }
+    return 1;
+}
+
 static uint64_t session_clock;
 
 static struct broker_session *touch_session(struct broker_session *session)
@@ -105,22 +141,28 @@ static struct broker_session *touch_session(struct broker_session *session)
     return session;
 }
 
+/* Gives a session's slot back. Called when the last connection that claimed
+   the session closes, whether its shell exited, was killed, or crashed. */
+static void release_session(struct broker_session *session)
+{
+    memset(session, 0, sizeof(*session));
+}
+
 /*
  * Finds a session by name, creating it if it is new.
  *
- * Nothing ever tells the broker that the shell behind a session has exited,
- * so slots cannot be freed when their owner goes away. They used to simply
- * run out: the sixty-fifth distinct session got ENOSPC forever after, and
- * every ACE window opened from then on died on the spot. A broker that is
- * meant to live as long as the login has to be able to reclaim them.
+ * A session that a shell has claimed with ATTACH has a lifetime the broker
+ * knows exactly, and is freed the moment its last connection closes, so it
+ * is never a candidate here.
  *
- * So a full table gives up its coldest slot rather than refusing. Every
- * request stamps its session with an ordinal, and a live session is stamped
- * constantly -- the shell reads its CLI state to draw each prompt -- so the
- * slot that has gone longest without a request is the best available guess
- * at one whose shell is gone. Losing that guess costs a session its current
- * directory, assigns and variables, which is recoverable and visible; the
- * alternative was a window that would not open.
+ * That leaves sessions nobody claimed -- created by a standalone command or
+ * by brokerctl, which come and go as separate processes and expect their
+ * session to outlive each of them. Nothing can say when those are finished
+ * with, so they keep the older rule: a full table gives up its coldest
+ * unclaimed slot rather than refusing, since the alternative was that the
+ * sixty-fifth distinct session got ENOSPC forever after and every ACE window
+ * opened from then on died on the spot. What has changed is that this can no
+ * longer take a live shell's session away from underneath it.
  */
 static struct broker_session *get_session(const char *id)
 {
@@ -133,7 +175,8 @@ static struct broker_session *get_session(const char *id)
         if (!sessions[i].in_use) {
             if (!free_slot)
                 free_slot = &sessions[i];
-        } else if (!coldest || sessions[i].last_used < coldest->last_used) {
+        } else if (sessions[i].anchors == 0 &&
+                   (!coldest || sessions[i].last_used < coldest->last_used)) {
             coldest = &sessions[i];
         }
     }
@@ -388,8 +431,26 @@ static int send_response(int fd, int status, const char *payload)
     return length ? write_all(fd, payload, length) : 0;
 }
 
-static void handle_client(int fd)
+/*
+ * One connection. anchor is the index of the session this connection has
+ * claimed with ATTACH, or -1 for a connection that is only using a session
+ * it does not own.
+ */
+struct broker_connection {
+    int fd;
+    int anchor;
+};
+
+/*
+ * Serves one request on one connection.
+ *
+ * Returns 0 to keep the connection, -1 to drop it. A protocol error drops
+ * it: the stream carries length-prefixed messages back to back, so once a
+ * header has been misread there is no way to find where the next one starts.
+ */
+static int handle_client(struct broker_connection *connection)
 {
+    int fd = connection->fd;
     struct amiga_broker_request request;
     char *session_id = NULL;
     char *path = NULL;
@@ -397,13 +458,15 @@ static void handle_client(int fd)
     struct broker_session *session;
     char result[MAX_LIST_RESULT];
     int status = 0;
+    int outcome = -1;
 
-    if (read_all(fd, &request, sizeof(request)) != 0 ||
-        request.magic != AMIGA_BROKER_MAGIC ||
+    if (read_message(fd, &request, sizeof(request)) != 1)
+        return -1;
+    if (request.magic != AMIGA_BROKER_MAGIC ||
         request.session_length > 4096 || request.path_length > PATH_MAX ||
         request.value_length > PATH_MAX) {
         send_response(fd, EPROTO, "invalid request");
-        return;
+        return -1;
     }
 
     session_id = calloc(request.session_length + 1, 1);
@@ -420,8 +483,10 @@ static void handle_client(int fd)
     session = get_session(session_id);
     if (!session) {
         send_response(fd, ENOSPC, "too many sessions");
+        outcome = 0;
         goto done;
     }
+    outcome = 0;
 
     switch (request.operation) {
     case AMIGA_BROKER_RESOLVE:
@@ -479,6 +544,24 @@ static void handle_client(int fd)
     case AMIGA_BROKER_LISTDOS:
         if (ace_dos_devices_list(result, sizeof(result)) != 0)
             status = errno;
+        break;
+
+    /*
+     * The shell claiming its session. From here the session's lifetime is
+     * this connection's: it cannot be reclaimed while the connection is
+     * open, and it is freed when the connection closes.
+     *
+     * A second ATTACH on the same connection is refused rather than counted,
+     * so a connection can never hold more than the one reference that
+     * closing it will give back.
+     */
+    case AMIGA_BROKER_ATTACH:
+        if (connection->anchor >= 0) {
+            status = EALREADY;
+        } else {
+            session->anchors++;
+            connection->anchor = (int)(session - sessions);
+        }
         break;
 
     case AMIGA_BROKER_GETVAR: {
@@ -630,7 +713,8 @@ static void handle_client(int fd)
         break;
     }
     if (status) {
-        send_response(fd, status, strerror(status));
+        if (send_response(fd, status, strerror(status)) != 0)
+            outcome = -1;
     } else if (request.operation == AMIGA_BROKER_RESOLVE ||
                request.operation == AMIGA_BROKER_GETCWD ||
                request.operation == AMIGA_BROKER_GETVAR ||
@@ -638,15 +722,73 @@ static void handle_client(int fd)
                request.operation == AMIGA_BROKER_GETCLI ||
                request.operation == AMIGA_BROKER_GETRESULT ||
                request.operation == AMIGA_BROKER_LISTDOS) {
-        send_response(fd, 0, result);
+        if (send_response(fd, 0, result) != 0)
+            outcome = -1;
     } else {
-        send_response(fd, 0, NULL);
+        if (send_response(fd, 0, NULL) != 0)
+            outcome = -1;
     }
 
 done:
     free(session_id);
     free(path);
     free(value);
+    return outcome;
+}
+
+/*
+ * Held connections, and the one place a session's lifetime is decided.
+ *
+ * The cap is a backstop, not a working limit: a connection lasts as long as
+ * the process behind it, so this is one per live shell plus one per command
+ * currently running, against a session table of sixty-four.
+ */
+#define MAX_CONNECTIONS 256
+
+static struct broker_connection connections[MAX_CONNECTIONS];
+static struct pollfd poll_fds[MAX_CONNECTIONS + 1];
+static size_t connection_count;
+
+/*
+ * Closes a connection and, if it was the last one holding the session it
+ * claimed, frees the session. This is the whole point of holding the
+ * connection open: the kernel reports the close whether the shell exited
+ * normally, was killed, or crashed, so a session's current directory,
+ * assigns and variables are released exactly when their owner is gone
+ * instead of being guessed at.
+ */
+static void drop_connection(size_t index)
+{
+    struct broker_connection *connection = &connections[index];
+
+    if (connection->anchor >= 0) {
+        struct broker_session *session = &sessions[connection->anchor];
+
+        if (session->anchors && !--session->anchors)
+            release_session(session);
+    }
+    close(connection->fd);
+    connections[index] = connections[--connection_count];
+}
+
+static void accept_connection(void)
+{
+    int fd = accept(server_fd, NULL, NULL);
+
+    if (fd < 0)
+        return;
+    /* The broker execs mount(8) and udisksctl to bring volumes up
+     * (dos_devices.c); without this every one of them would inherit every
+     * client connection the broker is holding. */
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    if (connection_count == MAX_CONNECTIONS) {
+        fprintf(stderr, "ace-broker: connection table full, refusing\n");
+        close(fd);
+        return;
+    }
+    connections[connection_count].fd = fd;
+    connections[connection_count].anchor = -1;
+    connection_count++;
 }
 
 static int lock_fd = -1;
@@ -766,14 +908,41 @@ int main(int argc, char **argv)
     }
 
     for (;;) {
-        int client = accept(server_fd, NULL, NULL);
-        if (client < 0) {
+        nfds_t watched = 1;
+
+        poll_fds[0].fd = server_fd;
+        poll_fds[0].events = POLLIN;
+        poll_fds[0].revents = 0;
+        for (size_t i = 0; i < connection_count; i++) {
+            poll_fds[watched].fd = connections[i].fd;
+            poll_fds[watched].events = POLLIN;
+            poll_fds[watched].revents = 0;
+            watched++;
+        }
+
+        if (poll(poll_fds, watched, -1) < 0) {
             if (errno == EINTR)
                 continue;
-            perror("accept");
+            perror("poll");
             return 1;
         }
-        handle_client(client);
-        close(client);
+
+        /*
+         * Connections first, and backwards, so that dropping one can fill
+         * its slot from the end of the table without disturbing an index
+         * still to be visited.
+         */
+        for (size_t i = connection_count; i-- > 0;) {
+            short events = poll_fds[i + 1].revents;
+
+            if (!events)
+                continue;
+            if ((events & POLLIN) && handle_client(&connections[i]) == 0)
+                continue;
+            drop_connection(i);
+        }
+
+        if (poll_fds[0].revents & POLLIN)
+            accept_connection();
     }
 }
