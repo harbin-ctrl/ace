@@ -1,7 +1,7 @@
 #ifndef ACE_AROS_REAL_PROTO_ALIB_H
 #define ACE_AROS_REAL_PROTO_ALIB_H
 
-#ifdef ACE_BOOPSI_INTERN_H
+#if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_GRAPHICS_INTERN_H)
 
 #include <stdarg.h>
 
@@ -78,6 +78,6 @@ void FreeMsgFromStack(Msg msg);
 
 #endif /* AROS_SLOWSTACKMETHODS */
 
-#endif /* ACE_BOOPSI_INTERN_H */
+#endif /* ACE_BOOPSI_INTERN_H || ACE_GRAPHICS_INTERN_H */
 
 #endif

@@ -55,6 +55,8 @@
 #define AROS_LIBFUNC_INIT
 #define AROS_LIBFUNC_EXIT
 
+#ifndef AROS_ASMSYMNAME
 #define AROS_ASMSYMNAME(name) name
+#endif
 
 #endif

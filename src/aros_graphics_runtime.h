@@ -1,0 +1,88 @@
+#ifndef ACE_AROS_GRAPHICS_RUNTIME_H
+#define ACE_AROS_GRAPHICS_RUNTIME_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+/*
+ * Host seam for graphics.library, the RastPort/BitMap/TextFont surface the
+ * real AROS console classes in rom/devs/console draw through. Unlike the
+ * BOOPSI seam, this one is genuinely ACE's to write: graphics.library is the
+ * hardware boundary itself, the point where AmigaOS drawing calls become
+ * pixels on a real display. There is no upstream AROS source to compile here
+ * that does not lead to a driver (HIDD) stack ACE does not want.
+ *
+ * The console classes only ever reach a RastPort's pixels through ten calls
+ * (Move, Text, SetAPen, SetBPen, SetDrMd, SetABPenDrMd, RectFill,
+ * ScrollRaster, SetSoftStyle, plus the AllocRaster/FreeRaster/InitTmpRas
+ * scratch-buffer trio used only by the character-cell cursor). Everything
+ * this file exposes beyond those calls is for constructing the RastPort,
+ * BitMap and TextFont a real ConUnit expects to find.
+ */
+
+struct RastPort;
+struct BitMap;
+struct TextFont;
+
+/*
+ * A host font choice: a fontconfig family name and a pixel size. ACE
+ * validates on load that the family has real regular, bold, italic and
+ * bold-italic faces -- SetSoftStyle() requests are rendered with the actual
+ * face, not synthesized the way real Amiga hardware smears/shears a single
+ * bitmap face, since a host compositor can just ask for the real one.
+ * Underline is drawn as a rule beneath the baseline either way: it is a
+ * soft-style flag on real hardware too, not a font glyph.
+ */
+struct ace_gfx_font_choice {
+    const char *family;
+    int pixel_size;
+};
+
+/*
+ * Loads and validates a font choice, returning a real struct TextFont whose
+ * tf_XSize/tf_YSize/tf_Baseline are measured from the host face. This is
+ * what a caller attaches to a window's RastPort as rp->Font before console
+ * classes read cu_XRSize/cu_YRSize from it, per AROS's own
+ * "For now one should use only non-proportional fonts" contract in
+ * rom/devs/console/consoleclass.c.
+ *
+ * Returns NULL if the family cannot be found, or is missing any of the four
+ * required style faces. *reason_out, if non-NULL, receives a static string
+ * describing why.
+ */
+struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
+                                   const char **reason_out);
+void ace_gfx_unload_font(struct TextFont *font);
+
+/* Whether a family has real regular/bold/italic/bold-italic faces. */
+int ace_gfx_font_family_complete(const char *family);
+
+#define ACE_GFX_PEN_COUNT 8
+
+/*
+ * Creates a RastPort over a freshly allocated width x height BitMap, with the
+ * given font attached and the palette initialised from rgb (ACE_GFX_PEN_COUNT
+ * entries, 0xRRGGBB each). Pen N always starts mapped to palette entry N, the
+ * same identity stdconclass.c's own constructor establishes before a
+ * screen's DrawInfo remaps pens 0/1 to background/text.
+ */
+struct RastPort *ace_gfx_create_rastport(int width, int height,
+                                         struct TextFont *font,
+                                         const uint32_t rgb[ACE_GFX_PEN_COUNT]);
+void ace_gfx_destroy_rastport(struct RastPort *rp);
+
+/* Replaces one pen's RGB entry, e.g. after a screen DrawInfo remap. */
+void ace_gfx_set_pen_rgb(struct RastPort *rp, int pen, uint32_t rgb);
+
+/*
+ * Copies the current pixels out as tightly packed 8-bit RGB, row-major,
+ * width*height*3 bytes. This is the host's read side of the seam: whatever
+ * owns the actual window (Wayland/GTK, or a test) pulls frames out this way
+ * rather than reaching into the RastPort's private rendering state.
+ */
+void ace_gfx_read_rgb(struct RastPort *rp, uint8_t *out,
+                      size_t out_capacity);
+void ace_gfx_rastport_size(struct RastPort *rp, int *width_out,
+                           int *height_out);
+
+#endif

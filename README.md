@@ -294,6 +294,56 @@ reference counting and its teardown refusals:
 make test-boopsi
 ```
 
+## graphics.library
+
+`stdconclass.c` and `consoleclass.c` from `rom/devs/console` -- the two real
+AROS BOOPSI classes that actually touch pixels for `console.device` -- are
+compiled unmodified against `src/aros_graphics_runtime.c`. Unlike every other
+seam in ACE, this one is authored rather than compiled from AROS source:
+graphics.library is the real hardware boundary, the point where AmigaOS
+drawing calls become pixels on a display, and the alternative to writing it
+is a HIDD driver stack ACE does not want.
+
+What AROS's console classes actually require of a `RastPort`/`BitMap`/
+`TextFont` is narrow, confirmed by reading every call site rather than
+guessing: ten drawing calls (`Move`, `Text`, `SetAPen`, `SetBPen`, `SetDrMd`,
+`SetABPenDrMd`, `RectFill`, `ScrollRaster`, `SetSoftStyle`, plus the
+`AllocRaster`/`FreeRaster`/`InitTmpRas` scratch-buffer trio for the
+character-cell cursor), and from a font, exactly three scalars --
+`tf_XSize`, `tf_YSize`, `tf_Baseline` -- to lay out a fixed character-cell
+grid ("For now one should use only non-proportional fonts", in
+`consoleclass.c`'s own words). Nothing in this codepath ever reads a font's
+glyph bitmap data.
+
+That gap is where ACE improves on real Amiga hardware rather than emulating
+it: glyphs are rendered from a host TrueType font via cairo/fontconfig
+instead of a bitmap font ACE would have to draw and ship, and
+`SetSoftStyle()`'s bold/italic requests select the font's own real bold/
+italic faces rather than being synthesized by smearing or shearing a single
+face the way real Amiga hardware did. `ace_gfx_font_family_complete()`
+enforces that a chosen family actually has all four faces (regular, bold,
+italic, bold-italic) before it can be used. Underline is drawn as a rule
+below the baseline either way, since it is a soft-style flag on real
+hardware too, never a font glyph.
+
+The focused test builds a real `ConUnit` through `NewObjectA()` on the real
+class chain and drives it with AROS's own `Console_DoCommand()` macro --
+the same call `con_handler.c` uses to hand output text to a console unit --
+then reads the pixels back:
+
+```sh
+make test-graphics
+```
+
+This needs `cairo` and `fontconfig` development files, and at least one
+complete monospace family on the host; `Liberation Mono`, `DejaVu Sans Mono`,
+and the `monospace` fontconfig alias are tried in that order for the test.
+The eventual `ace-console` font, size, and palette choice is meant to be an
+entirely host-side preference -- a GTK settings UI persisted to
+`$HOME/.config`, validated the same way -- not something this seam decides;
+see HANDOFF.md for what is still needed to wire it into the live shell
+window.
+
 Global variables currently last only for the lifetime of the broker. The
 `SAVE`/`ENVARC:` persistence behavior is still reserved for a later draft.
 Every command built through the native AROS shell-command wrapper now

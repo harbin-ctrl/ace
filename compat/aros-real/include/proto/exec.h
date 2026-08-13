@@ -41,4 +41,21 @@ void Remove(struct Node *node);
 
 #endif /* ACE_BOOPSI_INTERN_H */
 
+#ifdef ACE_GRAPHICS_INTERN_H
+
+#include <exec/types.h>
+
+/* Used by stdconclass.c/consoleclass.c to zero their instance data. */
+void SetMem(APTR destination, ULONG length, UBYTE value);
+
+/*
+ * TaggedOpenLibrary()/CloseLibrary(): stdconclass.c's only real library
+ * dependency, opening graphics.library by AROS's TAGGEDOPEN_GRAPHICS tag.
+ * See src/aros_graphics_runtime.c.
+ */
+void *TaggedOpenLibrary(IPTR library);
+void  CloseLibrary(void *library);
+
+#endif /* ACE_GRAPHICS_INTERN_H */
+
 #endif

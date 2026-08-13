@@ -6,6 +6,16 @@
 #define AROS_ASMCALL_H
 
 /*
+ * Real, from compiler/arossupport/include/asmcall.h: the callback type
+ * RawDoFmt()/NewRawDoFmt() take as PutChProc, and the RAWFMTFUNC_STRING
+ * etc. magic values in exec/rawfmt.h are cast to.
+ */
+#ifndef __typedef_VOID_FUNC
+#define __typedef_VOID_FUNC
+typedef void (*VOID_FUNC)();
+#endif
+
+/*
  * AROS generates <aros/asmcall.h> from its build configuration.  On m68k the
  * macros below place arguments in the named registers; on a host with the
  * ordinary C convention they place them in source order and drop the register

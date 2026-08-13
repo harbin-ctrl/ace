@@ -4,6 +4,8 @@ GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
 BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
 BLKID_LIBS := $(shell pkg-config --libs blkid)
+GFX_CFLAGS := $(shell pkg-config --cflags cairo fontconfig)
+GFX_LIBS := $(shell pkg-config --libs cairo fontconfig)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 INSTALL ?= install
@@ -51,6 +53,26 @@ AROS_BOOPSI_NAMES := rootclass makeclass freeclass addclass removeclass \
 AROS_ALIB_NAMES := domethod dosupermethod coercemethod alib_util
 AROS_BOOPSI_OBJS := $(addprefix $(BUILD)/aros-boopsi-,$(addsuffix .o,$(AROS_BOOPSI_NAMES))) \
                     $(addprefix $(BUILD)/aros-alib-,$(addsuffix .o,$(AROS_ALIB_NAMES)))
+AROS_GRAPHICS_DIR := $(AROS_ROOT)/rom/devs/console
+AROS_GRAPHICS_NAMES := stdconclass consoleclass
+AROS_GRAPHICS_OBJS := $(addprefix $(BUILD)/aros-console-,$(addsuffix .o,$(AROS_GRAPHICS_NAMES)))
+AROS_ARSUPPORT_DIR := $(AROS_ROOT)/compiler/arossupport
+AROS_ARSUPPORT_NAMES := libfindtagitem libnexttagitem
+AROS_ARSUPPORT_OBJS := $(addprefix $(BUILD)/aros-arsupport-,$(addsuffix .o,$(AROS_ARSUPPORT_NAMES)))
+AROS_GRAPHICS_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
+                          -I$(AROS_ROOT)/arch/all-pc/include \
+                          -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+                          -I$(AROS_ROOT)/compiler/arossupport/include \
+                          -I$(AROS_ROOT)/compiler/include \
+                          -I$(AROS_ROOT)/rom/devs/console/include \
+                          -I$(AROS_ROOT)/rom/devs/console
+AROS_GRAPHICS_CFLAGS := -Wno-implicit-function-declaration \
+                        -Wno-int-conversion -Wno-int-to-pointer-cast \
+                        -Wno-pointer-sign -Wno-sign-compare \
+                        -Wno-missing-field-initializers \
+                        -Wno-unused-but-set-variable -Wno-strict-aliasing \
+                        -Wno-maybe-uninitialized -Wno-unused-variable \
+                        -include ace_graphics_intern.h
 AROS_CON_HANDLER_SRC := $(AROS_ROOT)/rom/filesys/console_handler/con_handler.c
 AROS_CON_SUPPORT_SRC := $(AROS_ROOT)/rom/filesys/console_handler/support.c
 AROS_CON_COMPLETION_SRC := $(AROS_ROOT)/rom/filesys/console_handler/completion.c
@@ -176,6 +198,23 @@ $(BUILD)/boopsi-test.o: tests/boopsi_test.c src/aros_boopsi_runtime.h | $(BUILD)
 
 $(BUILD)/boopsi-test: $(BUILD)/boopsi-test.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ -o $@
+
+$(BUILD)/aros-console-%.o: $(AROS_GRAPHICS_DIR)/%.c compat/aros-real/include/ace_graphics_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-arsupport-%.o: $(AROS_ARSUPPORT_DIR)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-graphics-runtime.o: src/aros_graphics_runtime.c src/aros_graphics_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -c $< -o $@
+
+$(BUILD)/graphics-test.o: tests/graphics_test.c src/aros_graphics_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -Isrc -c $< -o $@
+
+$(BUILD)/graphics-test: $(BUILD)/graphics-test.o $(BUILD)/aros-graphics-runtime.o \
+                        $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS) \
+                        $(AROS_BOOPSI_OBJS) $(BUILD)/aros-boopsi-runtime.o
+	$(CC) $(CFLAGS) -pthread $^ $(GFX_LIBS) -o $@
 
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
@@ -352,4 +391,7 @@ test-exec-compat: $(BUILD)/exec-compat-test
 test-boopsi: $(BUILD)/boopsi-test
 	$(BUILD)/boopsi-test
 
-.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi
+test-graphics: $(BUILD)/graphics-test
+	$(BUILD)/graphics-test
+
+.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
