@@ -145,10 +145,10 @@ all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(B
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/native_dos.o: src/native_dos.c | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/native_command.o: src/native_command.c | $(BUILD)
+$(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/ace-launcher.o: src/ace_launcher.c | $(BUILD)
@@ -172,19 +172,19 @@ $(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/broker_client.o: src/broker_client.c | $(BUILD)
+$(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/broker.o: src/broker.c | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/dos-devices.o: src/dos_devices.c | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/brokerctl.o: src/brokerctl.c | $(BUILD)
+$(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_shell.o: src/amiga_shell.c | $(BUILD)
+$(BUILD)/amiga_shell.o: src/amiga_shell.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/amiga_console.o: src/amiga_console.c src/console_device_bridge.h src/ace_appmenu_wayland.h | $(BUILD)

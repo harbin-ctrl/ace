@@ -4,6 +4,7 @@
 #include "dos_devices.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -12,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -38,6 +40,9 @@ struct assign_entry {
 
 struct broker_session {
     bool in_use;
+    /* Ordinal of the last request that touched this session, for reclaiming
+     * the coldest one when every slot is taken. See get_session(). */
+    uint64_t last_used;
     char id[128];
     char cwd[PATH_MAX];
     struct assign_entry assigns[MAX_ASSIGNS];
@@ -51,7 +56,9 @@ struct broker_session {
 static struct broker_session sessions[MAX_SESSIONS];
 static struct variable_entry global_vars[MAX_VARS];
 static int server_fd = -1;
-static const char *socket_path = "/tmp/ace-broker.sock";
+/* Set from amiga_broker_socket_path(), or argv[1], as main() starts, before
+ * anything (including the signal handlers) can read it. */
+static const char *socket_path;
 
 static int write_all(int fd, const void *buffer, size_t length)
 {
@@ -89,15 +96,53 @@ static int read_all(int fd, void *buffer, size_t length)
     return 0;
 }
 
+static uint64_t session_clock;
+
+static struct broker_session *touch_session(struct broker_session *session)
+{
+    if (session)
+        session->last_used = ++session_clock;
+    return session;
+}
+
+/*
+ * Finds a session by name, creating it if it is new.
+ *
+ * Nothing ever tells the broker that the shell behind a session has exited,
+ * so slots cannot be freed when their owner goes away. They used to simply
+ * run out: the sixty-fifth distinct session got ENOSPC forever after, and
+ * every ACE window opened from then on died on the spot. A broker that is
+ * meant to live as long as the login has to be able to reclaim them.
+ *
+ * So a full table gives up its coldest slot rather than refusing. Every
+ * request stamps its session with an ordinal, and a live session is stamped
+ * constantly -- the shell reads its CLI state to draw each prompt -- so the
+ * slot that has gone longest without a request is the best available guess
+ * at one whose shell is gone. Losing that guess costs a session its current
+ * directory, assigns and variables, which is recoverable and visible; the
+ * alternative was a window that would not open.
+ */
 static struct broker_session *get_session(const char *id)
 {
     struct broker_session *free_slot = NULL;
+    struct broker_session *coldest = NULL;
 
     for (size_t i = 0; i < MAX_SESSIONS; i++) {
         if (sessions[i].in_use && strcmp(sessions[i].id, id) == 0)
-            return &sessions[i];
-        if (!sessions[i].in_use && !free_slot)
-            free_slot = &sessions[i];
+            return touch_session(&sessions[i]);
+        if (!sessions[i].in_use) {
+            if (!free_slot)
+                free_slot = &sessions[i];
+        } else if (!coldest || sessions[i].last_used < coldest->last_used) {
+            coldest = &sessions[i];
+        }
+    }
+    if (!free_slot) {
+        free_slot = coldest;
+        if (free_slot)
+            fprintf(stderr, "ace-broker: session table full, reclaiming the "
+                            "least recently used session '%s' for '%s'\n",
+                    free_slot->id, id);
     }
     if (!free_slot || strlen(id) >= sizeof(free_slot->id))
         return NULL;
@@ -109,14 +154,14 @@ static struct broker_session *get_session(const char *id)
         strcpy(free_slot->cwd, "/");
     free_slot->fail_level = DEFAULT_FAIL_LEVEL;
     strcpy(free_slot->prompt, DEFAULT_PROMPT);
-    return free_slot;
+    return touch_session(free_slot);
 }
 
 static struct broker_session *find_session(const char *id)
 {
     for (size_t i = 0; i < MAX_SESSIONS; i++)
         if (sessions[i].in_use && strcmp(sessions[i].id, id) == 0)
-            return &sessions[i];
+            return touch_session(&sessions[i]);
     return NULL;
 }
 
@@ -604,6 +649,61 @@ done:
     free(value);
 }
 
+static int lock_fd = -1;
+static bool already_running;
+
+/*
+ * Takes the exclusive lock that marks this process as the broker for this
+ * socket path. The lock lives in a file beside the socket and is released by
+ * the kernel when the process exits, however it exits, so a broker that
+ * crashes does not leave the path permanently claimed.
+ *
+ * The client's own start lock (<socket>.start.lock, in broker_client.c) is a
+ * different file: that one serialises "should I spawn a broker?" and is held
+ * only across the spawn, and a broker taking it would deadlock against the
+ * client waiting for that broker to come up.
+ */
+static int acquire_socket_lock(void)
+{
+    char lock_path[PATH_MAX];
+
+    if (snprintf(lock_path, sizeof(lock_path), "%s.lock", socket_path) >=
+        (int)sizeof(lock_path)) {
+        fprintf(stderr, "broker socket path is too long\n");
+        return -1;
+    }
+    lock_fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (lock_fd < 0) {
+        perror("broker lock");
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) {
+            already_running = true;
+            fprintf(stderr, "ace-broker: already running for %s\n",
+                    socket_path);
+        } else {
+            perror("broker lock");
+        }
+        close(lock_fd);
+        lock_fd = -1;
+        return -1;
+    }
+
+    /* Record who holds it, so broker-stop can find this process without
+     * guessing from command lines. The lock, not the contents, is what makes
+     * this authoritative: a stale pid cannot be read out of an unlocked file
+     * by anything that checks the lock first. */
+    {
+        char line[32];
+        int length = snprintf(line, sizeof(line), "%ld\n", (long)getpid());
+
+        if (ftruncate(lock_fd, 0) == 0 && length > 0)
+            (void)!write(lock_fd, line, (size_t)length);
+    }
+    return 0;
+}
+
 static void stop_server(int signal_number)
 {
     (void)signal_number;
@@ -622,8 +722,23 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s [socket-path]\n", argv[0]);
         return 2;
     }
+    socket_path = amiga_broker_socket_path();
     if (argc == 2)
         socket_path = argv[1];
+
+    /*
+     * One broker per socket, enforced by the kernel rather than by
+     * convention. The lock is held for the broker's whole life, so a second
+     * broker started on the same path finds it taken and leaves; without
+     * this, the unlink() below silently stole the path from the live broker
+     * and stranded it -- still listening, on a socket nobody could reach any
+     * more, together with every session it was holding.
+     *
+     * Reaching this point means the lock is ours, so any socket still on
+     * disk belongs to a broker that is gone, and clearing it is safe.
+     */
+    if (acquire_socket_lock() != 0)
+        return already_running ? 0 : 1;
 
     ace_dos_devices_discover();
 

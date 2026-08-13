@@ -12,7 +12,8 @@ if [[ -x $script_dir/build/ace-broker ]]; then
 else
     ace_runtime_dir=$script_dir
 fi
-broker_socket=${ACE_BROKER_SOCKET:-/tmp/ace-broker.sock}
+broker_socket=${ACE_BROKER_SOCKET:-${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/ace-broker.sock}}
+broker_socket=${broker_socket:-/tmp/ace-broker-$(id -u).sock}
 broker_pid_file=${ACE_BROKER_PIDFILE:-${broker_socket}.pid}
 experimental_commands=$ace_runtime_dir
 broker_pids=()
@@ -60,6 +61,21 @@ remember_pid()
     done
     broker_pids+=("$candidate")
 }
+
+# The broker records its pid in the lock file it holds for its whole life, so
+# prefer that over the pid file and over scanning /proc. The lock file is per
+# socket, so whoever wrote it is by construction this socket's broker, and it
+# is accepted without the command line having to carry the path -- which the
+# /proc scan below does still require, because there the socket is the only
+# thing keeping it from matching some other user's broker.
+broker_lock=$broker_socket.lock
+if [[ -r $broker_lock ]]; then
+    read -r broker_pid < "$broker_lock" 2>/dev/null
+    if [[ $broker_pid =~ ^[0-9]+$ && -r /proc/$broker_pid/cmdline ]] &&
+       [[ $(tr "\0" " " < "/proc/$broker_pid/cmdline" 2>/dev/null) == */ace-broker* ]]; then
+        broker_pids+=("$broker_pid")
+    fi
+fi
 
 if [[ -r $broker_pid_file ]]; then
     read -r broker_pid < "$broker_pid_file"

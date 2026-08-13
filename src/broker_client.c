@@ -19,8 +19,7 @@
 
 static const char *broker_socket_path(void)
 {
-    const char *path = getenv("ACE_BROKER_SOCKET");
-    return path && *path ? path : "/tmp/ace-broker.sock";
+    return amiga_broker_socket_path();
 }
 
 static const char *broker_session(void)

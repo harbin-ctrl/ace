@@ -203,7 +203,7 @@ GTK 3 development files, `blkid` development files, a C compiler, `make`,
 From the ACE checkout:
 
 ```sh
-./build/ace-broker /tmp/ace.sock
+./build/ace-broker
 ACE_SESSION=main-shell ./build/ace-shell
 ```
 
@@ -356,13 +356,48 @@ diagnosable degradation ("broker CLI state unavailable ... continuing with
 defaults", then real errors from the commands) instead of a window that
 vanishes.
 
-**Broker sessions are still never reclaimed**, which is what makes that
-second path reachable: `MAX_SESSIONS` is 64 in `broker.c`, `get_session()`
-hands back `ENOSPC` once they are used up, and nothing ever frees a slot. A
-long-lived broker plus enough distinct `ACE_SESSION` names or `NewCLI` clones
-will get there. Reclaiming them needs an ownership model the broker does not
-have yet -- it never learns that the shell behind a session has exited -- so
-this is recorded rather than papered over.
+### One broker per user
+
+The broker used to default to a single machine-wide `/tmp/ace-broker.sock`,
+which was wrong in both directions at once. Two users on one machine collided
+on the same path, and since the socket is created 0600 the second one simply
+could not use it. Meanwhile anything that pointed `ACE_BROKER_SOCKET` at a
+private path -- every isolated test run -- got a whole additional broker
+process, and they piled up: a day of testing left drifts of them behind.
+
+The default is now `$XDG_RUNTIME_DIR/ace-broker.sock`, the per-user directory
+made for this, which the system clears when the user's last session ends so a
+socket cannot outlive its login. Where there is no runtime directory the uid
+goes in the filename instead. `amiga_broker_socket_path()` in
+`broker_protocol.h` is the single definition, shared by client and server so
+they cannot disagree. `ACE_BROKER_SOCKET` still overrides, for a deliberately
+isolated broker; that just is not what happens by accident any more.
+
+**A second broker no longer displaces the first.** `main()` used to
+`unlink()` the socket path unconditionally before binding, so starting
+another broker silently stole the path from the live one and stranded it --
+still running, still holding every session, on a socket nothing could reach.
+A broker now holds an exclusive `flock` on `<socket>.lock` for its whole life
+and exits if it is already held, so "one per socket" is enforced by the
+kernel rather than by convention; the socket is only unlinked once the lock
+is ours, which means any socket still on disk belongs to a broker that is
+gone. The broker writes its pid into that lock file, which is how
+`broker-stop` finds it without guessing from command lines, and `broker-start`
+uses `flock -n` to detect a running broker and leave it alone rather than
+restarting it and discarding its sessions.
+
+**Sessions are reclaimed rather than exhausted.** Nothing tells the broker
+that the shell behind a session has exited, so slots cannot be freed when
+their owner goes away, and they used to simply run out: past 64 distinct
+sessions every new one got `ENOSPC` and, before the `Cli()` fix above, every
+ACE window opened from then on died on the spot. A broker meant to live as
+long as the login has to cope with that, so a full table now gives up its
+coldest slot instead of refusing. Every request stamps its session with an
+ordinal and a live session is stamped constantly -- the shell reads its CLI
+state to draw each prompt -- so the slot longest without a request is the best
+available guess at one whose shell is gone. It is a guess: losing it costs a
+session its current directory, assigns and variables, which is recoverable and
+logged. Real ownership tracking would be better and still needs designing.
 
 ### The window's own two seams
 

@@ -10,8 +10,14 @@ command sources are compiled against the compatibility headers in
 
 ```sh
 make
-./build/ace-broker /tmp/ace-broker.sock
+./build/ace-broker
 ```
+
+The broker takes an optional socket path; with none it uses one socket per
+user, `$XDG_RUNTIME_DIR/ace-broker.sock` (or `/tmp/ace-broker-<uid>.sock`
+where there is no runtime directory). One broker serves all of a user's ACE
+processes: a second one started on the same socket reports that one is
+already running and exits rather than displacing it.
 
 Install the built commands and console runtime into `/usr/local/bin`:
 
@@ -44,7 +50,6 @@ variable is unset, they use the same default as the DOS client.
 In another terminal:
 
 ```sh
-export ACE_BROKER_SOCKET=/tmp/ace-broker.sock
 export ACE_SESSION=my-shell
 ./build/CD .
 ./build/ace-brokerctl assign WORK: /tmp
