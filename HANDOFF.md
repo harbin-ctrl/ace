@@ -160,6 +160,22 @@ Mono`, or the `monospace` fontconfig alias are tried in that order.
 For an unusual host, override both variables explicitly, for example
 `make AROS_ROOT=/opt/aros AROS_CPU_ARCH=aarch64-all -j2 all`.
 
+Built and tested on two hosts: a Raspberry Pi (aarch64, Debian, labwc) and an
+x86_64 Debian 13 machine. The second one turned up a portability bug worth
+knowing about, because it is the kind this project will keep meeting. Real
+AROS declares `STRPTR` as `UBYTE *`; ACE's `compat/include/exec/types.h`
+declares it as plain `char *`, which is **unsigned on ARM and signed on
+x86**. A parsed AmigaDOS pattern stores its tokens as `P_ANY` and friends,
+`0x80..0x88` in `dos/dosasl.h`, so on a signed-char host every one of
+`patternmatching.c`'s `case P_ANY:` labels becomes unreachable and `#?` quietly
+stops matching anything. gcc rejects it outright as
+`-Werror=switch-outside-range`, which is how it surfaced. The AROS DOS
+pattern sources and `Dir` are compiled with `-funsigned-char`
+(`AROS_DOSPAT_CFLAGS`) to give plain `char` the signedness AROS wrote them
+against. Anywhere else ACE hands a real AROS source a `char` that AROS
+declared `UBYTE` is a candidate for the same bug, and it will not always be
+loud.
+
 The patch is required for the AROS console handler to compile without
 GadTools, Workbench AppWindow, and completion support. It leaves the original
 console editing and history code in place. Apply it once to a clean checkout;

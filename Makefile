@@ -53,7 +53,17 @@ AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
                      matchpatternnocase parsepatternnocase \
                      exall matchfirst matchnext matchend match_misc
 AROS_DOSPAT_OBJS := $(addprefix $(BUILD)/aros-dos-,$(addsuffix .o,$(AROS_DOSPAT_NAMES)))
-AROS_DOSPAT_CFLAGS := -Wno-implicit-function-declaration \
+# -funsigned-char is a correctness flag here, not a warning relaxation. Real
+# AROS declares STRPTR as UBYTE*, so a parsed pattern's tokens -- P_ANY and
+# friends, 0x80..0x88 in dos/dosasl.h -- read back as the values
+# patternmatching.c switches on. ACE's compat header declares STRPTR as plain
+# char*, which is unsigned on ARM but signed on x86, and on a signed-char host
+# those tokens read back negative and every one of those case labels becomes
+# unreachable: the pattern matcher silently stops recognising "#?" at all.
+# gcc catches it as -Werror=switch-outside-range. Making plain char unsigned
+# for these translation units restores the type AROS wrote them against.
+AROS_DOSPAT_CFLAGS := -funsigned-char \
+                      -Wno-implicit-function-declaration \
                       -Wno-int-conversion -Wno-int-to-pointer-cast \
                       -Wno-sign-compare -Wno-missing-field-initializers \
                       -Wno-unused-but-set-variable -Wno-strict-aliasing \
