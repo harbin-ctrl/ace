@@ -166,10 +166,6 @@ static int find_in_directory(const char *directory, const char *command,
 
 static int find_command(const char *command, char *result, size_t result_size)
 {
-    const char *path = getenv("PATH");
-    char *copy;
-    char *cursor;
-
     if (strchr(command, '/')) {
         if (strlen(command) >= result_size || access(command, X_OK) != 0)
             return -1;
@@ -180,28 +176,7 @@ static int find_command(const char *command, char *result, size_t result_size)
         if (find_in_directory(shell_directory, command, result, result_size) == 0)
             return 0;
     }
-    if (!path)
-        return -1;
-    copy = strdup(path);
-    if (!copy)
-        return -1;
-    cursor = copy;
-    while (cursor) {
-        char *next = strchr(cursor, ':');
-        const char *directory;
-
-        if (next)
-            *next = '\0';
-        directory = *cursor ? cursor : ".";
-        if (find_in_directory(directory, command, result, result_size) == 0) {
-            free(copy);
-            return 0;
-        }
-        if (!next)
-            break;
-        cursor = next + 1;
-    }
-    free(copy);
+    /* Do not inherit Linux command discovery. Use LNX for host programs. */
     return -1;
 }
 
@@ -292,7 +267,6 @@ static int run_command(char **argv, const char *line)
         }
         if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
             (void)chdir(cwd);
-        execl("/bin/bash", "bash", "-c", line, (char *)NULL);
         _exit(20);
     }
     if (waitpid(child, &status, 0) < 0)

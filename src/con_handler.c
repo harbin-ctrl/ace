@@ -20,6 +20,23 @@ static int append_input(struct amiga_con_handler *handler,
     return AMIGA_IOERR_OK;
 }
 
+/*
+ * In the real AROS handler, process_input() echoes cooked input through the
+ * console.device as it handles it.  Keep that responsibility here rather
+ * than making the window paint a second copy of the submitted line.
+ */
+static int echo_cooked_input(struct amiga_con_handler *handler,
+                             const unsigned char *data, size_t length)
+{
+    size_t actual = 0;
+    int error;
+
+    error = amiga_con_Write(&handler->file, data, length, &actual);
+    if (error != AMIGA_IOERR_OK)
+        return error;
+    return actual == length ? AMIGA_IOERR_OK : AMIGA_IOERR_UNITBUSY;
+}
+
 int amiga_con_handler_Open(struct amiga_console_unit *unit,
                            struct amiga_con_handler *handler)
 {
@@ -75,6 +92,11 @@ int amiga_con_handler_Read(struct amiga_con_handler *handler, void *data,
             return error;
     }
     count = available < length ? available : length;
+    if (!handler->raw) {
+        error = echo_cooked_input(handler, handler->input, count);
+        if (error != AMIGA_IOERR_OK)
+            return error;
+    }
     memcpy(destination, handler->input, count);
     memmove(handler->input, handler->input + count,
             handler->input_length - count);

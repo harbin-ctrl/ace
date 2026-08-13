@@ -79,6 +79,18 @@ protocol is deliberately small and binary; the DOS shim is the layer where
 future path translation, volume labels, mounts, locks, and process state will
 be added.
 
+LNX is the explicit Linux escape hatch. It executes the named Linux program
+directly with execv() and an explicit PATH search, passing the remaining arguments unchanged; it never
+invokes a shell. Its inherited standard input, output, and error streams are
+the ACE Amiga console streams:
+
+    LNX /usr/bin/uname -a
+    LNX printf hello
+
+There is no automatic host-command fallback. An unrecognized command is an
+AmigaDOS command failure. LNX is the deliberate mechanism for running a Linux
+command.
+
 The broker now performs a read-only discovery pass over host block devices
 when it starts. Filesystem-bearing devices are registered in the initial ACE
 DOS device list with their kernel name, filesystem type, filesystem UUID,
@@ -89,11 +101,18 @@ label when valid, and `/dev` path:
 ```
 
 The kernel name, UUID, and valid filesystem label are treated as
-case-insensitive DOS aliases for the same future filesystem handler. Raw
-devices and filesystems that are swap, encrypted containers, RAID members, or
-other non-filesystem media are not yet registered as file volumes. Recognized
-device aliases are reserved by path resolution but return “not supported”
-until the Linux-backed filesystem handler is added.
+case-insensitive DOS aliases for the same filesystem volume. Labels may
+contain spaces when quoted, but may not contain the DOS separator or host path
+separators. Raw devices and filesystems that are swap, encrypted containers,
+RAID members, or other non-filesystem media are not registered as file
+volumes.
+
+The first filesystem handler supports VFAT and ext2, ext3, and ext4. On the
+first use of an alias, the broker finds an existing mount of that block
+device, or asks Linux to mount it on demand. The host mountpoint is an
+implementation detail: sda2:etc/hosts means etc/hosts below the root of the
+filesystem on sda2, even if Linux happens to mount that filesystem at /. ACE
+releases mounts it created when the broker stops.
 
 The first local Exec compatibility layer is now in `src/exec_compat.[ch]`.
 It provides host-backed memory, registered tasks, Amiga signal-bit masks,
@@ -170,18 +189,18 @@ child CLI, and a cloned broker session. The surface is gray by default
 and renders a first classic terminal subset: Amiga/ANSI CSI cursor movement,
 colors, text attributes, erasing, tabs, scrolling, and local line editing.
 
-The window now reaches that renderer through a small AROS-shaped
-`console.device` seam in `src/console_device.[ch]`. It provides
-`OpenDevice`, `CloseDevice`, `CMD_READ`, and `CMD_WRITE`, with asynchronous
-`SendIO`, `WaitIO`, and `AbortIO` request handling. The device has a blocking
-input queue and the GTK window's keyboard path uses it.
+The live window now feeds keyboard bytes into the real AROS console-handler
+editing path from `rom/filesys/console_handler/support.c`. A small ACE bridge
+opens the host-backed `console.device`, calls the original `process_input()` and
+`history_walk()` code, and renders the original handler's `do_write()` output.
+The GTK surface no longer owns the current line, cursor movement, deletion, or
+history. It is only the host window and character-cell renderer.
 
-`src/con_handler.[ch]` adds the first menu-free classic `CON:` handler layer:
-it owns cooked/raw input state, persistent line buffering, and the handler's
-device-read/write path. The bootstrap shell is reached through a socket stream
-and that stream is fed through the handler rather than a PTY. AROS Workbench,
-menus, clipboard, and packet/task ABI remain deliberately outside this
-profile.
+`src/console_device.[ch]` remains the smaller standalone console-device test
+seam. The real-handler bridge is in `src/aros_console_editor.[ch]`; it is the
+staging point for the remaining DOS packet and task integration. AROS
+Workbench, menus, clipboard, and packet/task ABI remain deliberately outside
+this profile.
 
 ```sh
 source ./broker-start
@@ -201,9 +220,11 @@ beside `ace-user-shell`.
 
 Inside that shell, command parsing, prompting, redirection, aliases, and
 command errors are handled by the original AROS Shell code. At its command
-loading boundary, ACE resolves a Linux executable and implements AROS
-`LoadSeg()`/`RunCommand()` with host path lookup and `fork()`/`exec()`.
-There is no Bash fallback. `NewCLI` opens a separate window and starts
+loading boundary, ACE implements AROS `LoadSeg()`/`RunCommand()` with direct
+`fork()`/`exec()` for ACE/AROS commands; it does not search the host `PATH`.
+There is no automatic host-command fallback. `EndCLI` is compiled from the original
+AROS command source and terminates the current real AROS shell, including a shell
+running in an ACE window. `NewCLI` opens a separate window and starts
 another real AROS shell with a cloned initial session:
 
 ```text
@@ -211,12 +232,12 @@ AMIGA> SET FOO parent
 AMIGA> NEWCLI
 ```
 
-`build/NewCLI` is compiled from the original AROS `NewCLI.c` (which includes
+`build/EndCLI` is compiled from the original AROS `EndCLI.c`; its CLI state change
+is carried across the host process boundary by the ACE DOS bridge. `build/NewCLI`
+is compiled from the original AROS `NewCLI.c` (which includes
 `NewShell.c`).  Its unchanged `Open("CON:...")` and `SystemTagList()` calls
 are currently backed by the host compatibility layer; the compatibility
-layer launches the ACE console and clones the broker session. `ENDCLI` is not
-yet included as a separate AROS command, so an interactive shell currently
-ends on EOF or by closing its window.
+layer launches the ACE console and clones the broker session.
 
 The GTK surface deliberately has no AROS menus, Workbench integration, or
 clipboard extensions.

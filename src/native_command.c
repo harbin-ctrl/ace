@@ -1,3 +1,4 @@
+#define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
 #include <dirent.h>
@@ -14,6 +15,7 @@
 #include <dos/dos.h>
 
 #include "broker_client.h"
+#include "broker_protocol.h"
 #include "native_host.h"
 
 struct ace_command_segment {
@@ -50,28 +52,53 @@ static int directory_command(const char *directory, const char *name,
     return -1;
 }
 
+static int companion_command(const char *path)
+{
+    char executable[PATH_MAX];
+    char candidate[PATH_MAX];
+    char *slash;
+    ssize_t length;
+
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length < 0 || (size_t)length >= sizeof(executable) - 1)
+        return 0;
+    executable[length] = '\0';
+    slash = strrchr(executable, '/');
+    if (!slash)
+        return 0;
+    *slash = '\0';
+    if (!realpath(path, candidate))
+        return 0;
+    {
+        size_t directory_length = strlen(executable);
+
+        return strlen(candidate) > directory_length &&
+               strncmp(candidate, executable, directory_length) == 0 &&
+               candidate[directory_length] == '/';
+    }
+}
+
 int native_command_path(const char *name, char *result, size_t result_size)
 {
     char resolved[PATH_MAX];
     char executable[PATH_MAX];
     char *slash;
-    const char *path;
-    char *copy;
-    char *cursor;
     ssize_t length;
 
     if (!name || !*name || !result || result_size == 0)
         return -1;
     if (strchr(name, '/') || strchr(name, ':')) {
         if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0 &&
-            executable_file(resolved) && strlen(resolved) < result_size) {
+            companion_command(resolved) && executable_file(resolved) &&
+            strlen(resolved) < result_size) {
             strcpy(result, resolved);
             return 0;
         }
         return -1;
     }
     if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0 &&
-        executable_file(resolved) && strlen(resolved) < result_size) {
+        companion_command(resolved) && executable_file(resolved) &&
+        strlen(resolved) < result_size) {
         strcpy(result, resolved);
         return 0;
     }
@@ -87,30 +114,8 @@ int native_command_path(const char *name, char *result, size_t result_size)
         }
     }
 
-    path = getenv("PATH");
-    if (!path)
-        return -1;
-    copy = strdup(path);
-    if (!copy)
-        return -1;
-    cursor = copy;
-    while (cursor) {
-        char *next = strchr(cursor, ':');
-        const char *directory;
-
-        if (next)
-            *next = '\0';
-        directory = *cursor ? cursor : ".";
-
-        if (directory_command(directory, name, result, result_size) == 0) {
-            free(copy);
-            return 0;
-        }
-        if (!next)
-            break;
-        cursor = next + 1;
-    }
-    free(copy);
+    /* The host PATH is deliberately not an AmigaDOS command path. Linux
+       programs must be invoked explicitly through LNX. */
     return -1;
 }
 
@@ -221,6 +226,20 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     if (waitpid(child, &status, 0) < 0) {
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return RETURN_FAIL;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == NATIVE_ENDCLI_STATUS) {
+        native_request_endcli();
+        return RETURN_OK;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == RETURN_OK) {
+        char requested[8];
+
+        if (native_broker_getvar("__ACE_ENDCLI", AMIGA_BROKER_VAR_LOCAL,
+                                 requested, sizeof(requested)) == 0) {
+            (void)native_broker_deletevar("__ACE_ENDCLI",
+                                          AMIGA_BROKER_VAR_LOCAL);
+            native_request_endcli();
+        }
     }
     if (WIFEXITED(status))
         return WEXITSTATUS(status);

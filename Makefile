@@ -24,17 +24,38 @@ AROS_UNALIAS_SRC := /home/erik/aros/workbench/c/shellcommands/Unalias.c
 AROS_FAILAT_SRC := /home/erik/aros/workbench/c/shellcommands/FailAt.c
 AROS_WHY_SRC := /home/erik/aros/workbench/c/shellcommands/Why.c
 AROS_PROMPT_SRC := /home/erik/aros/workbench/c/shellcommands/Prompt.c
+INSTALL_LNX_SRC := src/lnx.c
 AROS_MAKEDIR_SRC := /home/erik/aros/workbench/c/MakeDir.c
+AROS_ENDCLI_SRC := /home/erik/aros/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := /home/erik/aros/workbench/c/shellcommands/NewCLI.c
+AROS_CON_HANDLER_SRC := /home/erik/aros/rom/filesys/console_handler/con_handler.c
+AROS_CON_SUPPORT_SRC := /home/erik/aros/rom/filesys/console_handler/support.c
+AROS_CON_COMPLETION_SRC := /home/erik/aros/rom/filesys/console_handler/completion.c
 AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
                     convertArg convertBackTicks convertLine convertLineDot \
                     convertRedir convertVar interpreter readLine redirection
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
+AROS_REAL_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
+                      -I/home/erik/aros/arch/all-pc/include \
+                      -I/home/erik/aros/arch/x86_64-all/include \
+                      -I/home/erik/aros/compiler/arossupport/include \
+                      -I/home/erik/aros/compiler/include \
+                      -I/home/erik/aros/rom/devs/console \
+                      -I/home/erik/aros/rom/filesys/console_handler
+AROS_REAL_CFLAGS := -Wno-implicit-function-declaration \
+                    -Wno-int-conversion -Wno-int-to-pointer-cast \
+                    -Wno-pointer-sign -Wno-sign-compare \
+                    -Wno-missing-field-initializers \
+                    -Wno-unused-but-set-variable -Wno-strict-aliasing \
+                    -Wno-maybe-uninitialized \
+                    -DACE_NO_CONSOLE_MENU -DACE_NO_CONSOLE_APPWINDOW \
+                    -DACE_NO_CONSOLE_COMPLETION \
+                    -include ace_handler_types.h
 INSTALL_BINS := Echo CD PathPart Fault Ask Get Getenv Set Unset Alias Unalias \
-                FailAt Why Prompt MakeDir ace-shell ace-user-shell ace-console NewCLI \
+                FailAt Why Prompt MakeDir EndCLI LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o
 
 $(BUILD):
 	mkdir -p $@
@@ -60,6 +81,12 @@ $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
 $(BUILD)/makedir_entry.o: src/makedir_entry.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
+$(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
 $(BUILD)/broker_client.o: src/broker_client.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
@@ -75,14 +102,32 @@ $(BUILD)/brokerctl.o: src/brokerctl.c | $(BUILD)
 $(BUILD)/amiga_shell.o: src/amiga_shell.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_console.o: src/amiga_console.c | $(BUILD)
+$(BUILD)/amiga_console.o: src/amiga_console.c src/console_terminal.h | $(BUILD)
 	$(CC) $(CFLAGS) $(GTK_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/console_device.o: src/console_device.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
 
+$(BUILD)/console_terminal.o: src/console_terminal.c src/console_terminal.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c src/console_terminal.c -o $@
+
 $(BUILD)/con_handler.o: src/con_handler.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
+
+$(BUILD)/aros-con-handler.o: $(AROS_CON_HANDLER_SRC) compat/aros-real/include/ace_handler_types.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-con-support.o: $(AROS_CON_SUPPORT_SRC) compat/aros-real/include/ace_handler_types.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-con-completion.o: $(AROS_CON_COMPLETION_SRC) compat/aros-real/include/ace_handler_types.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
+
+$(BUILD)/aros-console-editor.o: src/aros_console_editor.c src/aros_console_editor.h $(AROS_CON_SUPPORT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
 $(BUILD)/exec_compat.o: src/exec_compat.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
@@ -92,6 +137,15 @@ $(BUILD)/exec_compat_bindings.o: src/exec_compat_bindings.c | $(BUILD)
 
 $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_device.o $(BUILD)/con_handler.o
 	$(CC) $(CFLAGS) -pthread -Isrc $^ -o $@
+
+$(BUILD)/console-terminal-test: tests/console_terminal_test.c $(BUILD)/console_terminal.o
+	$(CC) $(CFLAGS) -Isrc $^ -o $@
+
+$(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c $(BUILD)/aros-exec-runtime.o
+	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
+
+$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o
+	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ -o $@
 
 $(BUILD)/exec-compat-test: tests/exec_compat_test.c $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 	$(CC) $(CFLAGS) -pthread -DAMIGA_EXEC_COMPAT_ENABLED -I$(COMPAT) -Isrc $^ -o $@
@@ -153,6 +207,12 @@ $(BUILD)/Prompt.o: $(AROS_PROMPT_SRC) | $(BUILD)
 $(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/makedir_entry.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+$(BUILD)/EndCLI: $(BUILD)/endcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/LNX: $(BUILD)/LNX.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 $(BUILD)/Echo: $(BUILD)/Echo.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
@@ -201,7 +261,8 @@ $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o
 $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_device.o $(BUILD)/con_handler.o
+
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_terminal.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) -o $@
 
 $(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
@@ -221,10 +282,17 @@ install: all
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
 
-test-console-device: $(BUILD)/console-device-test
+test-console-device: $(BUILD)/console-device-test $(BUILD)/console-terminal-test
 	$(BUILD)/console-device-test
+	$(BUILD)/console-terminal-test
+
+test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
+	$(BUILD)/aros-exec-runtime-test
+
+test-aros-console-editor: $(BUILD)/aros-console-editor-test
+	$(BUILD)/aros-console-editor-test
 
 test-exec-compat: $(BUILD)/exec-compat-test
 	$(BUILD)/exec-compat-test
 
-.PHONY: all clean install test-console-device test-exec-compat
+.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat

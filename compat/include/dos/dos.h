@@ -22,6 +22,7 @@
 #define RETURN_ERROR 10
 #define RETURN_FAIL  20
 
+#define ERROR_FILE_NOT_OBJECT   121
 #define ERROR_OBJECT_NOT_FOUND  205
 #define ERROR_OBJECT_WRONG_TYPE 212
 #define ERROR_NO_FREE_STORE     103
@@ -34,9 +35,8 @@
 #define ERROR_ACTION_NOT_KNOWN  209
 #define ERROR_BREAK             304
 #define ERROR_OBJECT_IN_USE     202
-#define ERROR_INVALID_COMPONENT_NAME  212
-#define ERROR_NOT_EXECUTABLE    232
-#define ERROR_FILE_NOT_OBJECT   233
+#define ERROR_INVALID_COMPONENT_NAME  210
+#define ERROR_NOT_EXECUTABLE    305
 #define ERROR_OBJECT_EXISTS     203
 #define ERROR_DEVICE_NOT_MOUNTED 218
 
@@ -92,7 +92,8 @@ STRPTR FGets(BPTR file, STRPTR buffer, LONG length);
 LONG Flush(BPTR file);
 LONG IoErr(void);
 void SetIoErr(LONG error);
-void PrintFault(LONG error, CONST_STRPTR header);
+LONG Fault(LONG error, CONST_STRPTR header, STRPTR buffer, LONG length);
+BOOL PrintFault(LONG error, CONST_STRPTR header);
 LONG Printf(CONST_STRPTR format, ...);
 
 void CopyMem(CONST_APTR source, APTR destination, ULONG length);

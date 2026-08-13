@@ -9,6 +9,12 @@ void ace_dos_devices_discover(void);
 /* Return 1 for a unique DOS device/volume alias, 0 for none, -1 if ambiguous. */
 int ace_dos_devices_lookup(const char *name);
 
+/* Resolve a known filesystem volume to a host directory, mounting on demand. */
+int ace_dos_devices_root(const char *name, char *result, size_t result_size);
+
+/* Release mounts created by the broker. */
+void ace_dos_devices_shutdown(void);
+
 /* Serialize the current DOS device list for diagnostics and future DOS APIs. */
 int ace_dos_devices_list(char *result, size_t result_size);
 

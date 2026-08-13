@@ -13,13 +13,12 @@
 #include <unistd.h>
 
 #include "console_device.h"
-#include "con_handler.h"
+#include "aros_console_editor.h"
+#include "console_terminal.h"
 
-#define TERM_ROWS 32
-#define TERM_COLS 100
-#define TERM_MAX_PARAMS 16
 #define INPUT_MAX 4096
 
+#if 0
 struct term_cell {
     unsigned char character;
     unsigned char foreground;
@@ -56,15 +55,7 @@ struct console_window {
     GtkWidget *drawing_area;
     int stream_fd;
     pid_t child_pid;
-    char input[INPUT_MAX];
-    size_t input_length;
-    size_t input_cursor;
-    int input_row;
-    int input_column;
-    gboolean input_active;
-    struct amiga_console_device device;
-    struct amiga_console_unit *console_unit;
-    struct amiga_con_handler handler;
+    struct ace_aros_console_editor *editor;
 };
 
 struct pending_output {
@@ -360,22 +351,38 @@ static void terminal_feed(struct terminal *terminal, const unsigned char *data,
     }
 }
 
+#endif
+
+struct console_window {
+    struct terminal terminal;
+    GtkWidget *window;
+    GtkWidget *drawing_area;
+    int stream_fd;
+    pid_t child_pid;
+    struct ace_aros_console_editor *editor;
+};
+
+struct pending_output {
+    struct console_window *console;
+    size_t length;
+    unsigned char data[];
+};
+
+static const double palette[16][3] = {
+    {0.00, 0.00, 0.00}, {0.67, 0.00, 0.00}, {0.00, 0.50, 0.00},
+    {0.67, 0.33, 0.00}, {0.00, 0.00, 0.67}, {0.67, 0.00, 0.67},
+    {0.00, 0.50, 0.50}, {0.00, 0.00, 0.00}, {0.50, 0.50, 0.50},
+    {1.00, 0.00, 0.00}, {0.00, 0.75, 0.00}, {1.00, 0.67, 0.00},
+    {0.00, 0.33, 1.00}, {1.00, 0.00, 1.00}, {0.00, 0.75, 0.75},
+    {1.00, 1.00, 1.00}
+};
+
 static gboolean apply_output(gpointer data)
 {
     struct pending_output *output = data;
     struct console_window *console = output->console;
 
-    if (console->input_active) {
-        console->input_active = FALSE;
-        console->input_length = 0;
-        console->input_cursor = 0;
-    }
-    terminal_feed(&console->terminal, output->data, output->length);
-    if (!console->input_active) {
-        console->input_row = console->terminal.row;
-        console->input_column = console->terminal.column;
-        console->input_active = TRUE;
-    }
+    ace_console_terminal_feed(&console->terminal, output->data, output->length);
     gtk_widget_queue_draw(console->drawing_area);
     free(output);
     return G_SOURCE_REMOVE;
@@ -433,68 +440,18 @@ static void draw_cell(cairo_t *cr, int row, int column, struct term_cell cell)
     }
 }
 
-static void draw_input(cairo_t *cr, struct console_window *console)
+static void drain_editor_output(struct console_window *console)
 {
-    struct term_cell cell;
-    int row = console->input_row;
-    int column = console->input_column;
+    unsigned char output[4096];
+    size_t length;
 
-    if (!console->input_active)
-        return;
-    cell = current_cell(&console->terminal);
-    for (size_t index = 0; index < console->input_length; index++) {
-        if (console->input[index] == '\n') {
-            row++;
-            column = 0;
-        } else {
-            cell.character = (unsigned char)console->input[index];
-            draw_cell(cr, row, column, cell);
-            column++;
-            if (column >= TERM_COLS) {
-                column = 0;
-                row++;
-            }
-        }
-        if (row >= TERM_ROWS)
-            break;
-    }
-}
-
-/*
- * The bootstrap shell still consumes a PTY.  Feed that PTY through the
- * console.device read path so this window exercises the same input direction
- * that the imported CON: handler will use later.
- */
-static int send_input(struct console_window *console, const void *data,
-                      size_t length, int raw)
-{
-    unsigned char translated[INPUT_MAX + 8];
-    size_t actual;
-    size_t offset = 0;
-    int error;
-
-    if (length > sizeof(translated))
-        return -1;
-    error = amiga_con_handler_SetRaw(&console->handler, raw);
-    if (error == AMIGA_IOERR_OK)
-        error = amiga_con_handler_FeedInput(&console->handler, data, length);
-    if (error == AMIGA_IOERR_OK)
-        error = amiga_con_handler_Read(&console->handler, translated, length,
-                                       &actual);
-    if (error != AMIGA_IOERR_OK || actual != length) {
-        (void)amiga_con_handler_SetRaw(&console->handler, 0);
-        return -1;
-    }
-    while (offset < actual) {
-        ssize_t written = write(console->stream_fd, translated + offset,
-                                actual - offset);
-
-        if (written <= 0)
-            return -1;
-        offset += (size_t)written;
-    }
-    (void)amiga_con_handler_SetRaw(&console->handler, 0);
-    return 0;
+    do {
+        length = ace_aros_console_editor_take_output(console->editor,
+                                                     output, sizeof(output));
+        if (length != 0)
+            ace_console_terminal_feed(&console->terminal, output, length);
+    } while (length != 0);
+    gtk_widget_queue_draw(console->drawing_area);
 }
 
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
@@ -511,19 +468,9 @@ static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
             draw_cell(cr, row, column, cell);
         }
     }
-    draw_input(cr, console);
     if (console->terminal.cursor_visible) {
-        int cursor_row = console->input_active ? console->input_row : console->terminal.row;
-        int cursor_column = console->input_active ? console->input_column : console->terminal.column;
-        for (size_t index = 0; console->input_active && index < console->input_cursor; index++) {
-            if (console->input[index] == '\n') {
-                cursor_row++;
-                cursor_column = 0;
-            } else if (++cursor_column >= TERM_COLS) {
-                cursor_column = 0;
-                cursor_row++;
-            }
-        }
+        int cursor_row = console->terminal.row;
+        int cursor_column = console->terminal.column;
         cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.65);
         cairo_rectangle(cr, cursor_column * 9.0, cursor_row * 18.0, 9.0, 18.0);
         cairo_fill(cr);
@@ -532,23 +479,27 @@ static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
     return FALSE;
 }
 
-static void submit_input(struct console_window *console)
+static int send_input(struct console_window *console, const void *data,
+                      size_t length)
 {
     char line[INPUT_MAX + 2];
-    size_t length = console->input_length;
+    size_t line_length;
+    size_t offset = 0;
 
-    memcpy(line, console->input, length);
-    line[length++] = '\n';
-    line[length] = '\0';
-    (void)send_input(console, line, length, 0);
-    for (size_t index = 0; index < console->input_length; index++)
-        terminal_put_character(&console->terminal,
-                               (unsigned char)console->input[index]);
-    console->input_active = FALSE;
-    console->input_length = 0;
-    console->input_cursor = 0;
-    terminal_put_character(&console->terminal, '\n');
-    gtk_widget_queue_draw(console->drawing_area);
+    if (ace_aros_console_editor_feed(console->editor, data, length) != 0)
+        return -1;
+    drain_editor_output(console);
+    line_length = ace_aros_console_editor_take_line(console->editor,
+                                                    line, sizeof(line));
+    while (offset < line_length) {
+        ssize_t written = write(console->stream_fd, line + offset,
+                                line_length - offset);
+
+        if (written <= 0)
+            return -1;
+        offset += (size_t)written;
+    }
+    return 0;
 }
 
 static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
@@ -561,63 +512,44 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
 
     (void)widget;
     if (key == GDK_KEY_Return || key == GDK_KEY_KP_Enter) {
-        submit_input(console);
+        (void)send_input(console, "\n", 1);
         return TRUE;
     }
     if (key == GDK_KEY_BackSpace) {
-        if (console->input_cursor > 0) {
-            memmove(console->input + console->input_cursor - 1,
-                    console->input + console->input_cursor,
-                    console->input_length - console->input_cursor + 1);
-            console->input_cursor--;
-            console->input_length--;
-            gtk_widget_queue_draw(console->drawing_area);
-        }
+        (void)send_input(console, "\b", 1);
         return TRUE;
     }
     if (key == GDK_KEY_Delete) {
-        if (console->input_cursor < console->input_length) {
-            memmove(console->input + console->input_cursor,
-                    console->input + console->input_cursor + 1,
-                    console->input_length - console->input_cursor);
-            console->input_length--;
-            gtk_widget_queue_draw(console->drawing_area);
-        }
+        (void)send_input(console, "\177", 1);
         return TRUE;
     }
     if (key == GDK_KEY_Left) {
-        if (console->input_cursor > 0)
-            console->input_cursor--;
-        gtk_widget_queue_draw(console->drawing_area);
+        (void)send_input(console, "\233D", 2);
         return TRUE;
     }
     if (key == GDK_KEY_Right) {
-        if (console->input_cursor < console->input_length)
-            console->input_cursor++;
-        gtk_widget_queue_draw(console->drawing_area);
+        (void)send_input(console, "\233C", 2);
         return TRUE;
     }
     if (key == GDK_KEY_Home) {
-        console->input_cursor = 0;
-        gtk_widget_queue_draw(console->drawing_area);
+        (void)send_input(console, "\23344~", 4);
         return TRUE;
     }
     if (key == GDK_KEY_End) {
-        console->input_cursor = console->input_length;
-        gtk_widget_queue_draw(console->drawing_area);
+        (void)send_input(console, "\23345~", 4);
         return TRUE;
     }
     if (key == GDK_KEY_Up || key == GDK_KEY_Down || key == GDK_KEY_Tab) {
-        const char *sequence = key == GDK_KEY_Up ? "\033[A" :
-                               key == GDK_KEY_Down ? "\033[B" : "\t";
-        (void)send_input(console, sequence, strlen(sequence), 1);
+        const char *sequence = key == GDK_KEY_Up ? "\233A" :
+                               key == GDK_KEY_Down ? "\233B" : "\t";
+        (void)send_input(console, sequence, strlen(sequence));
         return TRUE;
     }
     if (modifiers & GDK_CONTROL_MASK) {
         if (key == GDK_KEY_c)
-            (void)send_input(console, "\003", 1, 1);
+            (void)send_input(console, "\003", 1);
         else if (key == GDK_KEY_d)
-            (void)send_input(console, "\004", 1, 1);
+            (void)send_input(console, "\004", 1);
         return TRUE;
     }
 
@@ -626,15 +558,7 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
         g_unichar_validate(unicode) &&
         g_unichar_to_utf8(unicode, utf8) < (gint)sizeof(utf8)) {
         int length = g_unichar_to_utf8(unicode, utf8);
-        if (console->input_length + (size_t)length < sizeof(console->input)) {
-            memmove(console->input + console->input_cursor + length,
-                    console->input + console->input_cursor,
-                    console->input_length - console->input_cursor + 1);
-            memcpy(console->input + console->input_cursor, utf8, (size_t)length);
-            console->input_length += (size_t)length;
-            console->input_cursor += (size_t)length;
-            gtk_widget_queue_draw(console->drawing_area);
-        }
+        (void)send_input(console, utf8, (size_t)length);
         return TRUE;
     }
     return FALSE;
@@ -660,8 +584,7 @@ static gboolean read_console(GIOChannel *channel, GIOCondition condition,
             gtk_widget_destroy(console->window);
         return G_SOURCE_REMOVE;
     }
-    if (amiga_con_handler_Write(&console->handler, buffer, (size_t)length,
-                                &actual) !=
+    if (render_output(console, buffer, (size_t)length, &actual) !=
             AMIGA_IOERR_OK || actual != (size_t)length)
         return G_SOURCE_REMOVE;
     return G_SOURCE_CONTINUE;
@@ -712,14 +635,9 @@ int main(int argc, char **argv)
     memset(&console, 0, sizeof(console));
     console.stream_fd = -1;
     console.child_pid = -1;
-    terminal_reset(&console.terminal);
-    console.device.context = &console;
-    console.device.write = render_output;
-    if (amiga_console_OpenDevice(&console.device, &console.console_unit) !=
-        AMIGA_IOERR_OK)
-        return 20;
-    if (amiga_con_handler_Open(console.console_unit, &console.handler) !=
-        AMIGA_IOERR_OK)
+    ace_console_terminal_reset(&console.terminal);
+    console.editor = ace_aros_console_editor_open();
+    if (!console.editor)
         return 20;
     if (argc != 3 || strcmp(argv[1], "--session") != 0) {
         fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
@@ -778,7 +696,6 @@ int main(int argc, char **argv)
                    G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
                    read_console, &console);
     gtk_main();
-    amiga_con_handler_Close(&console.handler);
-    amiga_console_CloseDevice(console.console_unit);
+    ace_aros_console_editor_close(console.editor);
     return 0;
 }

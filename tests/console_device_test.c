@@ -90,6 +90,8 @@ int main(void)
            AMIGA_IOERR_OK);
     assert(actual == 4);
     assert(memcmp(input, "one\n", 4) == 0);
+    assert(context.output_length == 15);
+    assert(memcmp(context.output + 11, "one\n", 4) == 0);
     assert(amiga_con_handler_SetRaw(&handler, 1) == AMIGA_IOERR_OK);
     assert(amiga_con_handler_FeedInput(&handler, "\033[A", 3) ==
            AMIGA_IOERR_OK);

@@ -33,6 +33,7 @@ static struct CommandLineInterface native_cli;
 static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
 static int native_cli_loaded;
+static int native_endcli_requested;
 
 #define NATIVE_LOCAL_VAR_LIMIT 128
 #define NATIVE_LOCAL_VAR_NAME 64
@@ -46,7 +47,33 @@ static FILE *native_output = NULL;
 static BPTR native_program_dir;
 static char native_program_name[PATH_MAX];
 
+struct native_stdio_handle {
+    struct FileHandle amiga;
+    FILE *stream;
+};
+
+static struct native_stdio_handle native_stdin_handle;
+static struct native_stdio_handle native_stdout_handle;
+static struct native_stdio_handle native_stderr_handle;
+static int native_stdio_initialized;
+
 static void set_native_broker_error(void);
+
+static void native_init_stdio_handles(void)
+{
+    if (native_stdio_initialized)
+        return;
+    native_stdin_handle.amiga.fh_Pos = 0;
+    native_stdin_handle.amiga.fh_End = INT_MAX / 2;
+    native_stdin_handle.stream = stdin;
+    native_stdout_handle.amiga.fh_Pos = 0;
+    native_stdout_handle.amiga.fh_End = INT_MAX / 2;
+    native_stdout_handle.stream = stdout;
+    native_stderr_handle.amiga.fh_Pos = 0;
+    native_stderr_handle.amiga.fh_End = INT_MAX / 2;
+    native_stderr_handle.stream = stderr;
+    native_stdio_initialized = 1;
+}
 
 static void native_refresh_local_vars(void)
 {
@@ -148,6 +175,13 @@ void native_console_close(BPTR handle)
 
 static FILE *as_file(BPTR handle)
 {
+    native_init_stdio_handles();
+    if (handle == (BPTR)&native_stdin_handle.amiga)
+        return native_stdin_handle.stream;
+    if (handle == (BPTR)&native_stdout_handle.amiga)
+        return native_stdout_handle.stream;
+    if (handle == (BPTR)&native_stderr_handle.amiga)
+        return native_stderr_handle.stream;
     return (FILE *)handle;
 }
 
@@ -462,22 +496,36 @@ void SetCurrentDirName(CONST_STRPTR name)
 
 static FILE *selected_input(void)
 {
+    native_init_stdio_handles();
     return native_input ? native_input : stdin;
 }
 
 static FILE *selected_output(void)
 {
+    native_init_stdio_handles();
     return native_output ? native_output : stdout;
+}
+
+static BPTR handle_for_file(FILE *file)
+{
+    native_init_stdio_handles();
+    if (file == stdin)
+        return (BPTR)&native_stdin_handle.amiga;
+    if (file == stdout)
+        return (BPTR)&native_stdout_handle.amiga;
+    if (file == stderr)
+        return (BPTR)&native_stderr_handle.amiga;
+    return (BPTR)file;
 }
 
 BPTR Output(void)
 {
-    return (BPTR)selected_output();
+    return handle_for_file(selected_output());
 }
 
 BPTR Input(void)
 {
-    return (BPTR)selected_input();
+    return handle_for_file(selected_input());
 }
 
 BPTR Open(CONST_STRPTR name, LONG mode)
@@ -507,6 +555,11 @@ BPTR Open(CONST_STRPTR name, LONG mode)
 
 LONG Close(BPTR handle)
 {
+    native_init_stdio_handles();
+    if (handle == (BPTR)&native_stdin_handle.amiga ||
+        handle == (BPTR)&native_stdout_handle.amiga ||
+        handle == (BPTR)&native_stderr_handle.amiga)
+        return DOSTRUE;
     if (native_console_is_handle(handle)) {
         native_console_close(handle);
         return DOSTRUE;
@@ -551,7 +604,7 @@ LONG FPuts(BPTR handle, CONST_STRPTR string)
         native_ioerr = errno;
         return -1;
     }
-    return DOSTRUE;
+    return 0;
 }
 
 STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
@@ -580,6 +633,16 @@ LONG IoErr(void)
 void SetIoErr(LONG error)
 {
     native_ioerr = error;
+}
+
+void native_request_endcli(void)
+{
+    native_endcli_requested = 1;
+    native_cli.cli_Background = DOSTRUE;
+    native_cli.cli_Interactive = DOSFALSE;
+    /* Shell.c uses this condition to stop a buffered input script. */
+    native_cli.cli_FailLevel = 0;
+    (void)native_broker_setfaillevel(0);
 }
 
 static void set_native_broker_error(void)
@@ -617,6 +680,11 @@ struct CommandLineInterface *Cli(void)
     native_cli.cli_ReturnCode = (LONG)strtol(return_code, NULL, 10);
     native_cli.cli_Result2 = (LONG)strtol(result2, NULL, 10);
     native_cli.cli_FailLevel = (LONG)strtol(fail_level, NULL, 10);
+    if (native_endcli_requested) {
+        native_cli.cli_Background = DOSTRUE;
+        native_cli.cli_Interactive = DOSFALSE;
+        native_cli.cli_FailLevel = 0;
+    }
     if (prompt) {
         strncpy(native_cli_prompt, prompt, sizeof(native_cli_prompt) - 1);
         native_cli_prompt[sizeof(native_cli_prompt) - 1] = '\0';
@@ -629,11 +697,11 @@ struct CommandLineInterface *Cli(void)
     else
         native_cli_set_name[0] = '\0';
     native_cli.cli_SetName = native_cli_set_name;
-    native_cli.cli_StandardInput = (BPTR)stdin;
-    native_cli.cli_CurrentInput = (BPTR)stdin;
-    native_cli.cli_StandardOutput = (BPTR)stdout;
-    native_cli.cli_CurrentOutput = (BPTR)stdout;
-    native_cli.cli_StandardError = (BPTR)stderr;
+    native_cli.cli_StandardInput = Input();
+    native_cli.cli_CurrentInput = native_cli.cli_StandardInput;
+    native_cli.cli_StandardOutput = Output();
+    native_cli.cli_CurrentOutput = native_cli.cli_StandardOutput;
+    native_cli.cli_StandardError = handle_for_file(stderr);
     native_cli.cli_DefaultStack = 8192 / CLI_DEFAULTSTACK_UNIT;
     native_process.pr_CES = (BPTR)stderr;
     native_process.pr_CLI = (BPTR)&native_cli;
@@ -702,7 +770,12 @@ void native_publish_result(int result_code)
        there is simply no session in which to publish the result. */
     if (native_cli_loaded)
         (void)native_broker_setfaillevel((int32_t)native_cli.cli_FailLevel);
+    if (native_cli_loaded && native_cli.cli_Background)
+        (void)native_broker_setvar("__ACE_ENDCLI", "1",
+                                   AMIGA_BROKER_VAR_LOCAL);
     (void)native_broker_setresult((int32_t)result_code, (int32_t)native_ioerr);
+    if (native_cli_loaded && native_cli.cli_Background)
+        _exit(NATIVE_ENDCLI_STATUS);
 }
 
 LONG GetVar(CONST_STRPTR name, STRPTR buffer, LONG size, LONG flags)
@@ -779,28 +852,6 @@ BOOL DeleteVar(CONST_STRPTR name, LONG flags)
     return DOSTRUE;
 }
 
-void PrintFault(LONG error, CONST_STRPTR header)
-{
-    FILE *output = selected_output();
-
-    if (header)
-        fprintf(output, "%s: ", header);
-    if (error == ERROR_OBJECT_NOT_FOUND)
-        fputs("object not found\n", output);
-    else if (error == ERROR_OBJECT_WRONG_TYPE)
-        fputs("wrong object type\n", output);
-    else if (error == ERROR_BAD_TEMPLATE)
-        fputs("bad template\n", output);
-    else if (error == ERROR_REQUIRED_ARG_MISSING)
-        fputs("required argument missing\n", output);
-    else if (error == ERROR_LINE_TOO_LONG)
-        fputs("line too long\n", output);
-    else if (error)
-        fprintf(output, "%s\n", strerror(error));
-    else
-        fputs("I/O error\n", output);
-}
-
 LONG Printf(CONST_STRPTR format, ...)
 {
     va_list arguments;
@@ -820,6 +871,8 @@ LONG PutStr(CONST_STRPTR string)
     }
     return DOSTRUE;
 }
+
+#include "aros_fault.c"
 
 LONG FGetC(BPTR handle)
 {
@@ -871,16 +924,16 @@ LONG UnGetC(BPTR handle, LONG character)
 
 BPTR SelectInput(BPTR handle)
 {
-    FILE *old = selected_input();
+    BPTR old = Input();
     native_input = handle ? as_file(handle) : stdin;
-    return (BPTR)old;
+    return old;
 }
 
 BPTR SelectOutput(BPTR handle)
 {
-    FILE *old = selected_output();
+    BPTR old = Output();
     native_output = handle ? as_file(handle) : stdout;
-    return (BPTR)old;
+    return old;
 }
 
 LONG ReadItem(STRPTR buffer, LONG size, struct CSource *source)

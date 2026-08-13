@@ -111,9 +111,6 @@ static int find_in_directory(const char *directory, const char *command,
 
 static int find_command(const char *command, char *result, size_t result_size)
 {
-    const char *path = getenv("PATH");
-    char *copy, *cursor;
-
     if (strchr(command, '/')) {
         if (access(command, X_OK) != 0 || strlen(command) >= result_size)
             return -1;
@@ -123,29 +120,7 @@ static int find_command(const char *command, char *result, size_t result_size)
     if (shell_directory[0] &&
         find_in_directory(shell_directory, command, result, result_size) == 0)
         return 0;
-    if (!path)
-        return -1;
-    copy = strdup(path);
-    if (!copy)
-        return -1;
-    cursor = copy;
-    while (cursor) {
-        char *next = strchr(cursor, ':');
-        const char *directory = cursor;
-
-        if (next)
-            *next = '\0';
-        if (!*directory)
-            directory = ".";
-        if (find_in_directory(directory, command, result, result_size) == 0) {
-            free(copy);
-            return 0;
-        }
-        if (!next)
-            break;
-        cursor = next + 1;
-    }
-    free(copy);
+    /* Linux commands are available only through the explicit LNX command. */
     return -1;
 }
 
@@ -201,8 +176,6 @@ static LONG executeLine(ShellState *ss, STRPTR command_args)
         if (find_command(words[0], command_path, sizeof(command_path)) == 0) {
             words[0] = command_path;
             execv(command_path, words);
-        } else {
-            execl("/bin/bash", "bash", "-c", line, (char *)NULL);
         }
         _exit(RETURN_FAIL);
     }

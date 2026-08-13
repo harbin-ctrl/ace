@@ -36,6 +36,12 @@ struct Segment {
     BPTR seg_Seg;
 };
 
+/* The EndCLI/EndShell commands only require these stream-position fields. */
+struct FileHandle {
+    LONG fh_Pos;
+    LONG fh_End;
+};
+
 #define CMD_INTERNAL (-2)
 
 struct CommandLineInterface {

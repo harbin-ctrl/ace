@@ -1,0 +1,3 @@
+#ifndef ACE_AROS_REAL_PROTO_INPUT_H
+#define ACE_AROS_REAL_PROTO_INPUT_H
+#endif

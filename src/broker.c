@@ -177,6 +177,25 @@ static int normalize_path(const char *base, const char *path,
     return 0;
 }
 
+static int normalize_path_beneath(const char *base, const char *path,
+                                  char *result, size_t result_size)
+{
+    size_t base_length;
+
+    if (normalize_path(base, path, result, result_size) != 0)
+        return -1;
+    if (strcmp(base, "/") != 0) {
+        base_length = strlen(base);
+        if (strcmp(result, base) != 0 &&
+            (strncmp(result, base, base_length) != 0 ||
+             result[base_length] != '/')) {
+            errno = EACCES;
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static struct assign_entry *find_assign(struct broker_session *session,
                                          const char *name)
 {
@@ -286,12 +305,18 @@ static int resolve_path(struct broker_session *session, const char *input,
                 relative = colon + 1;
                 while (*relative == '/')
                     relative++;
-                return normalize_path(base, relative, result, result_size);
+                return normalize_path_beneath(base, relative, result,
+                                              result_size);
             }
             switch (ace_dos_devices_lookup(assign_name)) {
             case 1:
-                errno = ENOTSUP;
-                return -1;
+                if (ace_dos_devices_root(assign_name, base, sizeof(base)) != 0)
+                    return -1;
+                relative = colon + 1;
+                while (*relative == '/')
+                    relative++;
+                return normalize_path_beneath(base, relative, result,
+                                              result_size);
             case -1:
                 errno = EEXIST;
                 return -1;
@@ -582,6 +607,7 @@ done:
 static void stop_server(int signal_number)
 {
     (void)signal_number;
+    ace_dos_devices_shutdown();
     if (server_fd >= 0)
         close(server_fd);
     unlink(socket_path);
