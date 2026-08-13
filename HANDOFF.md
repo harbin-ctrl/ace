@@ -132,22 +132,24 @@ git history for the trace. `console.c`'s task/BeginIO layer would only start
 mattering if ACE needed a general `OpenDevice()`/`DoIO()`-driven program to
 talk to a console window, which nothing in the current architecture does.
 
-**What is still not real.** Keyboard input. `key_press()` in
-`src/amiga_console.c` still hand-cooks CSI byte sequences for arrow keys/
-Home/End instead of going through AROS's real `rom/devs/console/
-cdinputhandler.c` (290 lines, real Intuition-level input-event handling) and
-`rawkeyconvert.c` (54 lines, a thin wrapper over keymap.library's
-`MapRawKey()`). This was assessed, not attempted: `MapRawKey()` needs a real
-default `KeyMap` table (`AskKeyMapDefault()` returns
-`KMBase(KeymapBase)->DefaultKeymap`, a field set at keymap.library init --
-no self-contained default table turned up anywhere in `rom/keymap`, meaning
-it is either loaded from a real `DEVS:Keymaps/` file ACE has no filesystem
-for, or would need to be authored), and a GDK-keyval-to-Amiga-rawkey table
-would need authoring from scratch either way. Materially larger and more
-separable than the rendering work above; a later phase, not a loose end of
-this one. Editing itself (cursor movement, backspace, history) already runs
-on real AROS code, via `process_input()` from Phase 1 -- only the *encoding*
-of GDK key events into the bytes `process_input()` expects is still ACE's.
+**Keyboard mapping is deliberately not AROS's.** `key_press()` in
+`src/amiga_console.c` translates GDK keyvals to CSI byte sequences directly,
+rather than going through AROS's real `rom/devs/console/cdinputhandler.c`
+(Intuition-level input-event handling) and `rawkeyconvert.c` (a thin wrapper
+over keymap.library's `MapRawKey()`, which needs a real default `KeyMap`
+table -- no self-contained one turned up anywhere in `rom/keymap`; real
+AmigaOS loads it from a `DEVS:Keymaps/` file ACE has no filesystem for).
+This was assessed and then deliberately ruled out, not merely deferred:
+keyboard layout is a physical-device concern, the same category as the
+window surface itself, and GDK/Wayland already does it correctly for
+whatever keyboard and layout the host has -- reimplementing an Amiga keymap
+table on top would be strictly worse, not more authentic. `key_press()`'s
+translation is the permanent design here, on the same footing as
+`graphics.library` being authored rather than compiled: this is where the
+seam sits, not a stopgap for AROS code to eventually take over. Editing
+itself (cursor movement, backspace, history) already runs on real AROS
+code, via `process_input()` from Phase 1 -- only the *encoding* of GDK key
+events into the bytes it expects is ACE's, and stays that way.
 
 Font and palette selection is meant to be entirely host-side: a GTK
 preferences UI lets the user choose a family, size, and palette, persisted to
