@@ -11,6 +11,20 @@ INSTALL ?= install
 COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
 AROS_ROOT ?= $(HOME)/aros
+HOST_ARCH ?= $(shell uname -m)
+ifeq ($(HOST_ARCH),aarch64)
+AROS_CPU_ARCH ?= aarch64-all
+else ifeq ($(HOST_ARCH),x86_64)
+AROS_CPU_ARCH ?= x86_64-all
+else ifeq ($(HOST_ARCH),i686)
+AROS_CPU_ARCH ?= i386-all
+else ifeq ($(HOST_ARCH),i386)
+AROS_CPU_ARCH ?= i386-all
+else ifneq (,$(filter arm%,$(HOST_ARCH)))
+AROS_CPU_ARCH ?= arm-all
+else
+AROS_CPU_ARCH ?= x86_64-all
+endif
 AROS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Echo.c
 AROS_CD_SRC := $(AROS_ROOT)/workbench/c/shellcommands/CD.c
 AROS_PATHPART_SRC := $(AROS_ROOT)/workbench/c/shellcommands/PathPart.c
@@ -38,7 +52,7 @@ AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
 AROS_REAL_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                       -I$(AROS_ROOT)/arch/all-pc/include \
-                      -I$(AROS_ROOT)/arch/x86_64-all/include \
+                      -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
                       -I$(AROS_ROOT)/compiler/arossupport/include \
                       -I$(AROS_ROOT)/compiler/include \
                       -I$(AROS_ROOT)/rom/devs/console \

@@ -1,7 +1,7 @@
 #ifndef ACE_AROS_REAL_CPU_H
 #define ACE_AROS_REAL_CPU_H
 
-#include "/home/erik/aros/arch/x86_64-all/include/aros/cpu.h"
+#include_next <aros/cpu.h>
 
 #ifndef AROS_16BIT_TYPE
 #define AROS_16BIT_TYPE short

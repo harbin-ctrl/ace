@@ -15,7 +15,8 @@ escape hatch.
 
 ## Build on another host
 
-The ACE Makefile uses `AROS_ROOT`, defaulting to `$HOME/aros`:
+The ACE Makefile uses `AROS_ROOT`, defaulting to `$HOME/aros`, and selects the
+AROS CPU include directory from the host architecture:
 
 ```sh
 git clone https://github.com/aros-development-team/AROS.git "$HOME/aros"
@@ -27,6 +28,9 @@ make -j2 all
 make test-aros-console-editor test-aros-exec-runtime \
      test-console-device test-exec-compat
 ```
+
+For an unusual host, override both variables explicitly, for example
+`make AROS_ROOT=/opt/aros AROS_CPU_ARCH=aarch64-all -j2 all`.
 
 The patch is required for the AROS console handler to compile without
 GadTools, Workbench AppWindow, and completion support. It leaves the original
