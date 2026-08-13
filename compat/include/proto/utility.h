@@ -4,5 +4,6 @@
 #include <exec/types.h>
 
 LONG Strnicmp(CONST_STRPTR left, CONST_STRPTR right, LONG length);
+UBYTE ToUpper(ULONG character);
 
 #endif

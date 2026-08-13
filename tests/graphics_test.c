@@ -25,6 +25,7 @@
 #include <utility/tagitem.h>
 #include <devices/conunit.h>
 #include <graphics/rastport.h>
+#include <proto/graphics.h>
 
 #include "consoleif.h"
 #include "console_gcc.h"
@@ -288,6 +289,37 @@ static void test_write_to_console_ansi(void)
     g_font = NULL;
 }
 
+static void test_scroll_raster_direction(void)
+{
+    const int cell_height = g_font->tf_YSize;
+    const int sample_x = g_font->tf_XSize / 2;
+    const int sample_y = cell_height / 2;
+    uint8_t *frame;
+
+    /* Three solid bands make the direction observable without depending on
+       font rasterization. A positive Amiga ScrollRaster dy moves pixels
+       upward, so band 2 must replace band 1 after the scroll. */
+    SetDrMd(g_rp, JAM2);
+    SetAPen(g_rp, 0);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, WIN_HEIGHT - 1);
+    SetAPen(g_rp, 2);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, cell_height - 1);
+    SetAPen(g_rp, 3);
+    RectFill(g_rp, 0, cell_height, WIN_WIDTH - 1, cell_height * 2 - 1);
+    SetAPen(g_rp, 4);
+    RectFill(g_rp, 0, cell_height * 2, WIN_WIDTH - 1,
+             cell_height * 3 - 1);
+
+    ScrollRaster(g_rp, 0, (WORD)cell_height, 0, 0,
+                 WIN_WIDTH - 1, WIN_HEIGHT - 1);
+
+    frame = read_frame();
+    assert(pixel_matches(frame, sample_x, sample_y, test_palette[3]));
+    assert(pixel_matches(frame, sample_x, cell_height + sample_y,
+                         test_palette[4]));
+    free(frame);
+}
+
 int main(void)
 {
     test_class_construction();
@@ -322,6 +354,8 @@ int main(void)
 
         DisposeObject(unit);
     }
+
+    test_scroll_raster_direction();
 
     ace_gfx_destroy_rastport(g_rp);
     ace_gfx_unload_font(g_font);

@@ -6,6 +6,8 @@ BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
 BLKID_LIBS := $(shell pkg-config --libs blkid)
 GFX_CFLAGS := $(shell pkg-config --cflags cairo fontconfig)
 GFX_LIBS := $(shell pkg-config --libs cairo fontconfig)
+WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client)
+WAYLAND_LIBS := $(shell pkg-config --libs wayland-client)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 INSTALL ?= install
@@ -45,6 +47,18 @@ INSTALL_LNX_SRC := src/lnx.c
 AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
+AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
+AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
+AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
+                     matchpatternnocase parsepatternnocase \
+                     exall matchfirst matchnext matchend match_misc
+AROS_DOSPAT_OBJS := $(addprefix $(BUILD)/aros-dos-,$(addsuffix .o,$(AROS_DOSPAT_NAMES)))
+AROS_DOSPAT_CFLAGS := -Wno-implicit-function-declaration \
+                      -Wno-int-conversion -Wno-int-to-pointer-cast \
+                      -Wno-sign-compare -Wno-missing-field-initializers \
+                      -Wno-unused-but-set-variable -Wno-strict-aliasing \
+                      -Wno-maybe-uninitialized \
+                      -include ace_dos_intern.h
 AROS_BOOPSI_DIR := $(AROS_ROOT)/rom/intuition
 AROS_ALIB_DIR := $(AROS_ROOT)/compiler/alib
 AROS_BOOPSI_NAMES := rootclass makeclass freeclass addclass removeclass \
@@ -112,11 +126,11 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/arossupport/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
-INSTALL_BINS := Echo CD PathPart Fault Ask Get Getenv Set Unset Alias Unalias \
+INSTALL_BINS := Echo CD PathPart Dir Fault Ask Get Getenv Set Unset Alias Unalias \
                 FailAt Why Prompt MakeDir EndCLI LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -163,8 +177,11 @@ $(BUILD)/brokerctl.o: src/brokerctl.c | $(BUILD)
 $(BUILD)/amiga_shell.o: src/amiga_shell.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_console.o: src/amiga_console.c src/console_device_bridge.h | $(BUILD)
+$(BUILD)/amiga_console.o: src/amiga_console.c src/console_device_bridge.h src/ace_appmenu_wayland.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/ace-appmenu-wayland.o: src/ace_appmenu_wayland.c src/ace_appmenu_wayland.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(WAYLAND_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/console_device_bridge.o: src/console_device_bridge.c src/console_device_bridge.h compat/aros-real/include/ace_graphics_intern.h | $(BUILD)
 	$(CC) $(CFLAGS) $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -Isrc -c $< -o $@
@@ -211,9 +228,18 @@ $(BUILD)/aros-graphics-runtime.o: src/aros_graphics_runtime.c src/aros_graphics_
 $(BUILD)/graphics-test.o: tests/graphics_test.c src/aros_graphics_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -Isrc -c $< -o $@
 
+$(BUILD)/console-device-bridge-test.o: tests/console_device_bridge_test.c src/console_device_bridge.h src/aros_graphics_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -Isrc -c $< -o $@
+
 $(BUILD)/graphics-test: $(BUILD)/graphics-test.o $(BUILD)/aros-graphics-runtime.o \
                         $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS) \
                         $(AROS_BOOPSI_OBJS) $(BUILD)/aros-boopsi-runtime.o
+	$(CC) $(CFLAGS) -pthread $^ $(GFX_LIBS) -o $@
+
+$(BUILD)/console-device-bridge-test: $(BUILD)/console-device-bridge-test.o $(BUILD)/console_device_bridge.o \
+                                     $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) \
+                                     $(AROS_ARSUPPORT_OBJS) $(AROS_BOOPSI_OBJS) \
+                                     $(BUILD)/aros-boopsi-runtime.o
 	$(CC) $(CFLAGS) -pthread $^ $(GFX_LIBS) -o $@
 
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
@@ -262,6 +288,12 @@ $(BUILD)/CD.o: $(AROS_CD_SRC) | $(BUILD)
 
 $(BUILD)/PathPart.o: $(AROS_PATHPART_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/aros-dos-%.o: $(AROS_DOSPAT_DIR)/%.c compat/include/ace_dos_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/Dir.o: $(AROS_DIR_SRC) compat/include/ace_dos_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/Fault.o: $(AROS_FAULT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
@@ -314,6 +346,9 @@ $(BUILD)/CD: $(BUILD)/CD.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUI
 $(BUILD)/PathPart: $(BUILD)/PathPart.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+$(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 $(BUILD)/Fault: $(BUILD)/Fault.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
@@ -354,10 +389,10 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
-	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) -o $@
+	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
 
 $(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
@@ -394,4 +429,7 @@ test-boopsi: $(BUILD)/boopsi-test
 test-graphics: $(BUILD)/graphics-test
 	$(BUILD)/graphics-test
 
-.PHONY: all clean install test-console-device test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
+test-console-device-bridge: $(BUILD)/console-device-bridge-test
+	$(BUILD)/console-device-bridge-test
+
+.PHONY: all clean install test-console-device test-console-device-bridge test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics

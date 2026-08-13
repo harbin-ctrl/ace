@@ -2,6 +2,7 @@
 #define ACE_CONSOLE_DEVICE_BRIDGE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <cairo/cairo.h>
 
@@ -22,6 +23,8 @@
  */
 
 struct ace_console_device;
+
+#define ACE_CONSOLE_PEN_COUNT 8
 
 /*
  * Builds the real console.device rendering state over a width x height
@@ -44,6 +47,26 @@ void ace_console_device_close(struct ace_console_device *device);
  */
 void ace_console_device_write(struct ace_console_device *device,
                               const void *data, size_t length);
+
+/* Rebuilds the console unit around a new complete monospace font and replays
+   the saved console stream into the new cell grid. */
+int ace_console_device_set_font(struct ace_console_device *device,
+                                const char *family, int pixel_size);
+
+/* Recolors the current console by rebuilding the RastPort and replaying the
+   saved stream with the new eight-pen palette. */
+int ace_console_device_set_palette(
+    struct ace_console_device *device,
+    const uint32_t rgb[ACE_CONSOLE_PEN_COUNT]);
+
+/* Changes one pen and immediately repaints the current console. */
+void ace_console_device_set_pen_rgb(struct ace_console_device *device,
+                                    int pen, uint32_t rgb);
+
+/* Updates the AROS Window dimensions, sends M_Console_NewWindowSize through
+   the real class chain by rebuilding the unit, and repaints the saved stream. */
+int ace_console_device_resize(struct ace_console_device *device,
+                              int width, int height);
 
 /* The RastPort's pixel surface, for the caller to blit directly. Owned by
    the device; do not destroy it, and do not hold it past close(). */

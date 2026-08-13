@@ -22,4 +22,7 @@ ULONG CheckSignal(ULONG mask);
 LONG AllocSignal(LONG signal_number);
 void FreeSignal(LONG signal_number);
 
+/* Host implementation of Exec's fast, non-registerized memory copy. */
+void CopyMemQuick(CONST_APTR source, APTR destination, ULONG length);
+
 #endif

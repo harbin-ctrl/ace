@@ -3,3 +3,8 @@
 *.pid
 *.log
 
+# Local handoff notes, readmes, and exported-session text are not source.
+HANDOFF*.md
+README*.md
+export*.txt
+exports*.txt

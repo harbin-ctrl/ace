@@ -36,6 +36,19 @@ struct Segment {
     BPTR seg_Seg;
 };
 
+/* Real, from dos/dosextens.h. fl_Task is the filesystem-handler process a
+   real Lock() would be answered by; ACE's Lock() has no handler process
+   (see src/native_dos.c), so nothing here ever reads it meaningfully -- it
+   exists so exall.c's real source, which declares a struct FileLock * over
+   every BPTR lock, has a field to declare. */
+struct FileLock {
+    BPTR             fl_Link;
+    IPTR             fl_Key;
+    LONG             fl_Access;
+    struct MsgPort  *fl_Task;
+    BPTR             fl_Volume;
+};
+
 /* The EndCLI/EndShell commands only require these stream-position fields. */
 struct FileHandle {
     LONG fh_Pos;

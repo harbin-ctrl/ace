@@ -11,8 +11,11 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <dirent.h>
+
 #include <dos/dos.h>
 #include <dos/dosextens.h>
+#include <dos/exall.h>
 #include <dos/stdio.h>
 #include <dos/var.h>
 #include <exec/lists.h>
@@ -24,11 +27,16 @@
 
 static LONG native_ioerr;
 
-struct ExecBase *SysBase;
-struct DosLibrary *DOSBase;
 static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
-static struct DosLibrary native_dos_base;
+/* rn_Flags left at 0: '*' is a literal character, not also a wildcard for
+   '#?', matching modern AmigaDOS's default (RNF_WILDSTAR off). Read by the
+   real pattern-matching engine (rom/dos/patternmatching.c) this seam
+   compiles unmodified. */
+static struct RootNode native_root_node;
+static struct DosLibrary native_dos_base = { &native_root_node };
+struct ExecBase *SysBase = &native_exec_base;
+struct DosLibrary *DOSBase = &native_dos_base;
 static struct CommandLineInterface native_cli;
 static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
@@ -129,7 +137,91 @@ static void native_refresh_local_vars(void)
 
 struct native_lock {
     char path[PATH_MAX];
+    /* Opened by Examine() when the lock is a directory; consumed by
+       ExNext(). Real AmigaDOS ties this scan position to the filesystem
+       handler process behind the lock (fl_Task) -- ACE's Lock() has no
+       handler process at all (see the OpenDevice("console.device",...)-
+       style comment on Examine() below), so the scan lives directly on the
+       lock instead. */
+    DIR *scan;
+    /* ExAll() uses the FileInfoBlock disk key as a progress marker between
+       calls.  The host scan itself stays open across those calls, so this
+       only needs to be a non-zero, monotonically increasing token. */
+    IPTR scan_key;
 };
+
+/* CurrentDir() in AmigaDOS only swaps the process's lock pointer; it does not
+   manufacture a new lock for every query.  Keep the initial process lock
+   separately from caller-owned Lock()/DupLock() results.  This matters to
+   the real AROS MatchNext() implementation, which saves and restores the
+   current directory on every iteration without freeing either returned
+   value. */
+static struct native_lock native_initial_dir;
+static BPTR native_current_dir;
+
+/* Unix epoch (1970-01-01) to Amiga epoch (1978-01-01): 2922 days, including
+   the two leap years (1972, 1976) in between. Amiga DateStamp cannot
+   represent an earlier date, so those clamp to the epoch itself. */
+#define NATIVE_AMIGA_EPOCH_DAYS 2922
+
+static void native_datestamp_from_unix(time_t when, struct DateStamp *stamp)
+{
+    long long days = (long long)when / 86400 - NATIVE_AMIGA_EPOCH_DAYS;
+    long long seconds_of_day = (long long)when % 86400;
+
+    if (seconds_of_day < 0) {
+        seconds_of_day += 86400;
+        days--;
+    }
+    if (days < 0) {
+        days = 0;
+        seconds_of_day = 0;
+    }
+    stamp->ds_Days = (LONG)days;
+    stamp->ds_Minute = (LONG)(seconds_of_day / 60);
+    stamp->ds_Tick = (LONG)((seconds_of_day % 60) * 50);
+}
+
+/* FIBF_{READ,WRITE,EXECUTE,DELETE} are historically inverted: the bit is
+   SET to mean the permission is DENIED. A Unix file that is owner-writable
+   and owner-executable therefore maps to protection 0 (everything
+   permitted); denied permissions set their bit. */
+static LONG native_protection_from_stat(const struct stat *information)
+{
+    LONG protection = 0;
+
+    if (!(information->st_mode & S_IWUSR))
+        protection |= FIBF_WRITE | FIBF_DELETE;
+    if (!(information->st_mode & S_IXUSR))
+        protection |= FIBF_EXECUTE;
+    return protection;
+}
+
+/* Fills fib for a resolved host path already known to exist, shared by
+   Examine() (the locked object itself) and ExNext() (its next directory
+   child). name overrides the basename ACE would otherwise take from path,
+   since a directory child's fib_FileName is the entry's own name, not the
+   parent directory's. */
+static int native_fill_fib(const char *path, const char *name,
+                           struct FileInfoBlock *fib)
+{
+    struct stat information;
+
+    if (stat(path, &information) != 0) {
+        native_ioerr = errno;
+        return -1;
+    }
+    memset(fib, 0, sizeof(*fib));
+    fib->fib_DirEntryType = S_ISDIR(information.st_mode) ? ST_USERDIR : ST_FILE;
+    fib->fib_EntryType = fib->fib_DirEntryType;
+    snprintf((char *)fib->fib_FileName, sizeof(fib->fib_FileName), "%s",
+             name);
+    fib->fib_Protection = native_protection_from_stat(&information);
+    fib->fib_Size = (LONG)information.st_size;
+    fib->fib_NumBlocks = (LONG)information.st_blocks;
+    native_datestamp_from_unix(information.st_mtime, &fib->fib_Date);
+    return 0;
+}
 
 struct native_console_handle {
     uint64_t magic;
@@ -189,6 +281,7 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 {
     (void)version;
     if (name && strcasecmp(name, "dos.library") == 0) {
+        native_dos_base.dl_Root = &native_root_node;
         DOSBase = &native_dos_base;
         return (struct Library *)&native_dos_base;
     }
@@ -231,6 +324,11 @@ LONG Strnicmp(CONST_STRPTR left, CONST_STRPTR right, LONG length)
     return strncasecmp(left, right, (size_t)length);
 }
 
+UBYTE ToUpper(ULONG character)
+{
+    return (UBYTE)toupper((int)character);
+}
+
 APTR AllocVec(ULONG size, ULONG flags)
 {
     (void)flags;
@@ -257,6 +355,11 @@ ULONG AvailMem(ULONG flags)
 void FreeVec(APTR memory)
 {
     free(memory);
+}
+
+void CopyMemQuick(CONST_APTR source, APTR destination, ULONG length)
+{
+    memmove(destination, source, length);
 }
 
 void CopyMem(CONST_APTR source, APTR destination, ULONG length)
@@ -347,6 +450,8 @@ BPTR AllocDosObject(LONG type, APTR tags)
         return calloc(1, sizeof(struct FileInfoBlock));
     if (type == DOS_RDARGS)
         return calloc(1, sizeof(struct RDArgs));
+    if (type == DOS_EXALLCONTROL)
+        return calloc(1, sizeof(struct InternalExAllControl));
     return NULL;
 }
 
@@ -377,6 +482,14 @@ void FreeDosObject(LONG type, APTR object)
 
     if (type == DOS_RDARGS)
         native_free_rdargs_values(arguments);
+    if (type == DOS_EXALLCONTROL && object) {
+        /* exall.c's real ExAll() emulation allocates this internally (see
+           compat/include/dos/exall.h) the first time it is called on a
+           lock, and documents it as freed by FreeDosObject(). */
+        struct InternalExAllControl *control = object;
+
+        free(control->fib);
+    }
     free(object);
 }
 
@@ -392,7 +505,7 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
         native_ioerr = errno;
         return NULL;
     }
-    lock = malloc(sizeof(*lock));
+    lock = calloc(1, sizeof(*lock));
     if (!lock) {
         native_ioerr = ERROR_NO_FREE_STORE;
         return NULL;
@@ -403,6 +516,15 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
 
 LONG UnLock(BPTR handle)
 {
+    struct native_lock *lock = handle;
+
+    /* The initial current-directory lock is process state, not a heap lock
+       returned by Lock().  Commands such as AROS CD quite reasonably call
+       UnLock() on the old value returned by CurrentDir(). */
+    if (lock == &native_initial_dir)
+        return DOSTRUE;
+    if (lock && lock->scan)
+        closedir(lock->scan);
     free(handle);
     return DOSTRUE;
 }
@@ -423,7 +545,7 @@ BPTR CreateDir(CONST_STRPTR name)
             set_native_broker_error();
         return BNULL;
     }
-    lock = malloc(sizeof(*lock));
+    lock = calloc(1, sizeof(*lock));
     if (!lock) {
         native_ioerr = ERROR_NO_FREE_STORE;
         return BNULL;
@@ -442,38 +564,103 @@ LONG ChangeMode(LONG type, BPTR object, LONG mode)
 
 LONG Examine(BPTR handle, struct FileInfoBlock *fib)
 {
-    struct stat information;
     struct native_lock *lock = handle;
-    if (!lock || !fib || stat(lock->path, &information) != 0) {
-        native_ioerr = errno;
+    const char *name;
+
+    if (!lock || !fib) {
+        native_ioerr = ERROR_INVALID_COMPONENT_NAME;
         return DOSFALSE;
     }
-    fib->fib_DirEntryType = S_ISDIR(information.st_mode) ? 1 : -1;
+    name = strrchr(lock->path, '/');
+    name = name ? name + 1 : lock->path;
+    if (native_fill_fib(lock->path, name, fib) != 0)
+        return DOSFALSE;
+
+    /* A real Examine() on a directory lock (re)starts the scan ExNext()
+       continues; AROS's own ExAll() relies on exactly this to restart
+       enumeration by setting eac_LastKey back to 0 and calling Examine()
+       again. */
+    if (lock->scan)
+        closedir(lock->scan);
+    lock->scan = fib->fib_DirEntryType > 0 ? opendir(lock->path) : NULL;
+    lock->scan_key = 0;
     return DOSTRUE;
+}
+
+LONG ExNext(BPTR handle, struct FileInfoBlock *fib)
+{
+    struct native_lock *lock = handle;
+    struct dirent *entry;
+    char child[PATH_MAX];
+
+    if (!lock || !fib || !lock->scan) {
+        native_ioerr = ERROR_NO_MORE_ENTRIES;
+        return DOSFALSE;
+    }
+    for (;;) {
+        entry = readdir(lock->scan);
+        if (!entry) {
+            closedir(lock->scan);
+            lock->scan = NULL;
+            native_ioerr = ERROR_NO_MORE_ENTRIES;
+            return DOSFALSE;
+        }
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+            break;
+    }
+    if (snprintf(child, sizeof(child), "%s/%s", lock->path, entry->d_name) >=
+        (int)sizeof(child)) {
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return DOSFALSE;
+    }
+    if (native_fill_fib(child, entry->d_name, fib) != 0)
+        return DOSFALSE;
+    fib->fib_DiskKey = ++lock->scan_key;
+    return DOSTRUE;
+}
+
+BPTR DupLock(BPTR handle)
+{
+    struct native_lock *lock = handle;
+    struct native_lock *copy;
+
+    if (!lock)
+        return BNULL;
+    copy = malloc(sizeof(*copy));
+    if (!copy) {
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return BNULL;
+    }
+    strcpy(copy->path, lock->path);
+    copy->scan = NULL;
+    copy->scan_key = 0;
+    return copy;
 }
 
 BPTR CurrentDir(BPTR handle)
 {
     char current[PATH_MAX];
-    struct native_lock *old;
+    BPTR old;
 
-    if (native_broker_getcwd(current, sizeof(current)) != 0) {
-        native_ioerr = errno;
-        return NULL;
+    if (!native_current_dir) {
+        if (native_broker_getcwd(current, sizeof(current)) != 0) {
+            native_ioerr = errno;
+            return NULL;
+        }
+        memset(&native_initial_dir, 0, sizeof(native_initial_dir));
+        snprintf(native_initial_dir.path, sizeof(native_initial_dir.path),
+                 "%s", current);
+        native_current_dir = &native_initial_dir;
     }
-    old = malloc(sizeof(*old));
-    if (!old) {
-        native_ioerr = ERROR_NO_FREE_STORE;
-        return NULL;
-    }
-    strcpy(old->path, current);
+
+    old = native_current_dir;
     if (handle) {
         struct native_lock *new_dir = handle;
         if (native_broker_setcwd(new_dir->path) != 0) {
             native_ioerr = errno;
-            free(old);
             return NULL;
         }
+        native_current_dir = handle;
     }
     return old;
 }
@@ -758,10 +945,191 @@ BOOL SetPrompt(CONST_STRPTR prompt)
     return DOSTRUE;
 }
 
+/*
+ * VPrintf() receives AmigaDOS's RawDoFmt data stream, not a C va_list.
+ * The real Dir command deliberately passes an array of IPTR values to it
+ * (including formats such as "%-32.s"), so forwarding the format string to
+ * PutStr() silently loses every directory name.  Keep this small formatter
+ * in the DOS host seam; its grammar mirrors exec.library's RawDoFmt parser
+ * for the string and scalar forms used by the ported commands.
+ */
+static LONG native_vprintf(CONST_STRPTR format, const IPTR *data)
+{
+    FILE *output = selected_output();
+    LONG written = 0;
+    size_t argument = 0;
+
+    while (*format) {
+        int left = 0;
+        int fill = ' ';
+        ULONG minimum = 0;
+        ULONG maximum = (ULONG)-1;
+        char number_buffer[sizeof(IPTR) * 8 + 2];
+        const char *text = NULL;
+        ULONG length = 0;
+        SIPTR signed_value = 0;
+        IPTR unsigned_value = 0;
+        char conversion;
+
+        if (*format != '%') {
+            if (fputc((unsigned char)*format++, output) == EOF)
+                return DOSFALSE;
+            written++;
+            continue;
+        }
+
+        format++;
+        if (*format == '-') {
+            left = 1;
+            format++;
+        }
+        if (*format == '0') {
+            fill = '0';
+            format++;
+        }
+        while (*format >= '0' && *format <= '9') {
+            minimum = minimum * 10u + (ULONG)(*format++ - '0');
+        }
+        if (*format == '.') {
+            format++;
+            if (*format >= '0' && *format <= '9') {
+                maximum = 0;
+                do {
+                    maximum = maximum * 10u + (ULONG)(*format++ - '0');
+                } while (*format >= '0' && *format <= '9');
+            }
+        }
+        if (*format == 'l' || *format == 'i')
+            format++;
+        conversion = *format ? *format++ : '\0';
+
+        switch (conversion) {
+        case 's':
+            text = (const char *)(uintptr_t)data[argument++];
+            if (!text)
+                text = "";
+            length = (ULONG)strlen(text);
+            break;
+
+        case 'd':
+        case 'D':
+            signed_value = (SIPTR)data[argument++];
+            if (signed_value < 0) {
+                unsigned_value = (IPTR)(-signed_value);
+                number_buffer[0] = '-';
+                text = number_buffer + 1;
+            } else {
+                unsigned_value = (IPTR)signed_value;
+                text = number_buffer;
+            }
+            length = (ULONG)(number_buffer + sizeof(number_buffer) - text);
+            {
+                char digits[sizeof(number_buffer)];
+                ULONG digit_count = 0;
+
+                do {
+                    digits[digit_count++] =
+                        (char)('0' + (unsigned_value % 10));
+                    unsigned_value /= 10;
+                } while (unsigned_value != 0 &&
+                         digit_count < sizeof(digits));
+                for (ULONG i = 0; i < digit_count; i++)
+                    ((char *)text)[i] = digits[digit_count - i - 1];
+                length = digit_count + (text == number_buffer ? 0u : 1u);
+            }
+            break;
+
+        case 'u':
+        case 'U':
+        case 'x':
+        case 'X':
+        case 'p':
+        case 'P': {
+            static const char digits[] = "0123456789ABCDEF";
+            unsigned int base = conversion == 'x' || conversion == 'X' ||
+                                conversion == 'p' || conversion == 'P' ? 16 : 10;
+            int pointer = conversion == 'p' || conversion == 'P';
+            char *end = number_buffer + sizeof(number_buffer);
+            char *cursor = end;
+
+            unsigned_value = data[argument++];
+            if (pointer) {
+                fill = '0';
+                minimum = sizeof(APTR) * 2;
+            }
+            do {
+                *--cursor = digits[unsigned_value % base];
+                unsigned_value /= base;
+            } while (unsigned_value != 0 && cursor > number_buffer);
+            text = cursor;
+            length = (ULONG)(end - cursor);
+            break;
+        }
+
+        case 'c':
+            number_buffer[0] = (char)data[argument++];
+            text = number_buffer;
+            length = 1;
+            break;
+
+        case 'b': {
+            const UBYTE *bstring = (const UBYTE *)(uintptr_t)data[argument++];
+
+            if (!bstring) {
+                text = "";
+                length = 0;
+            } else {
+                length = bstring[0];
+                text = (const char *)(bstring + 1);
+            }
+            break;
+        }
+
+        case '%':
+            number_buffer[0] = '%';
+            text = number_buffer;
+            length = 1;
+            break;
+
+        default:
+            /* Match RawDoFmt's useful treatment of an unknown conversion:
+               print the conversion character and consume no data value. */
+            number_buffer[0] = conversion;
+            text = number_buffer;
+            length = conversion ? 1u : 0u;
+            break;
+        }
+
+        if (length > maximum)
+            length = maximum;
+        if (!left) {
+            while (length < minimum) {
+                if (fputc(fill, output) == EOF)
+                    return DOSFALSE;
+                written++;
+                minimum--;
+            }
+        }
+        for (ULONG i = 0; i < length; i++) {
+            if (fputc((unsigned char)text[i], output) == EOF)
+                return DOSFALSE;
+            written++;
+        }
+        if (left) {
+            while (length < minimum) {
+                if (fputc(fill, output) == EOF)
+                    return DOSFALSE;
+                written++;
+                minimum--;
+            }
+        }
+    }
+    return written;
+}
+
 LONG VPrintf(CONST_STRPTR format, APTR arguments)
 {
-    (void)arguments;
-    return PutStr(format);
+    return native_vprintf(format, (const IPTR *)arguments);
 }
 
 void native_publish_result(int result_code)
@@ -1029,7 +1397,7 @@ BPTR ParentOfFH(BPTR file)
     (void)file;
     if (native_broker_getcwd(current, sizeof(current)) != 0)
         return BNULL;
-    lock = malloc(sizeof(*lock));
+    lock = calloc(1, sizeof(*lock));
     if (!lock)
         return BNULL;
     snprintf(lock->path, sizeof(lock->path), "%s", current);

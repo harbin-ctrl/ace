@@ -562,7 +562,9 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
      * scroll moves content within the same box, which every caller in
      * stdconclass.c does. Cairo's own surface cannot be its own source and
      * destination for an overlapping copy, so the box is captured to a
-     * snapshot first and blitted back shifted by (dx,dy).
+     * snapshot first and blitted back with the Amiga ScrollRaster sign
+     * convention: positive dx/dy moves the pixels left/up, so the source
+     * surface is placed at (x0 - dx, y0 - dy).
      */
     snapshot = cairo_image_surface_create(CAIRO_FORMAT_RGB24, box_w, box_h);
     snapshot_cr = cairo_create(snapshot);
@@ -582,7 +584,7 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
     cairo_save(priv->cr);
     cairo_rectangle(priv->cr, x0, y0, box_w, box_h);
     cairo_clip(priv->cr);
-    cairo_set_source_surface(priv->cr, snapshot, x0 + dx, y0 + dy);
+    cairo_set_source_surface(priv->cr, snapshot, x0 - dx, y0 - dy);
     cairo_paint(priv->cr);
     cairo_restore(priv->cr);
 

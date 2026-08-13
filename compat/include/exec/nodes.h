@@ -11,4 +11,9 @@ struct Node {
     char *ln_Name;
 };
 
+struct MinNode {
+    struct MinNode *mln_Succ;
+    struct MinNode *mln_Pred;
+};
+
 #endif

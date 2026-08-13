@@ -11,6 +11,12 @@ struct List {
     UBYTE l_pad;
 };
 
+struct MinList {
+    struct MinNode *mlh_Head;
+    struct MinNode *mlh_Tail;
+    struct MinNode *mlh_TailPred;
+};
+
 #define NEWLIST(list) \
     do { \
         (list)->lh_Head = (struct Node *)&(list)->lh_Tail; \
