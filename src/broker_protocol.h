@@ -83,8 +83,18 @@ enum amiga_broker_operation {
      */
     AMIGA_BROKER_ATTACH = 16,
     /* Translate an absolute host path back into an AmigaDOS volume name. */
-    AMIGA_BROKER_NAMEFROMHOST = 17
+    AMIGA_BROKER_NAMEFROMHOST = 17,
+    /* Return the current session's assignments for the DOS compatibility
+     * layer that implements the unmodified AROS Assign command. */
+    AMIGA_BROKER_LISTASSIGNS = 18
 };
+
+#define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
+#define AMIGA_BROKER_ASSIGN_ADD          0x0002u
+#define AMIGA_BROKER_ASSIGN_PREPEND      0x0004u
+#define AMIGA_BROKER_ASSIGN_PATH         0x0008u
+#define AMIGA_BROKER_ASSIGN_DEFER        0x0010u
+#define AMIGA_BROKER_ASSIGN_REMOVE_ITEM  0x0020u
 
 #define AMIGA_BROKER_VAR_LOCAL  0x0001u
 #define AMIGA_BROKER_VAR_GLOBAL 0x0002u

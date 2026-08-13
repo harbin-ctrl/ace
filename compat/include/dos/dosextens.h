@@ -5,6 +5,7 @@
 #include <exec/lists.h>
 #include <exec/ports.h>
 #include <dos/cliinit.h>
+#include <dos/dos.h>
 #include <string.h>
 
 #define AROS_BSTR_ADDR(value) (value)
@@ -94,6 +95,67 @@ struct RDArgs {
     APTR RDA_Values[32];
     UBYTE RDA_Multiple[32];
     UBYTE RDA_Owned;
+    STRPTR RDA_ExtHelp;
+};
+
+/* DosList is private inside AROS dos.library, but Assign.c uses the public
+ * DosList API to inspect and mutate assignments.  ACE represents the nodes
+ * locally and backs their contents with the broker session. */
+struct AssignList;
+
+struct DosList {
+    BPTR dol_Next;
+    LONG dol_Type;
+    APTR dol_Task;
+    BPTR dol_Lock;
+    union {
+        struct {
+            BSTR dol_Handler;
+            LONG dol_StackSize;
+            LONG dol_Priority;
+            BPTR dol_Startup;
+            BPTR dol_SegList;
+            BPTR dol_GlobVec;
+        } dol_handler;
+        struct {
+            struct DateStamp dol_VolumeDate;
+            BPTR dol_LockList;
+            LONG dol_DiskType;
+            BPTR dol_unused;
+        } dol_volume;
+        struct {
+            STRPTR dol_AssignName;
+            struct AssignList *dol_List;
+        } dol_assign;
+    } dol_misc;
+    BSTR dol_Name;
+};
+
+#define DLT_DEVICE     0
+#define DLT_DIRECTORY  1
+#define DLT_VOLUME     2
+#define DLT_LATE       3
+#define DLT_NONBINDING 4
+
+#define LDB_READ    0
+#define LDB_WRITE   1
+#define LDB_DEVICES 2
+#define LDB_VOLUMES 3
+#define LDB_ASSIGNS 4
+#define LDB_ENTRY   5
+#define LDB_DELETE  6
+#define LDF_READ    (1L << LDB_READ)
+#define LDF_WRITE   (1L << LDB_WRITE)
+#define LDF_DEVICES (1L << LDB_DEVICES)
+#define LDF_VOLUMES (1L << LDB_VOLUMES)
+#define LDF_ASSIGNS (1L << LDB_ASSIGNS)
+#define LDF_ENTRY   (1L << LDB_ENTRY)
+#define LDF_DELETE  (1L << LDB_DELETE)
+#define LDF_ALL     (LDF_DEVICES | LDF_VOLUMES | LDF_ASSIGNS)
+
+struct AssignList {
+    struct AssignList *al_Next;
+    BPTR al_Lock;
 };
 
 #endif

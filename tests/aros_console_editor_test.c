@@ -29,6 +29,13 @@ int main(void)
     assert(memcmp(line, "second\n", 7) == 0);
     drain_output(editor);
 
+    /* A blank Return must submit only a blank line.  It must not let the
+       console handler's stale input bytes become a repeated command. */
+    assert(ace_aros_console_editor_feed(editor, "\n", 1) == 0);
+    assert(ace_aros_console_editor_take_line(editor, line, sizeof(line)) == 1);
+    assert(line[0] == '\n');
+    drain_output(editor);
+
     /* Real AROS support.c handles CSI-Up and retrieves the previous line. */
     assert(ace_aros_console_editor_feed(editor, "\233A", 2) == 0);
     assert(ace_aros_console_editor_feed(editor, "\n", 1) == 0);

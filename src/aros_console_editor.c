@@ -94,6 +94,11 @@ static void reset_input(struct filehandle *filehandle)
     filehandle->inputstart = 0;
     filehandle->inputpos = 0;
     filehandle->inputsize = 0;
+    /* support.c's history code examines inputbuffer[inputstart] when Return
+       is pressed.  The positions are reset after a completed line, but the
+       old bytes remain in the buffer; a blank Return could therefore be
+       mistaken for the previous command. */
+    filehandle->inputbuffer[0] = '\0';
 }
 
 static void capture_completed_line(struct ace_aros_console_editor *editor)

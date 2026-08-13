@@ -50,6 +50,7 @@ INSTALL_LNX_SRC := src/lnx.c
 AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
+AROS_ASSIGN_SRC := $(AROS_ROOT)/workbench/c/Assign.c
 AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
@@ -140,10 +141,10 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
 INSTALL_BINS := Echo CD PathPart Dir Fault Ask Get Getenv Set Unset Alias Unalias \
-                FailAt Why Prompt MakeDir EndCLI LNX ace-shell ace-user-shell ace-console NewCLI \
+                FailAt Why Prompt MakeDir EndCLI Assign LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -171,6 +172,30 @@ $(BUILD)/makedir_entry.o: src/makedir_entry.c | $(BUILD)
 
 $(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+AROS_ASSIGN_CFLAGS := -Wno-implicit-function-declaration \
+                      -Wno-int-conversion -Wno-int-to-pointer-cast \
+                      -Wno-pointer-sign -Wno-sign-compare \
+                      -Wno-missing-field-initializers -Wno-strict-aliasing \
+                      -Wno-unused-but-set-variable
+AROS_ASSIGN_INCLUDES := -I$(CURDIR)/compat/aros-real/include -I$(COMPAT) \
+                        -I$(AROS_ROOT)/compiler/include -Isrc
+
+$(BUILD)/Assign.o: $(AROS_ASSIGN_SRC) src/assign_compat.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_ASSIGN_CFLAGS) -D__AROS__ $(AROS_ASSIGN_INCLUDES) \
+	    -include src/assign_compat.h -c $< -o $@
+
+$(BUILD)/assign_entry.o: src/assign_entry.c src/broker_client.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/assign_compat.o: src/assign_compat.c src/assign_compat.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
+                 $(BUILD)/assign_compat.o $(BUILD)/native_dos.o \
+                 $(BUILD)/native_command.o $(BUILD)/native_args.o \
+                 $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@

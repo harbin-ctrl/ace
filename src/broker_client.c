@@ -430,8 +430,21 @@ int native_broker_setcwd(const char *path)
 
 int native_broker_assign(const char *name, const char *path)
 {
+    return native_broker_assign_ex(name, path, 0);
+}
+
+int native_broker_assign_ex(const char *name, const char *path,
+                            uint32_t flags)
+{
     char ignored[1];
-    return broker_request(AMIGA_BROKER_ASSIGN, name, path, 0, ignored, sizeof(ignored));
+    return broker_request(AMIGA_BROKER_ASSIGN, name, path, flags,
+                          ignored, sizeof(ignored));
+}
+
+int native_broker_listassigns(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_LISTASSIGNS, NULL, NULL, 0,
+                          result, result_size);
 }
 
 int native_broker_getvar(const char *name, uint32_t flags,

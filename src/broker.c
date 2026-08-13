@@ -1,10 +1,12 @@
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 
 #include "broker_protocol.h"
 #include "dos_devices.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -17,16 +19,31 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_SESSIONS 64
 #define MAX_ASSIGNS  64
+#define MAX_ASSIGN_TARGETS 16
 #define MAX_VARS     128
 #define MAX_NAME     64
 #define MAX_VALUE    4096
 #define MAX_LIST_RESULT AMIGA_BROKER_MAX_PAYLOAD
 #define DEFAULT_FAIL_LEVEL 10
 #define DEFAULT_PROMPT "%N.%S> "
+#define AMIGA_COMPONENT_LIMIT 107
+/* '~' is legal in a stored name, but AROS pattern syntax makes it a
+ * negation operator. '^' remains an ordinary filename character there and
+ * is still visually conspicuous on Linux. */
+#define MAPPED_MARKER '^'
+#define MAPPED_SUFFIX_DIGITS 8
+#define ASSIGN_DIRECTORY 1
+#define ASSIGN_LATE 3
+#define ASSIGN_NONBINDING 4
+
+#ifndef NAME_MAX
+#define NAME_MAX 255
+#endif
 
 struct variable_entry {
     char name[MAX_NAME];
@@ -37,6 +54,20 @@ struct variable_entry {
 struct assign_entry {
     char name[MAX_NAME];
     char root[PATH_MAX];
+    char targets[MAX_ASSIGN_TARGETS][PATH_MAX];
+    size_t target_count;
+    int type;
+};
+
+/* A Linux directory entry that cannot be carried safely through an AROS
+ * pathname gets a short, visible spelling for the life of this broker. The
+ * parent is part of the key: the same spelling may be used independently in
+ * different directories. */
+struct component_mapping {
+    char parent[PATH_MAX];
+    char host_name[NAME_MAX + 1];
+    char amiga_name[AMIGA_COMPONENT_LIMIT + 1];
+    struct component_mapping *next;
 };
 
 struct broker_session {
@@ -62,6 +93,8 @@ struct broker_session {
 
 static struct broker_session sessions[MAX_SESSIONS];
 static struct variable_entry global_vars[MAX_VARS];
+static struct component_mapping *component_mappings;
+static uint32_t mapping_state;
 static int server_fd = -1;
 /* Set from amiga_broker_socket_path(), or argv[1], as main() starts, before
  * anything (including the signal handlers) can read it. */
@@ -208,6 +241,301 @@ static struct broker_session *find_session(const char *id)
     return NULL;
 }
 
+static bool component_needs_mapping(const char *name)
+{
+    size_t length = strlen(name);
+
+    if (length > AMIGA_COMPONENT_LIMIT)
+        return true;
+    for (size_t index = 0; index < length; index++) {
+        unsigned char character = (unsigned char)name[index];
+
+        /* Keep the exposed form deliberately boring. Besides ':' being a
+         * path separator, AROS pattern syntax gives several other legal
+         * Linux bytes structural meaning. Control and non-ASCII bytes are
+         * also poor terminal display material. */
+        if (!((character >= 'a' && character <= 'z') ||
+              (character >= 'A' && character <= 'Z') ||
+              (character >= '0' && character <= '9') ||
+              character == '.' || character == '_' || character == '-') )
+            return true;
+    }
+    return false;
+}
+
+static uint32_t next_mapping_value(void)
+{
+    if (!mapping_state) {
+        struct timespec now;
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        mapping_state = (uint32_t)now.tv_nsec ^ (uint32_t)now.tv_sec ^
+                        (uint32_t)getpid();
+        if (!mapping_state)
+            mapping_state = 0x9e3779b9u;
+    }
+
+    /* xorshift32 is sufficient here: this is a collision-resistant display
+     * suffix, not a security token. */
+    mapping_state ^= mapping_state << 13;
+    mapping_state ^= mapping_state >> 17;
+    mapping_state ^= mapping_state << 5;
+    return mapping_state;
+}
+
+static struct component_mapping *find_mapping_by_host(const char *parent,
+                                                       const char *host_name)
+{
+    for (struct component_mapping *mapping = component_mappings;
+         mapping; mapping = mapping->next)
+        if (strcmp(mapping->parent, parent) == 0 &&
+            strcmp(mapping->host_name, host_name) == 0)
+            return mapping;
+    return NULL;
+}
+
+static struct component_mapping *find_mapping_by_amiga(const char *parent,
+                                                        const char *amiga_name)
+{
+    for (struct component_mapping *mapping = component_mappings;
+         mapping; mapping = mapping->next)
+        if (strcmp(mapping->parent, parent) == 0 &&
+            strcmp(mapping->amiga_name, amiga_name) == 0)
+            return mapping;
+    return NULL;
+}
+
+static int host_component_exists(const char *parent, const char *name)
+{
+    char path[PATH_MAX];
+
+    if (snprintf(path, sizeof(path), "%s%s%s", parent,
+                 strcmp(parent, "/") == 0 ? "" : "/", name) >=
+        (int)sizeof(path))
+        return 1;
+    return lstat(path, &(struct stat){0}) == 0;
+}
+
+static int map_component(const char *parent, const char *host_name,
+                         char *result, size_t result_size)
+{
+    struct component_mapping *mapping;
+    char prefix[AMIGA_COMPONENT_LIMIT + 1];
+    size_t prefix_length = 0;
+
+    if (!component_needs_mapping(host_name)) {
+        if (strlen(host_name) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, host_name);
+        return 0;
+    }
+    mapping = find_mapping_by_host(parent, host_name);
+    if (mapping) {
+        if (strlen(mapping->amiga_name) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, mapping->amiga_name);
+        return 0;
+    }
+
+    for (size_t index = 0; host_name[index] &&
+         prefix_length < sizeof(prefix) - 1; index++) {
+        unsigned char character = (unsigned char)host_name[index];
+
+        if ((character >= 'a' && character <= 'z') ||
+            (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9') ||
+            character == '.' || character == '_' || character == '-')
+            prefix[prefix_length++] = (char)character;
+        else
+            prefix[prefix_length++] = '-';
+    }
+    if (!prefix_length)
+        memcpy(prefix, "file", 5), prefix_length = 4;
+    prefix[prefix_length] = '\0';
+
+    /* The suffix is intentionally fixed-width and random-looking. It makes
+     * the synthetic nature obvious while giving us enough room for a useful
+     * readable prefix even at the 107-byte AROS component limit. */
+    for (int attempt = 0; attempt < 1024; attempt++) {
+        char candidate[AMIGA_COMPONENT_LIMIT + 1];
+        unsigned int suffix = next_mapping_value();
+        size_t suffix_length = 1 + MAPPED_SUFFIX_DIGITS;
+        size_t available = AMIGA_COMPONENT_LIMIT - suffix_length;
+        size_t candidate_prefix_length = prefix_length < available ?
+                                         prefix_length : available;
+
+        if (snprintf(candidate, sizeof(candidate), "%.*s%c%08X",
+                     (int)candidate_prefix_length, prefix, MAPPED_MARKER,
+                     suffix) >=
+            (int)sizeof(candidate))
+            continue;
+        if (find_mapping_by_amiga(parent, candidate) ||
+            host_component_exists(parent, candidate))
+            continue;
+        mapping = calloc(1, sizeof(*mapping));
+        if (!mapping) {
+            errno = ENOMEM;
+            return -1;
+        }
+        if (strlen(parent) >= sizeof(mapping->parent) ||
+            strlen(host_name) >= sizeof(mapping->host_name)) {
+            free(mapping);
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(mapping->parent, parent);
+        strcpy(mapping->host_name, host_name);
+        strcpy(mapping->amiga_name, candidate);
+        mapping->next = component_mappings;
+        component_mappings = mapping;
+        if (strlen(candidate) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, candidate);
+        return 0;
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+static int unmap_component(const char *parent, const char *amiga_name,
+                           char *result, size_t result_size)
+{
+    struct component_mapping *mapping = find_mapping_by_amiga(parent,
+                                                               amiga_name);
+
+    if (!mapping) {
+        if (strlen(amiga_name) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, amiga_name);
+        return 0;
+    }
+    if (strlen(mapping->host_name) >= result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(result, mapping->host_name);
+    return 0;
+}
+
+static int append_path_text(char *result, size_t result_size,
+                            size_t *used, const char *text)
+{
+    int written = snprintf(result + *used, result_size - *used, "%s%s",
+                           *used && result[*used - 1] != ':' ? "/" : "",
+                           text);
+
+    if (written < 0 || (size_t)written >= result_size - *used) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    *used += (size_t)written;
+    return 0;
+}
+
+/* Convert the device layer's ordinary volume spelling into the AROS-facing
+ * spelling, mapping each unsafe host component against its host parent. The
+ * host and Amiga suffixes normally have the same component structure; the
+ * host parent is what makes each mapping directory-specific. */
+static int name_from_host_with_mappings(const char *path, char *result,
+                                        size_t result_size)
+{
+    char raw[PATH_MAX];
+    char canonical[PATH_MAX];
+    char volume_root[PATH_MAX];
+    char host_parent[PATH_MAX];
+    const char *raw_cursor;
+    const char *host_cursor;
+    char *colon;
+    size_t used;
+
+    if (ace_dos_devices_name_from_path(path, raw, sizeof(raw)) != 0)
+        return -1;
+    if (!realpath(path, canonical) ||
+        ace_dos_devices_volume_root_for_path(path, volume_root,
+                                             sizeof(volume_root)) != 0)
+        return -1;
+    colon = strchr(raw, ':');
+    if (!colon) {
+        errno = EINVAL;
+        return -1;
+    }
+    used = (size_t)(colon - raw) + 1;
+    if (used >= result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(result, raw, used);
+    result[used] = '\0';
+
+    if (strlen(volume_root) >= sizeof(host_parent)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(host_parent, volume_root);
+    host_cursor = canonical + strlen(volume_root);
+    while (*host_cursor == '/')
+        host_cursor++;
+    raw_cursor = colon + 1;
+    while (*raw_cursor == '/')
+        raw_cursor++;
+
+    while (*raw_cursor) {
+        char raw_component[PATH_MAX];
+        char host_component[NAME_MAX + 1];
+        char mapped_component[AMIGA_COMPONENT_LIMIT + 1];
+        const char *raw_slash = strchr(raw_cursor, '/');
+        const char *host_slash = strchr(host_cursor, '/');
+        size_t raw_length = raw_slash ? (size_t)(raw_slash - raw_cursor) :
+                                        strlen(raw_cursor);
+        size_t host_length = host_slash ? (size_t)(host_slash - host_cursor) :
+                                          strlen(host_cursor);
+
+        if (!raw_length || raw_length >= sizeof(raw_component)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(raw_component, raw_cursor, raw_length);
+        raw_component[raw_length] = '\0';
+        if (!host_length || host_length >= sizeof(host_component)) {
+            /* This can only happen for a filesystem root alias whose
+             * spelling contains a synthetic component not present in the
+             * host mount path. Preserve it literally. */
+            strcpy(host_component, raw_component);
+        } else {
+            memcpy(host_component, host_cursor, host_length);
+            host_component[host_length] = '\0';
+        }
+        if (map_component(host_parent, host_component, mapped_component,
+                          sizeof(mapped_component)) != 0)
+            return -1;
+        if (append_path_text(result, result_size, &used, mapped_component) != 0)
+            return -1;
+        if (strlen(host_parent) + strlen(host_component) + 2 >=
+            sizeof(host_parent)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (strcmp(host_parent, "/") != 0)
+            strcat(host_parent, "/");
+        strcat(host_parent, host_component);
+        raw_cursor = raw_slash ? raw_slash + 1 : raw_cursor + raw_length;
+        host_cursor = host_slash ? host_slash + 1 : host_cursor + host_length;
+        while (*raw_cursor == '/')
+            raw_cursor++;
+        while (*host_cursor == '/')
+            host_cursor++;
+    }
+    return 0;
+}
+
 static int normalize_path(const char *base, const char *path,
                           char *result, size_t result_size)
 {
@@ -265,12 +593,82 @@ static int normalize_path(const char *base, const char *path,
     return 0;
 }
 
-static int normalize_path_beneath(const char *base, const char *path,
-                                  char *result, size_t result_size)
+static void pop_host_component(char *path)
+{
+    char *slash;
+
+    if (strcmp(path, "/") == 0)
+        return;
+    slash = strrchr(path, '/');
+    if (!slash || slash == path)
+        strcpy(path, "/");
+    else
+        *slash = '\0';
+}
+
+/* Like normalize_path(), but resolves broker-created component spellings as
+ * the path is walked. The parent host path is therefore available for every
+ * reverse-map lookup; a component token is never interpreted globally. */
+static int normalize_mapped_path(const char *base, const char *path,
+                                 char *result, size_t result_size)
+{
+    char combined[PATH_MAX * 2];
+    char *cursor;
+    int written;
+
+    written = snprintf(combined, sizeof(combined), "%s", path);
+    if (written < 0 || (size_t)written >= sizeof(combined)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    if (path[0] == '/')
+        strcpy(result, "/");
+    else {
+        if (strlen(base) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, base);
+    }
+
+    cursor = combined;
+    while (*cursor) {
+        char *slash = strchr(cursor, '/');
+        char decoded[PATH_MAX];
+
+        if (slash)
+            *slash = '\0';
+        if (*cursor && strcmp(cursor, ".") != 0) {
+            if (strcmp(cursor, "..") == 0)
+                pop_host_component(result);
+            else if (unmap_component(result, cursor, decoded,
+                                     sizeof(decoded)) != 0)
+                return -1;
+            else {
+                size_t current = strlen(result);
+
+                written = snprintf(result + current, result_size - current,
+                                   "%s%s", current > 1 ? "/" : "",
+                                   decoded);
+                if (written < 0 || (size_t)written >= result_size - current) {
+                    errno = ENAMETOOLONG;
+                    return -1;
+                }
+            }
+        }
+        if (!slash)
+            break;
+        cursor = slash + 1;
+    }
+    return 0;
+}
+
+static int normalize_mapped_path_beneath(const char *base, const char *path,
+                                         char *result, size_t result_size)
 {
     size_t base_length;
 
-    if (normalize_path(base, path, result, result_size) != 0)
+    if (normalize_mapped_path(base, path, result, result_size) != 0)
         return -1;
     if (strcmp(base, "/") != 0) {
         base_length = strlen(base);
@@ -291,6 +689,25 @@ static struct assign_entry *find_assign(struct broker_session *session,
         if (session->assigns[i].name[0] &&
             strcasecmp(session->assigns[i].name, name) == 0)
             return &session->assigns[i];
+    return NULL;
+}
+
+static struct assign_entry *allocate_assign(struct broker_session *session,
+                                             const char *name)
+{
+    struct assign_entry *entry = find_assign(session, name);
+
+    if (entry)
+        return entry;
+    for (size_t i = 0; i < MAX_ASSIGNS; i++) {
+        if (!session->assigns[i].name[0]) {
+            if (strlen(name) >= sizeof(session->assigns[i].name))
+                return NULL;
+            memset(&session->assigns[i], 0, sizeof(session->assigns[i]));
+            strcpy(session->assigns[i].name, name);
+            return &session->assigns[i];
+        }
+    }
     return NULL;
 }
 
@@ -401,13 +818,54 @@ static int normalize_amiga_path(struct broker_session *session,
         return -1;
     }
     strcpy(relative + used, cursor);
-    if (normalize_path(session->cwd, relative, result, result_size) != 0)
+    if (normalize_mapped_path(session->cwd, relative, result, result_size) != 0)
         return -1;
     if (ace_dos_devices_volume_root_for_path(session->cwd, floor,
                                               sizeof(floor)) == 0 &&
-        normalize_path_beneath(floor, result, result, result_size) != 0)
+        normalize_mapped_path_beneath(floor, result, result, result_size) != 0)
         return -1;
     return 0;
+}
+
+static int resolve_path(struct broker_session *session, const char *input,
+                        char *result, size_t result_size, bool host_path);
+
+static int resolve_assign_target(struct broker_session *session,
+                                 struct assign_entry *assign,
+                                 char *result, size_t result_size)
+{
+    char candidate[PATH_MAX];
+    size_t count = assign->target_count ? assign->target_count : 1;
+
+    for (size_t index = 0; index < count; index++) {
+        const char *target = assign->target_count ?
+                             assign->targets[index] : assign->root;
+
+        if (assign->type == ASSIGN_LATE ||
+            assign->type == ASSIGN_NONBINDING) {
+            if (resolve_path(session, target, candidate, sizeof(candidate),
+                             false) != 0)
+                continue;
+        } else if (snprintf(candidate, sizeof(candidate), "%s", target) >=
+                   (int)sizeof(candidate)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (access(candidate, F_OK) != 0)
+            continue;
+        if (snprintf(result, result_size, "%s", candidate) >=
+            (int)result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (assign->type == ASSIGN_LATE) {
+            strcpy(assign->root, candidate);
+            assign->type = ASSIGN_DIRECTORY;
+        }
+        return 0;
+    }
+    errno = ENOENT;
+    return -1;
 }
 
 static int resolve_path(struct broker_session *session, const char *input,
@@ -420,6 +878,23 @@ static int resolve_path(struct broker_session *session, const char *input,
     if (host_path)
         return normalize_path(session->cwd, input, result, result_size);
 
+    /* AROS treats a lone leading colon as the current volume, not as a
+       relative filename.  GetDeviceProc(":") starts with the current
+       directory's volume root; the text after the colon is then resolved
+       beneath that root.  Keeping this here, at the volume-dispatch seam,
+       makes the rule apply consistently to Lock(), Open(), MakeDir(), and
+       every other DOS operation that accepts a path. */
+    if (colon == input) {
+        if (ace_dos_devices_volume_root_for_path(session->cwd, base,
+                                                 sizeof(base)) != 0)
+            return -1;
+        relative = colon + 1;
+        while (*relative == '/')
+            relative++;
+                return normalize_mapped_path_beneath(base, relative, result,
+                                                     result_size);
+    }
+
     if (colon && colon != input) {
         char assign_name[MAX_NAME];
         size_t name_length = (size_t)(colon - input);
@@ -428,12 +903,14 @@ static int resolve_path(struct broker_session *session, const char *input,
             assign_name[name_length] = '\0';
             struct assign_entry *assign = find_assign(session, assign_name);
             if (assign) {
-                strcpy(base, assign->root);
                 relative = colon + 1;
                 while (*relative == '/')
                     relative++;
-                return normalize_path_beneath(base, relative, result,
-                                              result_size);
+                if (resolve_assign_target(session, assign, base,
+                                          sizeof(base)) != 0)
+                    return -1;
+                return normalize_mapped_path_beneath(base, relative, result,
+                                                     result_size);
             }
             switch (ace_dos_devices_lookup(assign_name)) {
             case 1:
@@ -442,8 +919,8 @@ static int resolve_path(struct broker_session *session, const char *input,
                 relative = colon + 1;
                 while (*relative == '/')
                     relative++;
-                return normalize_path_beneath(base, relative, result,
-                                              result_size);
+                return normalize_mapped_path_beneath(base, relative, result,
+                                                     result_size);
             case -1:
                 errno = EEXIST;
                 return -1;
@@ -534,7 +1011,7 @@ static int handle_client(struct broker_connection *connection)
         break;
 
     case AMIGA_BROKER_NAMEFROMHOST:
-        if (ace_dos_devices_name_from_path(path, result, sizeof(result)) != 0)
+        if (name_from_host_with_mappings(path, result, sizeof(result)) != 0)
             status = errno;
         break;
 
@@ -558,30 +1035,132 @@ static int handle_client(struct broker_connection *connection)
         struct stat information;
         char assign_name[MAX_NAME];
         size_t assign_length = strlen(path);
+        struct assign_entry *assign;
+
         if (assign_length && path[assign_length - 1] == ':')
             assign_length--;
-        struct assign_entry *assign = NULL;
 
-        if (assign_length < sizeof(assign_name)) {
-            memcpy(assign_name, path, assign_length);
-            assign_name[assign_length] = '\0';
-            assign = find_assign(session, assign_name);
+        if (assign_length == 0 || assign_length >= sizeof(assign_name)) {
+            status = EINVAL;
+            break;
         }
-        if (!assign) {
-            for (size_t i = 0; i < MAX_ASSIGNS; i++) {
-                if (!session->assigns[i].name[0]) {
-                    assign = &session->assigns[i];
+        memcpy(assign_name, path, assign_length);
+        assign_name[assign_length] = '\0';
+        assign = find_assign(session, assign_name);
+
+        if (request.flags & AMIGA_BROKER_ASSIGN_REMOVE) {
+            if (assign)
+                memset(assign, 0, sizeof(*assign));
+            break;
+        }
+        if (request.flags & AMIGA_BROKER_ASSIGN_REMOVE_ITEM) {
+            char target[PATH_MAX];
+
+            if (!assign || resolve_path(session, value, target,
+                                        sizeof(target), false) != 0) {
+                status = errno ? errno : ENOENT;
+                break;
+            }
+            for (size_t index = 0; index < assign->target_count; index++) {
+                if (strcmp(assign->targets[index], target) == 0) {
+                    memmove(&assign->targets[index],
+                            &assign->targets[index + 1],
+                            (assign->target_count - index - 1) *
+                            sizeof(assign->targets[0]));
+                    assign->target_count--;
                     break;
                 }
             }
+            if (assign->target_count == 0)
+                memset(assign, 0, sizeof(*assign));
+            break;
         }
-        if (!assign || !assign_name[0] || assign_length >= MAX_NAME ||
-            resolve_path(session, value, result, sizeof(result), false) != 0 ||
+
+        if (request.flags & (AMIGA_BROKER_ASSIGN_ADD |
+                             AMIGA_BROKER_ASSIGN_PREPEND)) {
+            char target[PATH_MAX];
+
+            if (!assign || assign->target_count >= MAX_ASSIGN_TARGETS ||
+                resolve_path(session, value, target, sizeof(target), false) != 0 ||
+                stat(target, &information) != 0 ||
+                !S_ISDIR(information.st_mode)) {
+                status = errno ? errno : ENOSPC;
+                break;
+            }
+            if (request.flags & AMIGA_BROKER_ASSIGN_PREPEND) {
+                memmove(&assign->targets[1], &assign->targets[0],
+                        assign->target_count * sizeof(assign->targets[0]));
+                strcpy(assign->targets[0], target);
+            } else {
+                strcpy(assign->targets[assign->target_count], target);
+            }
+            assign->target_count++;
+            strcpy(assign->root, assign->targets[0]);
+            assign->type = ASSIGN_DIRECTORY;
+            break;
+        }
+
+        assign = allocate_assign(session, assign_name);
+        if (!assign) {
+            status = ENOSPC;
+            break;
+        }
+        if (request.flags & (AMIGA_BROKER_ASSIGN_PATH |
+                             AMIGA_BROKER_ASSIGN_DEFER)) {
+            if (strlen(value) >= sizeof(assign->root)) {
+                status = ENAMETOOLONG;
+                break;
+            }
+            memset(assign->targets, 0, sizeof(assign->targets));
+            assign->target_count = 0;
+            strcpy(assign->root, value);
+            assign->type = (request.flags & AMIGA_BROKER_ASSIGN_PATH) ?
+                           ASSIGN_NONBINDING : ASSIGN_LATE;
+            break;
+        }
+        if (resolve_path(session, value, result, sizeof(result), false) != 0 ||
             stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
-            status = errno ? errno : ENOSPC;
-        } else {
-            strcpy(assign->name, assign_name);
-            strcpy(assign->root, result);
+            status = errno ? errno : ENOENT;
+            break;
+        }
+        memset(assign->targets, 0, sizeof(assign->targets));
+        assign->target_count = 1;
+        strcpy(assign->targets[0], result);
+        strcpy(assign->root, result);
+        assign->type = ASSIGN_DIRECTORY;
+        break;
+    }
+
+    case AMIGA_BROKER_LISTASSIGNS: {
+        size_t used = 0;
+
+        result[0] = '\0';
+        for (size_t index = 0; index < MAX_ASSIGNS; index++) {
+            struct assign_entry *assign = &session->assigns[index];
+            int written;
+
+            if (!assign->name[0])
+                continue;
+            written = snprintf(result + used, sizeof(result) - used,
+                               "%s\t%d\t%s\n", assign->name, assign->type,
+                               assign->root);
+            if (written < 0 || (size_t)written >= sizeof(result) - used) {
+                status = ENOSPC;
+                break;
+            }
+            used += (size_t)written;
+            for (size_t target = 1; target < assign->target_count; target++) {
+                written = snprintf(result + used, sizeof(result) - used,
+                                   "%s\t%d\t%s\n", assign->name,
+                                   ASSIGN_DIRECTORY,
+                                   assign->targets[target]);
+                if (written < 0 ||
+                    (size_t)written >= sizeof(result) - used) {
+                    status = ENOSPC;
+                    break;
+                }
+                used += (size_t)written;
+            }
         }
         break;
     }
@@ -767,7 +1346,8 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_LISTVARS ||
                request.operation == AMIGA_BROKER_GETCLI ||
                request.operation == AMIGA_BROKER_GETRESULT ||
-               request.operation == AMIGA_BROKER_LISTDOS) {
+               request.operation == AMIGA_BROKER_LISTDOS ||
+               request.operation == AMIGA_BROKER_LISTASSIGNS) {
         if (send_response(fd, 0, result) != 0)
             outcome = -1;
     } else {

@@ -100,5 +100,11 @@ int main(int argc, char **argv)
         fputs(result, stdout);
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "assigns") == 0) {
+        if (native_broker_listassigns(result, sizeof(result)) != 0)
+            return 1;
+        fputs(result, stdout);
+        return 0;
+    }
     return usage(argv[0]);
 }

@@ -27,6 +27,24 @@
 
 static LONG native_ioerr;
 
+static int native_name_needs_mapping(const char *name)
+{
+    size_t length = strlen(name);
+
+    if (length > 107)
+        return 1;
+    for (size_t index = 0; index < length; index++) {
+        unsigned char character = (unsigned char)name[index];
+
+        if (!((character >= 'a' && character <= 'z') ||
+              (character >= 'A' && character <= 'Z') ||
+              (character >= '0' && character <= '9') ||
+              character == '.' || character == '_' || character == '-'))
+            return 1;
+    }
+    return 0;
+}
+
 static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
 /* rn_Flags left at 0: '*' is a literal character, not also a wildcard for
@@ -159,6 +177,38 @@ struct native_lock {
 static struct native_lock native_initial_dir;
 static BPTR native_current_dir;
 
+/* Commands run as separate host processes, but ACE deliberately gives them
+   one broker session so an Amiga command such as CD can update the shell's
+   directory.  The shell process therefore has to refresh its cached native
+   lock before AROS code uses it.  Without this, Shell.c's command loader
+   restores the shell's pre-CD lock after every command and silently undoes
+   the child's successful CurrentDir(). */
+static int native_sync_current_dir(void)
+{
+    char current[PATH_MAX];
+    struct native_lock *current_lock = native_current_dir;
+
+    if (native_broker_getcwd(current, sizeof(current)) != 0)
+        return -1;
+    if (!native_current_dir) {
+        memset(&native_initial_dir, 0, sizeof(native_initial_dir));
+        snprintf(native_initial_dir.path, sizeof(native_initial_dir.path),
+                 "%s", current);
+        native_current_dir = &native_initial_dir;
+        return 0;
+    }
+    if (strcmp(current_lock->path, current) != 0) {
+        if (current_lock->scan) {
+            closedir(current_lock->scan);
+            current_lock->scan = NULL;
+        }
+        current_lock->scan_key = 0;
+        snprintf(current_lock->path, sizeof(current_lock->path),
+                 "%s", current);
+    }
+    return 0;
+}
+
 /* Unix epoch (1970-01-01) to Amiga epoch (1978-01-01): 2922 days, including
    the two leap years (1972, 1976) in between. Amiga DateStamp cannot
    represent an earlier date, so those clamp to the epoch itself. */
@@ -206,20 +256,40 @@ static int native_fill_fib(const char *path, const char *name,
                            struct FileInfoBlock *fib)
 {
     struct stat information;
+    const char *fib_name = name;
+    char mapped_path[PATH_MAX];
 
     if (stat(path, &information) != 0) {
         native_ioerr = errno;
         return -1;
     }
+    if (native_name_needs_mapping(name)) {
+        const char *last;
+
+        if (native_broker_name_from_host(path, mapped_path,
+                                         sizeof(mapped_path)) != 0) {
+            native_ioerr = errno;
+            return -1;
+        }
+        last = strrchr(mapped_path, '/');
+        fib_name = last ? last + 1 : mapped_path;
+    }
     memset(fib, 0, sizeof(*fib));
     fib->fib_DirEntryType = S_ISDIR(information.st_mode) ? ST_USERDIR : ST_FILE;
     fib->fib_EntryType = fib->fib_DirEntryType;
-    snprintf((char *)fib->fib_FileName, sizeof(fib->fib_FileName), "%s",
-             name);
+    if (strlen(fib_name) >= sizeof(fib->fib_FileName)) {
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return -1;
+    }
+    strcpy((char *)fib->fib_FileName, fib_name);
     fib->fib_Protection = native_protection_from_stat(&information);
     fib->fib_Size = (LONG)information.st_size;
     fib->fib_NumBlocks = (LONG)information.st_blocks;
     native_datestamp_from_unix(information.st_mtime, &fib->fib_Date);
+    /* A successful DOS lookup replaces any error left by an earlier
+       operation.  Shell.c uses IoErr() after its failed command lookup when
+       it falls back to treating the command text as a directory name. */
+    native_ioerr = 0;
     return 0;
 }
 
@@ -511,6 +581,36 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
         return NULL;
     }
     strcpy(lock->path, resolved);
+    /* Match AmigaDOS Lock(): a successful locate has no pending error. */
+    native_ioerr = 0;
+    return lock;
+}
+
+/* The broker stores assignment targets as canonical host paths.  DOS Lock()
+   deliberately interprets leading '/' with Amiga parent-directory meaning,
+   so the DosList compatibility layer needs this explicit host-path seam when
+   it materializes a broker assignment for Assign LIST/EXISTS. */
+BPTR native_lock_host_path(const char *path)
+{
+    struct stat information;
+    struct native_lock *lock;
+
+    if (!path || stat(path, &information) != 0) {
+        native_ioerr = errno;
+        return NULL;
+    }
+    lock = calloc(1, sizeof(*lock));
+    if (!lock) {
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return NULL;
+    }
+    if (snprintf(lock->path, sizeof(lock->path), "%s", path) >=
+        (int)sizeof(lock->path)) {
+        free(lock);
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return NULL;
+    }
+    native_ioerr = 0;
     return lock;
 }
 
@@ -639,18 +739,11 @@ BPTR DupLock(BPTR handle)
 
 BPTR CurrentDir(BPTR handle)
 {
-    char current[PATH_MAX];
     BPTR old;
 
-    if (!native_current_dir) {
-        if (native_broker_getcwd(current, sizeof(current)) != 0) {
-            native_ioerr = errno;
-            return NULL;
-        }
-        memset(&native_initial_dir, 0, sizeof(native_initial_dir));
-        snprintf(native_initial_dir.path, sizeof(native_initial_dir.path),
-                 "%s", current);
-        native_current_dir = &native_initial_dir;
+    if (native_sync_current_dir() != 0) {
+        native_ioerr = errno;
+        return NULL;
     }
 
     old = native_current_dir;
@@ -662,6 +755,7 @@ BPTR CurrentDir(BPTR handle)
         }
         native_current_dir = handle;
     }
+    native_ioerr = 0;
     return old;
 }
 
@@ -751,6 +845,8 @@ BPTR Open(CONST_STRPTR name, LONG mode)
     }
     if (!file)
         native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+    else
+        native_ioerr = 0;
     return (BPTR)file;
 }
 
@@ -1596,7 +1692,13 @@ static BOOL native_process_arguments(char *line, size_t line_size)
         cursor += length + 1;
     }
     line[used] = '\0';
-    return argument > 1;
+    /*
+     * An executable with no arguments is still a valid command-line source.
+     * Returning FALSE here makes ReadArgs() fall back to reading Input(),
+     * which leaves commands such as the no-argument form of Assign waiting
+     * forever for a second command line in an interactive shell.
+     */
+    return argument > 0;
 }
 
 static BOOL native_token_matches(CONST_STRPTR token,

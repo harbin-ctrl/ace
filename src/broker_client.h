@@ -12,6 +12,9 @@ int native_broker_name_from_host(const char *path, char *result,
 int native_broker_getcwd(char *result, size_t result_size);
 int native_broker_setcwd(const char *path);
 int native_broker_assign(const char *name, const char *path);
+int native_broker_assign_ex(const char *name, const char *path,
+                            uint32_t flags);
+int native_broker_listassigns(char *result, size_t result_size);
 int native_broker_getvar(const char *name, uint32_t flags,
                          char *result, size_t result_size);
 int native_broker_setvar(const char *name, const char *value, uint32_t flags);

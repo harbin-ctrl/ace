@@ -41,6 +41,7 @@ static inline void AddTail(struct List *list, struct Node *node)
     list->lh_TailPred = node;
 }
 
+
 static inline void Remove(struct Node *node)
 {
     if (node && node->ln_Pred && node->ln_Succ) {
