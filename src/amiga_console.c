@@ -14,367 +14,51 @@
 
 #include "console_device.h"
 #include "aros_console_editor.h"
-#include "console_terminal.h"
+#include "console_device_bridge.h"
 
 #define INPUT_MAX 4096
 
-#if 0
-struct term_cell {
-    unsigned char character;
-    unsigned char foreground;
-    unsigned char background;
-    unsigned char bold;
-    unsigned char italic;
-    unsigned char underline;
-    unsigned char reverse;
-};
+/*
+ * The console window's pixel size. Real AROS console classes read
+ * win->Width/Height once at ConUnit construction (consoleclass.c's
+ * console_new()) to lay out the character-cell grid; NewWindowSize()-driven
+ * resize is not implemented yet, so this is fixed for the window's lifetime.
+ */
+#define CONSOLE_WIDTH 900
+#define CONSOLE_HEIGHT 576
 
-struct terminal {
-    struct term_cell cells[TERM_ROWS][TERM_COLS];
-    int row;
-    int column;
-    int saved_row;
-    int saved_column;
-    unsigned char foreground;
-    unsigned char background;
-    unsigned char bold;
-    unsigned char italic;
-    unsigned char underline;
-    unsigned char reverse;
-    unsigned char cursor_visible;
-    unsigned char parser_state;
-    int params[TERM_MAX_PARAMS];
-    size_t parameter_count;
-    int parameter_value;
-    int parameter_has_value;
+/*
+ * Font is hardcoded here as a placeholder. The intended design is a
+ * host-side GTK preferences UI persisted to $HOME/.config, validated with
+ * ace_gfx_font_family_complete() the same way the candidates below are --
+ * see HANDOFF.md. Candidates are tried in order so the window still opens
+ * on a host without the first choice installed.
+ */
+static const char *const default_font_candidates[] = {
+    "Liberation Mono", "DejaVu Sans Mono", "monospace", NULL
 };
+#define DEFAULT_FONT_SIZE 16
 
 struct console_window {
-    struct terminal terminal;
     GtkWidget *window;
     GtkWidget *drawing_area;
     int stream_fd;
     pid_t child_pid;
     struct ace_aros_console_editor *editor;
-};
 
-struct pending_output {
-    struct console_window *console;
-    size_t length;
-    unsigned char data[];
-};
-
-static const double palette[16][3] = {
-    {0.00, 0.00, 0.00}, {0.67, 0.00, 0.00}, {0.00, 0.50, 0.00},
-    {0.67, 0.33, 0.00}, {0.00, 0.00, 0.67}, {0.67, 0.00, 0.67},
-    {0.00, 0.50, 0.50}, {0.00, 0.00, 0.00}, {0.50, 0.50, 0.50},
-    {1.00, 0.00, 0.00}, {0.00, 0.75, 0.00}, {1.00, 0.67, 0.00},
-    {0.00, 0.33, 1.00}, {1.00, 0.00, 1.00}, {0.00, 0.75, 0.75},
-    {1.00, 1.00, 1.00}
-};
-
-static struct term_cell current_cell(struct terminal *terminal)
-{
-    struct term_cell cell;
-
-    cell.character = ' ';
-    cell.foreground = terminal->foreground;
-    cell.background = terminal->background;
-    cell.bold = terminal->bold;
-    cell.italic = terminal->italic;
-    cell.underline = terminal->underline;
-    cell.reverse = terminal->reverse;
-    return cell;
-}
-
-static void terminal_reset(struct terminal *terminal)
-{
-    memset(terminal, 0, sizeof(*terminal));
-    terminal->foreground = 0;
-    terminal->background = 8;
-    terminal->cursor_visible = 1;
-    for (int row = 0; row < TERM_ROWS; row++)
-        for (int column = 0; column < TERM_COLS; column++)
-            terminal->cells[row][column] = current_cell(terminal);
-}
-
-static void terminal_scroll(struct terminal *terminal)
-{
-    memmove(terminal->cells[0], terminal->cells[1],
-            sizeof(terminal->cells[0]) * (TERM_ROWS - 1));
-    for (int column = 0; column < TERM_COLS; column++)
-        terminal->cells[TERM_ROWS - 1][column] = current_cell(terminal);
-    terminal->row = TERM_ROWS - 1;
-}
-
-static void terminal_linefeed(struct terminal *terminal)
-{
     /*
-     * AROS DOS commands write '\n' for a console line ending.  The Amiga
-     * CON: handler performs the carriage-return part as well; a raw Linux
-     * stream would otherwise leave the cursor in its old column.
+     * Real AROS console.device rendering state, behind an opaque bridge --
+     * see console_device_bridge.h for why amiga_console.c cannot include
+     * AROS's own headers directly (struct timeval and MAX/MIN collide with
+     * glib's).
      */
-    terminal->column = 0;
-    terminal->row++;
-    if (terminal->row >= TERM_ROWS)
-        terminal_scroll(terminal);
-}
-
-static void terminal_put_character(struct terminal *terminal, unsigned char value)
-{
-    if (value == '\n') {
-        terminal_linefeed(terminal);
-        return;
-    }
-    if (value == '\r') {
-        terminal->column = 0;
-        return;
-    }
-    if (value == '\b') {
-        if (terminal->column > 0)
-            terminal->column--;
-        return;
-    }
-    if (value == '\t') {
-        terminal->column = (terminal->column + 8) & ~7;
-        if (terminal->column >= TERM_COLS)
-            terminal->column = TERM_COLS - 1;
-        return;
-    }
-    if (value < 0x20 || value == 0x7f)
-        return;
-
-    terminal->cells[terminal->row][terminal->column] = current_cell(terminal);
-    terminal->cells[terminal->row][terminal->column].character = value;
-    terminal->column++;
-    if (terminal->column >= TERM_COLS) {
-        terminal->column = 0;
-        terminal_linefeed(terminal);
-    }
-}
-
-static int parameter(struct terminal *terminal, size_t index, int fallback)
-{
-    if (index >= terminal->parameter_count || !terminal->params[index])
-        return fallback;
-    return terminal->params[index];
-}
-
-static void erase_cells(struct terminal *terminal, int first_row, int first_column,
-                        int last_row, int last_column)
-{
-    for (int row = first_row; row <= last_row; row++) {
-        int begin = row == first_row ? first_column : 0;
-        int end = row == last_row ? last_column : TERM_COLS - 1;
-        for (int column = begin; column <= end; column++)
-            terminal->cells[row][column] = current_cell(terminal);
-    }
-}
-
-static void terminal_sgr(struct terminal *terminal)
-{
-    if (terminal->parameter_count == 0) {
-        terminal->foreground = 0;
-        terminal->background = 8;
-        terminal->bold = terminal->italic = terminal->underline = 0;
-        terminal->reverse = 0;
-        return;
-    }
-    for (size_t index = 0; index < terminal->parameter_count; index++) {
-        int value = terminal->params[index];
-        if (value == 0) {
-            terminal->foreground = 0;
-            terminal->background = 8;
-            terminal->bold = terminal->italic = terminal->underline = 0;
-            terminal->reverse = 0;
-        } else if (value == 1) {
-            terminal->bold = 1;
-        } else if (value == 3) {
-            terminal->italic = 1;
-        } else if (value == 4) {
-            terminal->underline = 1;
-        } else if (value == 7) {
-            terminal->reverse = 1;
-        } else if (value == 22) {
-            terminal->bold = 0;
-        } else if (value == 23) {
-            terminal->italic = 0;
-        } else if (value == 24) {
-            terminal->underline = 0;
-        } else if (value == 27) {
-            terminal->reverse = 0;
-        } else if (value >= 30 && value <= 37) {
-            terminal->foreground = (unsigned char)(value - 30);
-        } else if (value == 39) {
-            terminal->foreground = 0;
-        } else if (value >= 40 && value <= 47) {
-            terminal->background = (unsigned char)(value - 40);
-        } else if (value == 49) {
-            terminal->background = 8;
-        }
-    }
-}
-
-static void terminal_finish_csi(struct terminal *terminal, unsigned char final)
-{
-    int count = (int)terminal->parameter_count;
-    int amount;
-
-    if (terminal->parameter_has_value || count == 0) {
-        if (count < TERM_MAX_PARAMS)
-            terminal->params[terminal->parameter_count++] =
-                terminal->parameter_has_value ? terminal->parameter_value : 0;
-    }
-    amount = parameter(terminal, 0, 1);
-    switch (final) {
-    case 'A':
-        terminal->row -= amount;
-        break;
-    case 'B':
-        terminal->row += amount;
-        break;
-    case 'C':
-    case 'a':
-        terminal->column += amount;
-        break;
-    case 'D':
-        terminal->column -= amount;
-        break;
-    case 'G':
-    case '`':
-        terminal->column = amount - 1;
-        break;
-    case 'd':
-        terminal->row = amount - 1;
-        break;
-    case 'H':
-    case 'f':
-        terminal->row = parameter(terminal, 0, 1) - 1;
-        terminal->column = parameter(terminal, 1, 1) - 1;
-        break;
-    case 'J':
-        if (parameter(terminal, 0, 0) == 2)
-            erase_cells(terminal, 0, 0, TERM_ROWS - 1, TERM_COLS - 1);
-        else if (parameter(terminal, 0, 0) == 1)
-            erase_cells(terminal, 0, 0, terminal->row, terminal->column);
-        else
-            erase_cells(terminal, terminal->row, terminal->column,
-                        TERM_ROWS - 1, TERM_COLS - 1);
-        break;
-    case 'K':
-        if (parameter(terminal, 0, 0) == 2)
-            erase_cells(terminal, terminal->row, 0, terminal->row, TERM_COLS - 1);
-        else if (parameter(terminal, 0, 0) == 1)
-            erase_cells(terminal, terminal->row, 0, terminal->row, terminal->column);
-        else
-            erase_cells(terminal, terminal->row, terminal->column,
-                        terminal->row, TERM_COLS - 1);
-        break;
-    case 'm':
-        terminal_sgr(terminal);
-        break;
-    case 's':
-        terminal->saved_row = terminal->row;
-        terminal->saved_column = terminal->column;
-        break;
-    case 'u':
-        terminal->row = terminal->saved_row;
-        terminal->column = terminal->saved_column;
-        break;
-    case 'h':
-        if (parameter(terminal, 0, 0) == 25)
-            terminal->cursor_visible = 1;
-        break;
-    case 'l':
-        if (parameter(terminal, 0, 0) == 25)
-            terminal->cursor_visible = 0;
-        break;
-    default:
-        break;
-    }
-    if (terminal->row < 0)
-        terminal->row = 0;
-    if (terminal->row >= TERM_ROWS)
-        terminal->row = TERM_ROWS - 1;
-    if (terminal->column < 0)
-        terminal->column = 0;
-    if (terminal->column >= TERM_COLS)
-        terminal->column = TERM_COLS - 1;
-    terminal->parameter_count = 0;
-    terminal->parameter_value = 0;
-    terminal->parameter_has_value = 0;
-    terminal->parser_state = 0;
-}
-
-static void terminal_feed(struct terminal *terminal, const unsigned char *data,
-                          size_t length)
-{
-    for (size_t index = 0; index < length; index++) {
-        unsigned char value = data[index];
-
-        if (terminal->parser_state == 1) {
-            if (value == '[' || value == 0x9b) {
-                terminal->parser_state = 2;
-                terminal->parameter_count = 0;
-                terminal->parameter_value = 0;
-                terminal->parameter_has_value = 0;
-            } else {
-                terminal->parser_state = 0;
-            }
-            continue;
-        }
-        if (terminal->parser_state == 2) {
-            if (value >= '0' && value <= '9') {
-                terminal->parameter_value = terminal->parameter_value * 10 + value - '0';
-                terminal->parameter_has_value = 1;
-            } else if (value == ';') {
-                if (terminal->parameter_count < TERM_MAX_PARAMS)
-                    terminal->params[terminal->parameter_count++] =
-                        terminal->parameter_has_value ? terminal->parameter_value : 0;
-                terminal->parameter_value = 0;
-                terminal->parameter_has_value = 0;
-            } else if (value >= 0x40 && value <= 0x7e) {
-                terminal_finish_csi(terminal, value);
-            }
-            continue;
-        }
-        if (value == 0x1b) {
-            terminal->parser_state = 1;
-        } else if (value == 0x9b) {
-            terminal->parser_state = 2;
-            terminal->parameter_count = 0;
-            terminal->parameter_value = 0;
-            terminal->parameter_has_value = 0;
-        } else {
-            terminal_put_character(terminal, value);
-        }
-    }
-}
-
-#endif
-
-struct console_window {
-    struct terminal terminal;
-    GtkWidget *window;
-    GtkWidget *drawing_area;
-    int stream_fd;
-    pid_t child_pid;
-    struct ace_aros_console_editor *editor;
+    struct ace_console_device *device;
 };
 
 struct pending_output {
     struct console_window *console;
     size_t length;
     unsigned char data[];
-};
-
-static const double palette[16][3] = {
-    {0.00, 0.00, 0.00}, {0.67, 0.00, 0.00}, {0.00, 0.50, 0.00},
-    {0.67, 0.33, 0.00}, {0.00, 0.00, 0.67}, {0.67, 0.00, 0.67},
-    {0.00, 0.50, 0.50}, {0.00, 0.00, 0.00}, {0.50, 0.50, 0.50},
-    {1.00, 0.00, 0.00}, {0.00, 0.75, 0.00}, {1.00, 0.67, 0.00},
-    {0.00, 0.33, 1.00}, {1.00, 0.00, 1.00}, {0.00, 0.75, 0.75},
-    {1.00, 1.00, 1.00}
 };
 
 static gboolean apply_output(gpointer data)
@@ -382,7 +66,13 @@ static gboolean apply_output(gpointer data)
     struct pending_output *output = data;
     struct console_window *console = output->console;
 
-    ace_console_terminal_feed(&console->terminal, output->data, output->length);
+    /*
+     * The real entry point console.c's beginio()/CMD_WRITE would call.
+     * ACE's rendering path never goes through DoIO()/BeginIO() -- see
+     * HANDOFF.md -- so this calls the real ANSI/CSI parser directly with
+     * the same arguments beginio() would have passed it.
+     */
+    ace_console_device_write(console->device, output->data, output->length);
     gtk_widget_queue_draw(console->drawing_area);
     free(output);
     return G_SOURCE_REMOVE;
@@ -407,39 +97,6 @@ static int render_output(void *context, const void *data, size_t length,
     return AMIGA_IOERR_OK;
 }
 
-static void draw_cell(cairo_t *cr, int row, int column, struct term_cell cell)
-{
-    double cell_width = 9.0;
-    double cell_height = 18.0;
-    unsigned char foreground = cell.foreground;
-    unsigned char background = cell.background;
-    char text[2] = {(char)(cell.character ? cell.character : ' '), '\0'};
-
-    if (cell.reverse) {
-        unsigned char swap = foreground;
-        foreground = background;
-        background = swap;
-    }
-    cairo_set_source_rgb(cr, palette[background][0], palette[background][1],
-                         palette[background][2]);
-    cairo_rectangle(cr, column * cell_width, row * cell_height,
-                    cell_width + 1, cell_height + 1);
-    cairo_fill(cr);
-    cairo_select_font_face(cr, "Monospace",
-        cell.italic ? CAIRO_FONT_SLANT_ITALIC : CAIRO_FONT_SLANT_NORMAL,
-        cell.bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 14.0);
-    cairo_set_source_rgb(cr, palette[foreground][0], palette[foreground][1],
-                         palette[foreground][2]);
-    cairo_move_to(cr, column * cell_width, row * cell_height + 14.0);
-    cairo_show_text(cr, text);
-    if (cell.underline) {
-        cairo_move_to(cr, column * cell_width, row * cell_height + 16.0);
-        cairo_line_to(cr, (column + 1) * cell_width, row * cell_height + 16.0);
-        cairo_stroke(cr);
-    }
-}
-
 static void drain_editor_output(struct console_window *console)
 {
     unsigned char output[4096];
@@ -449,7 +106,7 @@ static void drain_editor_output(struct console_window *console)
         length = ace_aros_console_editor_take_output(console->editor,
                                                      output, sizeof(output));
         if (length != 0)
-            ace_console_terminal_feed(&console->terminal, output, length);
+            ace_console_device_write(console->device, output, length);
     } while (length != 0);
     gtk_widget_queue_draw(console->drawing_area);
 }
@@ -457,25 +114,13 @@ static void drain_editor_output(struct console_window *console)
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     struct console_window *console = data;
-    GtkAllocation allocation;
+    cairo_surface_t *surface = ace_console_device_surface(console->device);
 
-    gtk_widget_get_allocation(widget, &allocation);
-    cairo_set_source_rgb(cr, 0.50, 0.50, 0.50);
+    (void)widget;
+    if (!surface)
+        return FALSE;
+    cairo_set_source_surface(cr, surface, 0, 0);
     cairo_paint(cr);
-    for (int row = 0; row < TERM_ROWS; row++) {
-        for (int column = 0; column < TERM_COLS; column++) {
-            struct term_cell cell = console->terminal.cells[row][column];
-            draw_cell(cr, row, column, cell);
-        }
-    }
-    if (console->terminal.cursor_visible) {
-        int cursor_row = console->terminal.row;
-        int cursor_column = console->terminal.column;
-        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.65);
-        cairo_rectangle(cr, cursor_column * 9.0, cursor_row * 18.0, 9.0, 18.0);
-        cairo_fill(cr);
-    }
-    (void)allocation;
     return FALSE;
 }
 
@@ -635,7 +280,13 @@ int main(int argc, char **argv)
     memset(&console, 0, sizeof(console));
     console.stream_fd = -1;
     console.child_pid = -1;
-    ace_console_terminal_reset(&console.terminal);
+    console.device = ace_console_device_open(CONSOLE_WIDTH, CONSOLE_HEIGHT,
+                                             default_font_candidates,
+                                             DEFAULT_FONT_SIZE);
+    if (!console.device) {
+        fprintf(stderr, "ace-console: failed to set up console.device\n");
+        return 20;
+    }
     console.editor = ace_aros_console_editor_open();
     if (!console.editor)
         return 20;
@@ -681,7 +332,8 @@ int main(int argc, char **argv)
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     console.window = window;
     gtk_window_set_title(GTK_WINDOW(window), "ACE Shell");
-    gtk_window_set_default_size(GTK_WINDOW(window), 900, 576);
+    gtk_window_set_default_size(GTK_WINDOW(window), CONSOLE_WIDTH, CONSOLE_HEIGHT);
+    gtk_widget_set_size_request(window, CONSOLE_WIDTH, CONSOLE_HEIGHT);
     g_signal_connect(window, "destroy", G_CALLBACK(console_destroy), &console);
     console.drawing_area = gtk_drawing_area_new();
     gtk_widget_set_can_focus(console.drawing_area, TRUE);
@@ -697,5 +349,6 @@ int main(int argc, char **argv)
                    read_console, &console);
     gtk_main();
     ace_aros_console_editor_close(console.editor);
+    ace_console_device_close(console.device);
     return 0;
 }

@@ -9,6 +9,16 @@
  */
 #define D(statement)
 
+/*
+ * Real AROS: #define bug kprintf (compiler/arossupport/include/debug.h),
+ * backed by AROSSupportBase.kprintf. Diagnostic-only kernel-log output, not
+ * gated by D()/#if DEBUG at every call site (support.c's printstring() calls
+ * it unconditionally, though nothing in ACE calls printstring() itself), so
+ * it needs to exist even with debugging off, the same way it does on a real
+ * non-debug AROS build.
+ */
+#define bug(...) ((void)0)
+
 #ifndef ASSERT_VALID_PTR
 #define ASSERT_VALID_PTR(pointer) do { (void)(pointer); } while (0)
 #endif

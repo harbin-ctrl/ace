@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cairo/cairo.h>
+
 /*
  * Host seam for graphics.library, the RastPort/BitMap/TextFont surface the
  * real AROS console classes in rom/devs/console draw through. Unlike the
@@ -84,5 +86,13 @@ void ace_gfx_read_rgb(struct RastPort *rp, uint8_t *out,
                       size_t out_capacity);
 void ace_gfx_rastport_size(struct RastPort *rp, int *width_out,
                            int *height_out);
+
+/*
+ * The RastPort's own pixel surface, for a caller that already owns a cairo_t
+ * of its own (the live GTK window) to blit directly instead of round-
+ * tripping through ace_gfx_read_rgb()'s byte array. Owned by the RastPort;
+ * do not destroy it, and do not hold it past ace_gfx_destroy_rastport().
+ */
+cairo_surface_t *ace_gfx_rastport_surface(struct RastPort *rp);
 
 #endif

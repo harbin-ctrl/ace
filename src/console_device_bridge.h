@@ -1,0 +1,52 @@
+#ifndef ACE_CONSOLE_DEVICE_BRIDGE_H
+#define ACE_CONSOLE_DEVICE_BRIDGE_H
+
+#include <stddef.h>
+
+#include <cairo/cairo.h>
+
+/*
+ * Opaque bridge between the GTK-facing amiga_console.c and the real AROS
+ * console.device rendering state (ConsoleBase, the consoleClass/stdConClass
+ * pair, a RastPort-backed struct Window, the ConUnit those classes build).
+ *
+ * This split exists because AROS's headers and GTK/glib's cannot be
+ * included in the same translation unit: both define struct timeval
+ * (aros/types/timeval_s.h vs. the host's own), and console_gcc.h's MAX/MIN
+ * macros collide with glib's. src/aros_graphics_runtime.h already avoids
+ * this by forward-declaring RastPort/BitMap/TextFont rather than including
+ * graphics/rastport.h; this header does the same for the console.device
+ * types amiga_console.c needs, and console_device_bridge.c is where the
+ * real AROS headers and the actual writeToConsole()/NewObjectA() calls
+ * live.
+ */
+
+struct ace_console_device;
+
+/*
+ * Builds the real console.device rendering state over a width x height
+ * RastPort: the class pair (see src/aros_boopsi_runtime.c,
+ * src/aros_graphics_runtime.c), a font (candidates tried in order, first
+ * complete monospace family wins), and a ConUnit constructed the way
+ * console.c's real Open() would, via A_Console_Window.
+ *
+ * font_candidates is a NULL-terminated array of fontconfig family names.
+ */
+struct ace_console_device *ace_console_device_open(
+    int width, int height, const char *const *font_candidates,
+    int pixel_size);
+void ace_console_device_close(struct ace_console_device *device);
+
+/*
+ * The real entry point console.c's beginio()/CMD_WRITE would call for
+ * CMD_WRITE, invoked directly since ACE's rendering path never goes through
+ * DoIO()/BeginIO() -- see HANDOFF.md.
+ */
+void ace_console_device_write(struct ace_console_device *device,
+                              const void *data, size_t length);
+
+/* The RastPort's pixel surface, for the caller to blit directly. Owned by
+   the device; do not destroy it, and do not hold it past close(). */
+cairo_surface_t *ace_console_device_surface(struct ace_console_device *device);
+
+#endif

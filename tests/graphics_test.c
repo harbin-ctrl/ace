@@ -214,6 +214,80 @@ static Object *test_unit_construction(void)
     return unit;
 }
 
+/*
+ * Drives the real ANSI/CSI parser directly -- the same function
+ * amiga_console.c's output path will call in place of
+ * console_terminal.c's hand-written one. write_text()/Console_DoCommand()
+ * above dispatch C_ASCII_STRING directly, which is what writeToConsole()
+ * produces only *after* recognizing plain text; it never exercises
+ * string2command()'s escape-sequence recognition. This test does, with a
+ * raw "\x9bNC" (CSI n C, cursor forward) sequence -- confirmed present in
+ * support.c's real command table (0x43 'C' -> C_CURSOR_FORWARD), unlike
+ * ANSI SGR color, which this AROS checkout's stdconclass.c does not
+ * implement at all (no C_SELECT_GRAPHIC_RENDITION case in its dispatcher).
+ */
+static void test_write_to_console_ansi(void)
+{
+    struct ace_gfx_font_choice choice;
+    const char *reason = NULL;
+    struct RastPort *rp;
+    struct Window win;
+    Object *unit;
+    struct ConUnit *cu;
+    struct TagItem tags[] = {
+        { A_Console_Window, 0 },
+        { TAG_DONE, 0 },
+    };
+    /* "A", cursor forward 5, "B": if the CSI sequence were treated as plain
+       text instead of being parsed, "B" would land at column 1, not 6. */
+    static const UBYTE sequence[] = "A\x9b""5CB";
+    uint8_t *buf;
+
+    find_font(&choice);
+    g_font = ace_gfx_load_font(&choice, &reason);
+    assert(g_font != NULL);
+    rp = ace_gfx_create_rastport(WIN_WIDTH, WIN_HEIGHT, g_font, test_palette);
+    assert(rp != NULL);
+
+    memset(&win, 0, sizeof(win));
+    win.RPort = rp;
+    win.Width = WIN_WIDTH;
+    win.Height = WIN_HEIGHT;
+    tags[0].ti_Data = (IPTR)&win;
+
+    unit = NewObjectA(g_std_class, NULL, tags);
+    assert(unit != NULL);
+    cu = (struct ConUnit *)unit;
+
+    /* The real entry point console.c's beginio()/CMD_WRITE calls; this test
+       calls it directly since ACE's rendering path never goes through
+       DoIO()/BeginIO() -- see HANDOFF.md. */
+    writeToConsole((struct ConUnit *)unit, (STRPTR)sequence,
+                  (ULONG)(sizeof(sequence) - 1), &g_console_base);
+
+    /* cu_XCP is the cursor's current column: "A" advances it to 1, "5C"
+       advances it 5 more to 6, "B" advances it to 7. If the escape sequence
+       had been printed as literal characters instead of parsed, it would
+       be well past that. */
+    assert(cu->cu_XCP == 7);
+
+    buf = malloc((size_t)WIN_WIDTH * WIN_HEIGHT * 3);
+    assert(buf);
+    ace_gfx_read_rgb(rp, buf, (size_t)WIN_WIDTH * WIN_HEIGHT * 3);
+    /* "A" and "B" landed exactly where cu_XCP says; the five cells the
+       cursor-forward sequence jumped over were never drawn to. */
+    assert(cell_has_ink(buf, 0, 0));
+    assert(cell_has_ink(buf, 6, 0));
+    assert(!cell_has_ink(buf, 1, 0));
+    assert(!cell_has_ink(buf, 3, 0));
+    free(buf);
+
+    DisposeObject(unit);
+    ace_gfx_destroy_rastport(rp);
+    ace_gfx_unload_font(g_font);
+    g_font = NULL;
+}
+
 int main(void)
 {
     test_class_construction();
@@ -251,6 +325,10 @@ int main(void)
 
     ace_gfx_destroy_rastport(g_rp);
     ace_gfx_unload_font(g_font);
+    g_font = NULL;
+
+    test_write_to_console_ansi();
+
     ace_boopsi_cleanup();
 
     return 0;

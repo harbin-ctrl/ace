@@ -296,13 +296,25 @@ make test-boopsi
 
 ## graphics.library
 
-`stdconclass.c` and `consoleclass.c` from `rom/devs/console` -- the two real
-AROS BOOPSI classes that actually touch pixels for `console.device` -- are
-compiled unmodified against `src/aros_graphics_runtime.c`. Unlike every other
-seam in ACE, this one is authored rather than compiled from AROS source:
+`stdconclass.c`, `consoleclass.c`, and `support.c` from `rom/devs/console` --
+the real AROS BOOPSI classes that touch pixels for `console.device`, plus the
+real ANSI/CSI escape-sequence parser (`writeToConsole()`) -- are compiled
+unmodified against `src/aros_graphics_runtime.c`. Unlike every other seam in
+ACE, this one is authored rather than compiled from AROS source:
 graphics.library is the real hardware boundary, the point where AmigaOS
 drawing calls become pixels on a display, and the alternative to writing it
 is a HIDD driver stack ACE does not want.
+
+This is now what actually renders the live `ace-console` window.
+`src/console_device_bridge.c` builds one real `ConUnit` per window and
+`src/amiga_console.c`'s output path calls `writeToConsole()` on it directly --
+the same call `console.c`'s real `beginio()`/`CMD_WRITE` would make, taken
+without console.c's task/message-port machinery because ACE's architecture
+never routes rendering through `DoIO()` (see HANDOFF.md for the full trace).
+`console_device_bridge.c` exists as a separate translation unit because
+AROS's real headers and GTK/glib's cannot coexist in one file (both define
+`struct timeval`, and `console_gcc.h`'s `MAX`/`MIN` collide with glib's);
+`amiga_console.c` only ever sees its opaque `struct ace_console_device`.
 
 What AROS's console classes actually require of a `RastPort`/`BitMap`/
 `TextFont` is narrow, confirmed by reading every call site rather than
@@ -327,9 +339,11 @@ below the baseline either way, since it is a soft-style flag on real
 hardware too, never a font glyph.
 
 The focused test builds a real `ConUnit` through `NewObjectA()` on the real
-class chain and drives it with AROS's own `Console_DoCommand()` macro --
-the same call `con_handler.c` uses to hand output text to a console unit --
-then reads the pixels back:
+class chain and drives it two ways: AROS's own `Console_DoCommand()` macro
+directly, and `writeToConsole()` with a raw CSI byte sequence -- the latter
+is what actually exercises the escape-sequence *parser*, since
+`Console_DoCommand()` alone dispatches an already-parsed command. Both read
+the resulting pixels back to confirm:
 
 ```sh
 make test-graphics
@@ -337,12 +351,12 @@ make test-graphics
 
 This needs `cairo` and `fontconfig` development files, and at least one
 complete monospace family on the host; `Liberation Mono`, `DejaVu Sans Mono`,
-and the `monospace` fontconfig alias are tried in that order for the test.
-The eventual `ace-console` font, size, and palette choice is meant to be an
-entirely host-side preference -- a GTK settings UI persisted to
-`$HOME/.config`, validated the same way -- not something this seam decides;
-see HANDOFF.md for what is still needed to wire it into the live shell
-window.
+and the `monospace` fontconfig alias are tried in that order, both for the
+test and for the live `ace-console` window. The eventual font, size, and
+palette choice is meant to be an entirely host-side preference -- a GTK
+settings UI persisted to `$HOME/.config`, validated the same way -- not
+something this seam decides; see HANDOFF.md for what is still hardcoded and
+what is still not real (keyboard input, window resize, cursor blink).
 
 Global variables currently last only for the lifetime of the broker. The
 `SAVE`/`ENVARC:` persistence behavior is still reserved for a later draft.

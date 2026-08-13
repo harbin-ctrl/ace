@@ -386,6 +386,13 @@ void ace_gfx_rastport_size(struct RastPort *rp, int *width_out, int *height_out)
         *height_out = priv ? priv->height : 0;
 }
 
+cairo_surface_t *ace_gfx_rastport_surface(struct RastPort *rp)
+{
+    struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
+
+    return priv ? priv->surface : NULL;
+}
+
 void ace_gfx_read_rgb(struct RastPort *rp, uint8_t *out, size_t out_capacity)
 {
     struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
@@ -607,6 +614,17 @@ void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
             break;
 
         /*
+         * Antialiased glyph rendering can paint a pixel or two past a
+         * glyph's own advance width -- real font hinting/kerning, not a
+         * bug -- which would otherwise bleed into a neighboring character
+         * cell. A monospace terminal grid should never let that happen, so
+         * every draw in this cell, glyph included, is clipped to it.
+         */
+        cairo_save(priv->cr);
+        cairo_rectangle(priv->cr, x, pen_y - baseline, cell_w, cell_h);
+        cairo_clip(priv->cr);
+
+        /*
          * JAM2 paints the cell's background pen before the glyph, matching
          * an opaque terminal cell; JAM1 leaves whatever is already there,
          * matching real graphics.library's transparent text mode.
@@ -614,8 +632,7 @@ void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
         if (rp->DrawMode == JAM2 || rp->DrawMode == JAM1 + JAM2) {
             rgb_components(pen_rgb(priv, rp->BgPen), &fr, &fg, &fb);
             cairo_set_source_rgb(priv->cr, fr, fg, fb);
-            cairo_rectangle(priv->cr, x, pen_y - baseline, cell_w, cell_h);
-            cairo_fill(priv->cr);
+            cairo_paint(priv->cr);
         }
 
         rgb_components(pen_rgb(priv, rp->FgPen), &fr, &fg, &fb);
@@ -631,6 +648,8 @@ void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
             cairo_set_line_width(priv->cr, 1.0);
             cairo_stroke(priv->cr);
         }
+
+        cairo_restore(priv->cr);
     }
 
     rp->cp_x = (WORD)(pen_x + (int)count * cell_w);
@@ -746,6 +765,11 @@ void CloseLibrary(void *library)
 void SetMem(APTR destination, ULONG length, UBYTE value)
 {
     memset(destination, value, length);
+}
+
+void CopyMem(CONST_APTR source, APTR destination, ULONG length)
+{
+    memmove(destination, source, length);
 }
 
 /*

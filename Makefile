@@ -54,7 +54,7 @@ AROS_ALIB_NAMES := domethod dosupermethod coercemethod alib_util
 AROS_BOOPSI_OBJS := $(addprefix $(BUILD)/aros-boopsi-,$(addsuffix .o,$(AROS_BOOPSI_NAMES))) \
                     $(addprefix $(BUILD)/aros-alib-,$(addsuffix .o,$(AROS_ALIB_NAMES)))
 AROS_GRAPHICS_DIR := $(AROS_ROOT)/rom/devs/console
-AROS_GRAPHICS_NAMES := stdconclass consoleclass
+AROS_GRAPHICS_NAMES := stdconclass consoleclass support
 AROS_GRAPHICS_OBJS := $(addprefix $(BUILD)/aros-console-,$(addsuffix .o,$(AROS_GRAPHICS_NAMES)))
 AROS_ARSUPPORT_DIR := $(AROS_ROOT)/compiler/arossupport
 AROS_ARSUPPORT_NAMES := libfindtagitem libnexttagitem
@@ -163,14 +163,14 @@ $(BUILD)/brokerctl.o: src/brokerctl.c | $(BUILD)
 $(BUILD)/amiga_shell.o: src/amiga_shell.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_console.o: src/amiga_console.c src/console_terminal.h | $(BUILD)
-	$(CC) $(CFLAGS) $(GTK_CFLAGS) -Isrc -c $< -o $@
+$(BUILD)/amiga_console.o: src/amiga_console.c src/console_device_bridge.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/console_device_bridge.o: src/console_device_bridge.c src/console_device_bridge.h compat/aros-real/include/ace_graphics_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(GFX_CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -Isrc -c $< -o $@
 
 $(BUILD)/console_device.o: src/console_device.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
-
-$(BUILD)/console_terminal.o: src/console_terminal.c src/console_terminal.h | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -c src/console_terminal.c -o $@
 
 $(BUILD)/con_handler.o: src/con_handler.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
@@ -231,14 +231,13 @@ $(BUILD)/exec_compat_bindings.o: src/exec_compat_bindings.c | $(BUILD)
 $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_device.o $(BUILD)/con_handler.o
 	$(CC) $(CFLAGS) -pthread -Isrc $^ -o $@
 
-$(BUILD)/console-terminal-test: tests/console_terminal_test.c $(BUILD)/console_terminal.o
-	$(CC) $(CFLAGS) -Isrc $^ -o $@
-
 $(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c $(BUILD)/aros-exec-runtime.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
 
-$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o
-	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ -o $@
+$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+                                   $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
+                                   $(BUILD)/aros-graphics-runtime.o $(AROS_ARSUPPORT_OBJS)
+	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ $(GFX_LIBS) -o $@
 
 $(BUILD)/exec-compat-test: tests/exec_compat_test.c $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 	$(CC) $(CFLAGS) -pthread -DAMIGA_EXEC_COMPAT_ENABLED -I$(COMPAT) -Isrc $^ -o $@
@@ -355,8 +354,10 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_terminal.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o
-	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) -o $@
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+                      $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
+                      $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
+	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) -o $@
 
 $(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
@@ -375,9 +376,8 @@ install: all
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
 
-test-console-device: $(BUILD)/console-device-test $(BUILD)/console-terminal-test
+test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
-	$(BUILD)/console-terminal-test
 
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 	$(BUILD)/aros-exec-runtime-test

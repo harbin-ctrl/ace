@@ -245,9 +245,19 @@ void AddTail(struct List *list, struct Node *node)
     ADDTAIL(list, node);
 }
 
+/*
+ * Guarded rather than a bare REMOVE(): real AmigaOS Remove() requires the
+ * node actually be linked, but the console handler (src/aros_console_editor.c,
+ * which shares this definition -- see proto/exec.h) calls it speculatively
+ * on nodes that may not be, so an unguarded REMOVE() would dereference a
+ * NULL/stale ln_Pred/ln_Succ. The guard is a no-op for an already-linked
+ * node, so it costs BOOPSI's own real callers (rootclass.c's OM_REMOVE)
+ * nothing.
+ */
 void Remove(struct Node *node)
 {
-    REMOVE(node);
+    if (node && node->ln_Pred && node->ln_Succ)
+        REMOVE(node);
 }
 
 /* -------------------------------------------------------------------------

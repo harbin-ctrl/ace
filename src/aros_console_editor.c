@@ -33,39 +33,14 @@ void CloseWindow(struct Window *window)
     (void)window;
 }
 
-/* Host implementations of the Exec/DOS calls used by real support.c. */
-APTR AllocVec(ULONG size, ULONG flags)
-{
-    (void)flags;
-    return calloc(1, size);
-}
-
-APTR AllocMem(ULONG size, ULONG flags)
-{
-    (void)flags;
-    return calloc(1, size);
-}
-
-void FreeVec(APTR memory)
-{
-    free(memory);
-}
-
-void FreeMem(APTR memory, ULONG size)
-{
-    (void)size;
-    free(memory);
-}
-
-void CopyMem(CONST_APTR source, APTR destination, ULONG length)
-{
-    memmove(destination, source, length);
-}
-
-void SetMem(APTR destination, ULONG length, UBYTE value)
-{
-    memset(destination, value, length);
-}
+/*
+ * AllocMem/FreeMem/AllocVec/FreeVec/CopyMem/SetMem/AddTail/Remove are
+ * declared in proto/exec.h and defined once each in src/aros_boopsi_runtime.c
+ * (the first four, plus AddTail/Remove) and src/aros_graphics_runtime.c
+ * (CopyMem/SetMem) -- both of those object files link into the same
+ * ace-console binary as this one from Phase 3 onward, so a second
+ * definition here would collide at link time. See proto/exec.h.
+ */
 
 void Delay(ULONG ticks)
 {
@@ -107,21 +82,12 @@ void Signal(struct Task *task, ULONG signal_set)
     (void)signal_set;
 }
 
-void AddTail(struct List *list, struct Node *node)
-{
-    ADDTAIL(list, node);
-}
-
 struct Node *RemHead(struct List *list)
 {
     return REMHEAD(list);
 }
 
-void Remove(struct Node *node)
-{
-    if (node && node->ln_Pred && node->ln_Succ)
-        REMOVE(node);
-}
+/* AddTail/Remove: see the comment above Delay(). */
 
 static void reset_input(struct filehandle *filehandle)
 {
