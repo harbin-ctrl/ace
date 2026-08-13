@@ -421,6 +421,10 @@ void ace_console_device_set_pen_rgb(struct ace_console_device *device,
 int ace_console_device_resize(struct ace_console_device *device,
                               int width, int height)
 {
+    struct ConUnit *unit;
+    WORD old_xcp;
+    WORD old_ycp;
+
     if (!device || width <= 0 || height <= 0)
         return -1;
     if (width == device->amiga_window.Width &&
@@ -430,7 +434,41 @@ int ace_console_device_resize(struct ace_console_device *device,
         return -1;
     device->amiga_window.Width = (UWORD)width;
     device->amiga_window.Height = (UWORD)height;
+
+    /*
+     * A window resize does not move any character cell -- the font is
+     * unchanged, so every cell keeps its pixel position and only the number
+     * of rows and columns changes -- so the pixels already on screen stay
+     * valid across the geometry update, and this does not have to repaint.
+     *
+     * With one exception, which is real AROS behavior rather than ACE's.
+     * console_newwindowsize() clamps the cursor into the new grid (it only
+     * ever clamps downwards, so this cannot arise from enlarging a window),
+     * and stdcon_newwindowsize() responds to a cursor that moved by clearing
+     * the whole console and redrawing the cursor: a character-cell renderer
+     * with no retained character map has no way to tidy up the cursor it
+     * left at the old position without wiping what it cannot redraw. Whether
+     * that happened is exactly whether the cursor moved, which is the
+     * condition stdconclass.c itself tests, read from the same fields.
+     *
+     * Repainting the retained stream is what ACE has instead of the
+     * character map AROS's own charmapconclass would have used -- the same
+     * mechanism a typeface or palette change goes through. The console is
+     * cleared and homed first, with a real form feed, because the replay
+     * has to start from the top left and AROS has just left the cursor
+     * wherever it clamped it to.
+     */
+    unit = (struct ConUnit *)device->unit;
+    old_xcp = unit->cu_XCP;
+    old_ycp = unit->cu_YCP;
     Console_NewWindowSize(device->unit);
+    if ((unit->cu_XCP != old_xcp || unit->cu_YCP != old_ycp) &&
+        device->history_length != 0) {
+        static const unsigned char form_feed = 0x0c;
+
+        write_direct(device, device->unit, &form_feed, sizeof(form_feed));
+        replay_history(device, device->unit);
+    }
     return 0;
 }
 

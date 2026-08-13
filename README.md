@@ -262,7 +262,10 @@ a new typeface or palette rebuilds the AROS console and repaints it
 immediately. The drawing-area size allocation follows window resizes and
 updates the real AROS window geometry; a resize keeps the pixels already on
 screen rather than re-rendering the stream, and the console's background pen
-fills whatever the window has gained until the console catches up. When the
+fills whatever the window has gained until the console catches up. Shrinking
+a window far enough to move the cursor is the one case that does repaint,
+because real AROS clears the console itself when a resize clamps the cursor
+into the smaller grid. When the
 installed appmenu GTK module and compositor support it, ACE exports the menu
 model and actions over D-Bus and advertises that address to the compositor's
 Wayland appmenu interface for the desktop/right-click menu; the local menu bar

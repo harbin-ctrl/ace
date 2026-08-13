@@ -240,11 +240,38 @@ on screen, not the whole session; unbounded, it made those two operations cost
 time proportional to how long the shell had been running, since the repaint had
 to re-render and re-scroll past every line ever written.
 
-A window resize does not go through that rebuild at all. `ace_gfx_resize_-`
-`rastport()` changes the surface's dimensions with the pixels intact and the
-bridge then invokes AROS's real `Console_NewWindowSize()` geometry path, so a
-live drag costs a geometry update rather than a re-render of the stream --
-which is what it used to cost, on every intermediate size GTK delivered. GTK
+A window resize usually does not go through that rebuild at all.
+`ace_gfx_resize_rastport()` changes the surface's dimensions with the pixels
+intact and the bridge then invokes AROS's real `Console_NewWindowSize()`
+geometry path, so a live drag costs a geometry update rather than a re-render
+of the stream -- which is what it used to cost, on every intermediate size GTK
+delivered. Keeping the pixels is sound because a window resize moves no
+character cell: the font is unchanged, so every cell keeps its pixel position
+and only the number of rows and columns changes.
+
+**Except when AROS clears the console itself.** `console_newwindowsize()`
+clamps the cursor into the new grid, and `stdcon_newwindowsize()` responds to
+a cursor that moved by clearing the whole console and redrawing the cursor --
+a character-cell renderer with no retained character map has no way to tidy
+up the cursor it left at the old position without wiping what it cannot
+redraw. That is real AROS code doing what it has always done, and it is why
+shrinking a window made the text vanish once resize stopped replaying: the
+old replay-everything path had been repainting what AROS had just erased,
+without anyone noticing AROS was erasing it.
+
+`ace_console_device_resize()` therefore reads `cu_XCP`/`cu_YCP` around the
+`Console_NewWindowSize()` call -- the same two fields `stdconclass.c` itself
+tests -- and repaints the retained stream when they moved, sending a real
+form feed first because the replay has to start at the top left and AROS has
+just left the cursor wherever it clamped it to. Clamping is only ever
+downwards, so enlarging a window never triggers it and stays free; shrinking
+costs a repaint on the steps that cross a cell boundary, about 80 ms, and
+nothing on the steps in between.
+
+The bridge test checks this by looking for ink in the console's *upper half*
+after a shrink. A whole-frame ink check passes on a console that has been
+completely wiped, because the cursor block is itself non-background -- which
+is exactly why the original resize assertion did not catch this. GTK
 `size-allocate` coalesces those to about one frame, and `draw_console()` fills
 whatever the window has gained with the console's background pen until the
 console catches up. The drawing area is no longer fixed at the initial

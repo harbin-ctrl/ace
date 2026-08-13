@@ -151,15 +151,31 @@ int main(void)
     assert(frame_pixel(frame, width, width - 2, height - 2) == 0x123456u);
     free(frame);
 
-    /* Shrinking keeps the pixels already in place; growing back past the
-     * original size exercises the reallocating path as well as the in-place
-     * one. */
+    /*
+     * Shrinking keeps what is on screen. This is the case that needs
+     * checking rather than assuming: real AROS clears the whole console
+     * when a resize has to clamp the cursor into the new grid, which only a
+     * shrink can do, and the bridge repaints the retained stream in
+     * response. Ink is looked for in the upper half deliberately -- the
+     * cursor sits on the bottom row and is itself non-background, so a
+     * whole-frame ink check passes even on a console that has been wiped.
+     */
+    for (i = 0; i < 40; i++)
+        write_text(device, "shrink me ##########\n");
     width = 320;
     height = 200;
     assert(ace_console_device_resize(device, width, height) == 0);
     frame = read_frame(device, width, height);
-    assert(frame_has_ink(frame, width, height, 0x123456u));
+    assert(band_has_ink(frame, width, 0, height / 2, 0x123456u));
     assert(frame_pixel(frame, width, width - 2, height - 2) == 0x123456u);
+    free(frame);
+
+    /* Shrinking again, by less than one character cell, must not lose it
+     * either. */
+    height = 196;
+    assert(ace_console_device_resize(device, width, height) == 0);
+    frame = read_frame(device, width, height);
+    assert(band_has_ink(frame, width, 0, height / 2, 0x123456u));
     free(frame);
 
     width = 900;
