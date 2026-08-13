@@ -80,7 +80,7 @@ index 6889a87f3b..c648534198 100644
      if (ExecLockBase)
 @@ -497,7 +513,9 @@ static struct filehandle *open_con(struct DosPacket *dp, LONG *perr)
          CloseLibrary((APTR) fh->utilbase);
-        CloseLibrary((APTR) fh->dosbase);
+         CloseLibrary((APTR) fh->dosbase);
          CloseLibrary((APTR) fh->intuibase);
 +#if !defined(ACE_NO_CONSOLE_APPWINDOW)
          CloseLibrary((APTR) fh->workbenchbase);
@@ -129,12 +129,7 @@ diff --git a/rom/filesys/console_handler/support.c b/rom/filesys/console_handler
 index 2f8e55d9a3..5efd900593 100644
 --- a/rom/filesys/console_handler/support.c
 +++ b/rom/filesys/console_handler/support.c
-@@ -34,17 +34,19 @@
- #include <devices/conunit.h>
- 
- #include <string.h>
- #include <stdio.h>
- #include <ctype.h>
+@@ -39,7 +39,9 @@
  
  #include "con_handler_intern.h"
  #include "support.h"
@@ -143,12 +138,8 @@ index 2f8e55d9a3..5efd900593 100644
 +#endif
  
  #define ioReq(x) ((struct IORequest *)x)
-@@ -1065,21 +1065,25 @@ BOOL process_input(struct filehandle *fh)
-         case INP_CTRL_F:
-             if (fh->breaktask)
-             {
-                 Signal(fh->breaktask, 1L << (12 + inp - INP_CTRL_C));
-             }
+ 
+@@ -1070,11 +1072,15 @@ BOOL process_input(struct filehandle *fh)
              break;
  
          case INP_TAB:
@@ -164,6 +155,3 @@ index 2f8e55d9a3..5efd900593 100644
              break;
  
          case INP_PASTE:
-             D(bug("[con:handler] %s: INP_PASTE\n", __func__));
-             do_paste(fh);
-             break;
