@@ -2,6 +2,8 @@ CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-pointer-sign -O2
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
+BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
+BLKID_LIBS := $(shell pkg-config --libs blkid)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 INSTALL ?= install
@@ -62,7 +64,10 @@ $(BUILD)/broker_client.o: src/broker_client.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/broker.o: src/broker.c | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/dos-devices.o: src/dos_devices.c | $(BUILD)
+	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/brokerctl.o: src/brokerctl.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
@@ -190,8 +195,8 @@ $(BUILD)/Why: $(BUILD)/Why.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(B
 $(BUILD)/Prompt: $(BUILD)/Prompt.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/ace-broker: $(BUILD)/broker.o
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o
+	$(CC) $(CFLAGS) $^ $(BLKID_LIBS) -o $@
 
 $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@

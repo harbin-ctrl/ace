@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "broker_protocol.h"
+#include "dos_devices.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -287,6 +288,16 @@ static int resolve_path(struct broker_session *session, const char *input,
                     relative++;
                 return normalize_path(base, relative, result, result_size);
             }
+            switch (ace_dos_devices_lookup(assign_name)) {
+            case 1:
+                errno = ENOTSUP;
+                return -1;
+            case -1:
+                errno = EEXIST;
+                return -1;
+            default:
+                break;
+            }
         }
     }
     return normalize_path(session->cwd, relative, result, result_size);
@@ -394,6 +405,11 @@ static void handle_client(int fd)
         }
         break;
     }
+
+    case AMIGA_BROKER_LISTDOS:
+        if (ace_dos_devices_list(result, sizeof(result)) != 0)
+            status = errno;
+        break;
 
     case AMIGA_BROKER_GETVAR: {
         struct variable_entry *variable = lookup_variable(session, path,
@@ -550,7 +566,8 @@ static void handle_client(int fd)
                request.operation == AMIGA_BROKER_GETVAR ||
                request.operation == AMIGA_BROKER_LISTVARS ||
                request.operation == AMIGA_BROKER_GETCLI ||
-               request.operation == AMIGA_BROKER_GETRESULT) {
+               request.operation == AMIGA_BROKER_GETRESULT ||
+               request.operation == AMIGA_BROKER_LISTDOS) {
         send_response(fd, 0, result);
     } else {
         send_response(fd, 0, NULL);
@@ -581,6 +598,8 @@ int main(int argc, char **argv)
     }
     if (argc == 2)
         socket_path = argv[1];
+
+    ace_dos_devices_discover();
 
     signal(SIGINT, stop_server);
     signal(SIGTERM, stop_server);

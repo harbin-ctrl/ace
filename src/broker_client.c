@@ -380,3 +380,9 @@ int native_broker_setresult(int32_t return_code, int32_t result2)
     return broker_request(AMIGA_BROKER_SETRESULT, return_text, result_text, 0,
                           ignored, sizeof(ignored));
 }
+
+int native_broker_listdos(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_LISTDOS, NULL, NULL, 0, result,
+                          result_size);
+}

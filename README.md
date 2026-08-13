@@ -48,6 +48,7 @@ export ACE_BROKER_SOCKET=/tmp/ace-broker.sock
 export ACE_SESSION=my-shell
 ./build/CD .
 ./build/ace-brokerctl assign WORK: /tmp
+./build/ace-brokerctl doslist
 ./build/MakeDir WORK:ace-test-one WORK:ace-test-two ALL
 ./build/Echo hello from AROS TO WORK:ace-shell-test
 ./build/PathPart FILE Work:dir/file.txt
@@ -77,6 +78,22 @@ The broker currently owns per-session current directories and Assigns.  Its
 protocol is deliberately small and binary; the DOS shim is the layer where
 future path translation, volume labels, mounts, locks, and process state will
 be added.
+
+The broker now performs a read-only discovery pass over host block devices
+when it starts. Filesystem-bearing devices are registered in the initial ACE
+DOS device list with their kernel name, filesystem type, filesystem UUID,
+label when valid, and `/dev` path:
+
+```sh
+./build/ace-brokerctl doslist
+```
+
+The kernel name, UUID, and valid filesystem label are treated as
+case-insensitive DOS aliases for the same future filesystem handler. Raw
+devices and filesystems that are swap, encrypted containers, RAID members, or
+other non-filesystem media are not yet registered as file volumes. Recognized
+device aliases are reserved by path resolution but return “not supported”
+until the Linux-backed filesystem handler is added.
 
 The first local Exec compatibility layer is now in `src/exec_compat.[ch]`.
 It provides host-backed memory, registered tasks, Amiga signal-bit masks,
