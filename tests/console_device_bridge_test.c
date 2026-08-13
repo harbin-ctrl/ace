@@ -204,6 +204,31 @@ int main(void)
                           0x123456u));
     free(frame);
 
+    /*
+     * A console smaller than one character cell must not be built. AROS
+     * computes cu_XMax/cu_YMax as (pixels / cell) - 1, so a sub-cell console
+     * has a grid with no columns or no rows, and the class chain spins
+     * forever on the next character written into it -- a hang inside AROS's
+     * own code, with the window frozen. Writing after each of these is the
+     * point of the check: the resize alone is harmless.
+     */
+    assert(ace_console_device_resize(device, 1, 1) == 0);
+    write_text(device, "into a one-pixel console\n");
+    assert(ace_console_device_resize(device, 5, 400) == 0);
+    write_text(device, "into a sliver of a console\n");
+    assert(ace_console_device_resize(device, 400, 3) == 0);
+    write_text(device, "into a slot of a console\n");
+    {
+        int clamped_width;
+        int clamped_height;
+
+        ace_console_device_size(device, &clamped_width, &clamped_height);
+        assert(clamped_width >= 1 && clamped_height >= 1);
+    }
+    width = 900;
+    height = 560;
+    assert(ace_console_device_resize(device, width, height) == 0);
+
     assert(ace_console_device_set_font(device, "Liberation Mono", 20) == 0 ||
            ace_console_device_set_font(device, "DejaVu Sans Mono", 20) == 0);
     frame = read_frame(device, width, height);

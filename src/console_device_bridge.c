@@ -76,6 +76,25 @@ static struct TextFont *load_font(const char *const *candidates, int pixel_size)
     return NULL;
 }
 
+/*
+ * A console has to be at least one character cell in each direction.
+ * consoleclass.c computes cu_XMax/cu_YMax as (pixels / cell) - 1, so a
+ * console narrower or shorter than a single cell gets -1 -- a grid with no
+ * columns or no rows -- and the class chain then spins forever trying to
+ * place a character in it. Confirmed by attaching to a hung process: the
+ * stack sits inside AROS's own dispatch_consoleclass(), not in ACE's code.
+ * Every path that sizes a console goes through here.
+ */
+static void clamp_to_cell(const struct TextFont *font, int *width, int *height)
+{
+    if (!font)
+        return;
+    if (*width < (int)font->tf_XSize)
+        *width = font->tf_XSize;
+    if (*height < (int)font->tf_YSize)
+        *height = font->tf_YSize;
+}
+
 struct ace_console_device *ace_console_device_open(
     int width, int height, const char *const *font_candidates,
     int pixel_size)
@@ -121,6 +140,7 @@ struct ace_console_device *ace_console_device_open(
         fprintf(stderr, "ace_console_device_open: font load failed\n");
         goto fail;
     }
+    clamp_to_cell(device->font, &width, &height);
 
     device->rp = ace_gfx_create_rastport(width, height, device->font,
                                          default_palette);
@@ -363,10 +383,7 @@ static int replace_render_state(struct ace_console_device *device,
 
     if (!device || !font || !device->history_valid)
         return -1;
-    if (width < (int)font->tf_XSize)
-        width = font->tf_XSize;
-    if (height < (int)font->tf_YSize)
-        height = font->tf_YSize;
+    clamp_to_cell(font, &width, &height);
     if (width > 65535)
         width = 65535;
     if (height > 65535)
@@ -477,6 +494,9 @@ int ace_console_device_resize(struct ace_console_device *device,
 
     if (!device || width <= 0 || height <= 0)
         return -1;
+    /* Clamped before the early-out, so a window dragged below one cell
+     * settles on the clamped size instead of retrying on every step. */
+    clamp_to_cell(device->font, &width, &height);
     if (width == device->amiga_window.Width &&
         height == device->amiga_window.Height)
         return 0;

@@ -298,6 +298,43 @@ window-active state), and DSR cursor-position-report replies
 program that sends `ESC[6n` gets no reply, since answering it needs the
 task/message-port layer described above).
 
+### Two ways ACE could take unmodified AROS code somewhere it cannot go
+
+Both of these are the same shape: AROS source that is correct on the system
+it was written for, reached by ACE with an input a real Amiga could not have
+produced. Neither is fixable by changing AROS, and neither should be.
+
+**A console smaller than one character cell hangs.** `consoleclass.c`
+computes `cu_XMax`/`cu_YMax` as `(pixels / cell) - 1`, so a console narrower
+or shorter than a single cell gets `-1` -- a grid with no columns or no rows
+-- and the class chain then spins forever placing a character into it.
+Confirmed by attaching to a hung process: the stack sits in AROS's own
+`dispatch_consoleclass()`. `clamp_to_cell()` in `console_device_bridge.c`
+guards every path that sizes a console. `replace_render_state()` had always
+clamped; the point-resize path added for live resizing had not, which is
+where this came in.
+
+**A shell whose `Cli()` returns NULL crashes.** Real AmigaDOS gives every
+shell process a CLI, so `Shell.c` and `cliPrompt.c` dereference `Cli()`
+without checking -- correct for that system. On ACE the CLI is broker-backed,
+and the broker is a separate process with a finite session table, so it can
+fail where a real Amiga's could not; ACE's `Cli()` returned NULL and unmodified
+`Shell.c` segfaulted at line 716, with five more unchecked calls inside its
+command loop. `Cli()` now never returns NULL: it keeps the last state it read
+successfully, or falls back to the same defaults the broker gives a new
+session, and reports once on stderr. A full session table is now a
+diagnosable degradation ("broker CLI state unavailable ... continuing with
+defaults", then real errors from the commands) instead of a window that
+vanishes.
+
+**Broker sessions are still never reclaimed**, which is what makes that
+second path reachable: `MAX_SESSIONS` is 64 in `broker.c`, `get_session()`
+hands back `ENOSPC` once they are used up, and nothing ever frees a slot. A
+long-lived broker plus enough distinct `ACE_SESSION` names or `NewCLI` clones
+will get there. Reclaiming them needs an ownership model the broker does not
+have yet -- it never learns that the shell behind a session has exited -- so
+this is recorded rather than papered over.
+
 ### The window's own two seams
 
 `read_console()` drains the shell's socket in one pass per main-loop turn and

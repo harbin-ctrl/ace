@@ -842,6 +842,56 @@ static void set_native_broker_error(void)
         native_ioerr = (LONG)errno;
 }
 
+/* Streams and process links, which do not depend on the broker at all. */
+static void cli_attach_streams(void)
+{
+    native_cli.cli_StandardInput = Input();
+    native_cli.cli_CurrentInput = native_cli.cli_StandardInput;
+    native_cli.cli_StandardOutput = Output();
+    native_cli.cli_CurrentOutput = native_cli.cli_StandardOutput;
+    native_cli.cli_StandardError = handle_for_file(stderr);
+    native_cli.cli_DefaultStack = 8192 / CLI_DEFAULTSTACK_UNIT;
+    native_process.pr_CES = (BPTR)stderr;
+    native_process.pr_CLI = (BPTR)&native_cli;
+    native_process.pr_TaskNum = 1;
+    native_cli_loaded = 1;
+}
+
+/*
+ * Real AmigaDOS gives every shell process a CLI, so AROS's own Shell.c and
+ * cliPrompt.c dereference Cli() without checking it -- correct for the
+ * system they were written against. On ACE the CLI is broker-backed, and the
+ * broker is a separate process with a finite session table, so it can fail
+ * where a real Amiga's could not. Returning NULL there turned a recoverable
+ * broker error into a SIGSEGV inside unmodified AROS source (Shell.c:716,
+ * and five more unchecked Cli() calls inside its command loop).
+ *
+ * So this never returns NULL. It keeps whatever state was last read
+ * successfully -- which is what a transient failure wants -- or falls back to
+ * the same defaults the broker itself would hand a new session, and says once
+ * on stderr what went wrong, so a full session table is a diagnosable
+ * degradation rather than a window that vanishes.
+ */
+static struct CommandLineInterface *cli_without_broker(void)
+{
+    static int warned;
+
+    if (!warned) {
+        warned = 1;
+        fprintf(stderr, "ace: broker CLI state unavailable (%s); "
+                        "continuing with defaults\n", strerror(errno));
+    }
+    if (!native_cli_loaded) {
+        native_cli.cli_FailLevel = 10; /* the broker's DEFAULT_FAIL_LEVEL */
+        native_cli_prompt[0] = '\0';
+        native_cli.cli_Prompt = native_cli_prompt;
+        native_cli_set_name[0] = '\0';
+        native_cli.cli_SetName = native_cli_set_name;
+    }
+    cli_attach_streams();
+    return &native_cli;
+}
+
 struct CommandLineInterface *Cli(void)
 {
     char state[AMIGA_BROKER_MAX_PAYLOAD];
@@ -853,16 +903,16 @@ struct CommandLineInterface *Cli(void)
     char *prompt;
 
     if (native_broker_ensure() != 0)
-        return NULL;
+        return cli_without_broker();
 
     if (native_broker_getcli(state, sizeof(state)) != 0)
-        return NULL;
+        return cli_without_broker();
     return_code = strtok_r(state, "\n", &save);
     result2 = strtok_r(NULL, "\n", &save);
     fail_level = strtok_r(NULL, "\n", &save);
     prompt = strtok_r(NULL, "\n", &save);
     if (!return_code || !result2 || !fail_level)
-        return NULL;
+        return cli_without_broker();
 
     native_cli.cli_ReturnCode = (LONG)strtol(return_code, NULL, 10);
     native_cli.cli_Result2 = (LONG)strtol(result2, NULL, 10);
@@ -884,16 +934,7 @@ struct CommandLineInterface *Cli(void)
     else
         native_cli_set_name[0] = '\0';
     native_cli.cli_SetName = native_cli_set_name;
-    native_cli.cli_StandardInput = Input();
-    native_cli.cli_CurrentInput = native_cli.cli_StandardInput;
-    native_cli.cli_StandardOutput = Output();
-    native_cli.cli_CurrentOutput = native_cli.cli_StandardOutput;
-    native_cli.cli_StandardError = handle_for_file(stderr);
-    native_cli.cli_DefaultStack = 8192 / CLI_DEFAULTSTACK_UNIT;
-    native_process.pr_CES = (BPTR)stderr;
-    native_process.pr_CLI = (BPTR)&native_cli;
-    native_process.pr_TaskNum = 1;
-    native_cli_loaded = 1;
+    cli_attach_streams();
     return &native_cli;
 }
 
