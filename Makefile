@@ -148,7 +148,7 @@ all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(B
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
@@ -175,16 +175,16 @@ $(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h | $(BUILD)
+$(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/broker.o: src/broker.c src/broker_protocol.h | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/dos-devices.o: src/dos_devices.c | $(BUILD)
+$(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h | $(BUILD)
+$(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/amiga_shell.o: src/amiga_shell.c src/broker_protocol.h | $(BUILD)
@@ -451,4 +451,7 @@ test-graphics: $(BUILD)/graphics-test
 test-console-device-bridge: $(BUILD)/console-device-bridge-test
 	$(BUILD)/console-device-bridge-test
 
-.PHONY: all clean install test-console-device test-console-device-bridge test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
+test-filesystem-translation: all
+	sh tests/filesystem_translation_test.sh
+
+.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics

@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 
 #include "dos_devices.h"
 
@@ -32,7 +33,16 @@ struct ace_dos_device {
     char label[DEVICE_VALUE_MAX];
     dev_t device_id;
     char mount_path[PATH_MAX];
+    char mount_root[PATH_MAX];
     int mount_method;
+};
+
+struct mount_record {
+    dev_t device_id;
+    char root[PATH_MAX];
+    char mount_path[PATH_MAX];
+    char filesystem_type[DEVICE_TYPE_MAX];
+    char source[PATH_MAX];
 };
 
 static struct ace_dos_device devices[MAX_DOS_DEVICES];
@@ -90,6 +100,53 @@ static int decode_mount_field(const char *source, char *result,
     return 0;
 }
 
+/* Parse one Linux mountinfo record. The first six fields are fixed; the
+ * filesystem type and source follow the literal " - " separator. */
+static int parse_mount_record(char *line, struct mount_record *record)
+{
+    char *fields[6] = {0};
+    char *cursor = line;
+    char *save = NULL;
+    char *separator = strstr(line, " - ");
+    char *tail;
+    char *tail_save = NULL;
+    char *filesystem_type;
+    char *source;
+    unsigned int major_number;
+    unsigned int minor_number;
+    int field_count = 0;
+
+    if (!separator)
+        return -1;
+    while (field_count < 6 &&
+           (fields[field_count] = strtok_r(cursor, " ", &save))) {
+        cursor = NULL;
+        field_count++;
+    }
+    if (field_count < 6 ||
+        sscanf(fields[2], "%u:%u", &major_number, &minor_number) != 2 ||
+        decode_mount_field(fields[3], record->root, sizeof(record->root)) !=
+            0 ||
+        decode_mount_field(fields[4], record->mount_path,
+                           sizeof(record->mount_path)) != 0)
+        return -1;
+
+    /* strtok() replaced the separator's first space with NUL, so use the
+     * original offset to find the post-separator fields. */
+    tail = line + (separator - line) + 3;
+    filesystem_type = strtok_r(tail, " ", &tail_save);
+    source = strtok_r(NULL, " ", &tail_save);
+    if (!filesystem_type || !source ||
+        snprintf(record->filesystem_type, sizeof(record->filesystem_type),
+                 "%s", filesystem_type) >=
+            (int)sizeof(record->filesystem_type) ||
+        decode_mount_field(source, record->source, sizeof(record->source)) !=
+            0)
+        return -1;
+    record->device_id = makedev(major_number, minor_number);
+    return 0;
+}
+
 /* Find a pre-existing mount of this filesystem.  This is important for the
  * common case where the Linux desktop already mounted the volume: ACE still
  * enters it through the DOS volume root, never by interpreting the host
@@ -104,26 +161,12 @@ static int find_existing_mount(dev_t device_id, char *result, size_t result_size
     if (!stream)
         return -1;
     while (getline(&line, &line_size, stream) >= 0) {
-        char *fields[6] = {0};
-        char *cursor = line;
-        char *save = NULL;
-        unsigned int major_number;
-        unsigned int minor_number;
-        char mountpoint[PATH_MAX];
-        int field_count = 0;
+        struct mount_record record;
 
-        while (field_count < 6 &&
-               (fields[field_count] = strtok_r(cursor, " ", &save))) {
-            cursor = NULL;
-            field_count++;
-        }
-        if (field_count < 5 ||
-            sscanf(fields[2], "%u:%u", &major_number, &minor_number) != 2 ||
-            makedev(major_number, minor_number) != device_id)
+        if (parse_mount_record(line, &record) != 0 ||
+            record.device_id != device_id)
             continue;
-        if (decode_mount_field(fields[4], mountpoint, sizeof(mountpoint)) != 0)
-            continue;
-        if (snprintf(result, result_size, "%s", mountpoint) >=
+        if (snprintf(result, result_size, "%s", record.mount_path) >=
             (int)result_size)
             continue;
         found = 0;
@@ -274,6 +317,16 @@ static int is_non_filesystem_type(const char *type)
     return 0;
 }
 
+static int is_partition_device(const char *kernel_name)
+{
+    char path[PATH_MAX];
+
+    if (snprintf(path, sizeof(path), "/sys/class/block/%s/partition",
+                 kernel_name) >= (int)sizeof(path))
+        return 0;
+    return access(path, F_OK) == 0;
+}
+
 static void copy_probe_value(char *destination, size_t destination_size,
                              const char *value, size_t value_length)
 {
@@ -294,6 +347,109 @@ static int device_alias_matches(const struct ace_dos_device *device,
     return strcasecmp(device->kernel_name, name) == 0 ||
            (device->uuid[0] && strcasecmp(device->uuid, name) == 0) ||
            (device->label[0] && strcasecmp(device->label, name) == 0);
+}
+
+static struct ace_dos_device *device_for_id(dev_t device_id)
+{
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++)
+        if (devices[index].in_use && devices[index].device_id == device_id)
+            return &devices[index];
+    return NULL;
+}
+
+static int device_alias_in_use(const char *name)
+{
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++)
+        if (devices[index].in_use && device_alias_matches(&devices[index], name))
+            return 1;
+    return 0;
+}
+
+static void synthetic_alias(const char *filesystem_type, char *result,
+                            size_t result_size)
+{
+    size_t used = 0;
+    const char *prefix = strcasecmp(filesystem_type, "tmpfs") == 0 ?
+                         "RAM" : filesystem_type;
+
+    for (const unsigned char *source = (const unsigned char *)prefix;
+         *source && used + 1 < result_size; source++) {
+        if (isalnum(*source))
+            result[used++] = (char)toupper(*source);
+        else if (used == 0 || result[used - 1] != '_')
+            result[used++] = '_';
+    }
+    while (used && result[used - 1] == '_')
+        used--;
+    if (!used)
+        snprintf(result, result_size, "VOLUME");
+    else
+        result[used] = '\0';
+}
+
+static int add_mount_device(const struct mount_record *record)
+{
+    struct ace_dos_device *device = device_for_id(record->device_id);
+
+    if (!device) {
+        char alias[DEVICE_NAME_MAX];
+        char base[DEVICE_NAME_MAX];
+        size_t suffix = 0;
+
+        for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
+            if (!devices[index].in_use) {
+                device = &devices[index];
+                break;
+            }
+        }
+        if (!device)
+            return -1;
+        synthetic_alias(record->filesystem_type, base, sizeof(base));
+        snprintf(alias, sizeof(alias), "%s", base);
+        while (device_alias_in_use(alias)) {
+            suffix++;
+            if (snprintf(alias, sizeof(alias), "%s%zu", base, suffix) >=
+                (int)sizeof(alias))
+                return -1;
+        }
+        memset(device, 0, sizeof(*device));
+        device->in_use = true;
+        device->device_id = record->device_id;
+        snprintf(device->kernel_name, sizeof(device->kernel_name), "%s", alias);
+        snprintf(device->device_path, sizeof(device->device_path), "%s",
+                 record->source);
+        snprintf(device->filesystem_type, sizeof(device->filesystem_type),
+                 "%s", record->filesystem_type);
+    }
+    if (!device->mount_path[0] ||
+        strlen(record->mount_path) < strlen(device->mount_path)) {
+        snprintf(device->mount_path, sizeof(device->mount_path), "%s",
+                 record->mount_path);
+        snprintf(device->mount_root, sizeof(device->mount_root), "%s",
+                 record->root);
+    }
+    return 0;
+}
+
+/* Refresh the mount side of the catalog. Block devices are discovered first;
+ * this pass then attaches their existing mounts and adds synthetic volumes
+ * for filesystems Linux has no /dev block node for, notably tmpfs (RAM:). */
+static void discover_mounts(void)
+{
+    FILE *stream = fopen("/proc/self/mountinfo", "r");
+    char *line = NULL;
+    size_t line_size = 0;
+
+    if (!stream)
+        return;
+    while (getline(&line, &line_size, stream) >= 0) {
+        struct mount_record record;
+
+        if (parse_mount_record(line, &record) == 0)
+            (void)add_mount_device(&record);
+    }
+    free(line);
+    fclose(stream);
 }
 
 static int hex_digit(int character)
@@ -355,8 +511,10 @@ void ace_dos_devices_discover(void)
 
     memset(devices, 0, sizeof(devices));
     directory = opendir("/sys/class/block");
-    if (!directory)
+    if (!directory) {
+        discover_mounts();
         return;
+    }
 
     while ((entry = readdir(directory)) != NULL) {
         char device_path[PATH_MAX];
@@ -399,27 +557,28 @@ void ace_dos_devices_discover(void)
                                   sizeof(label));
         } else {
             probe = blkid_new_probe_from_filename(device_path);
-            if (!probe)
-                continue;
-            if (blkid_do_safeprobe(probe) != 0 ||
-                blkid_probe_lookup_value(probe, "TYPE", &type,
-                                         &type_length) != 0 ||
-                !type || type_length == 0) {
+            if (probe) {
+                if (blkid_do_safeprobe(probe) == 0 &&
+                    blkid_probe_lookup_value(probe, "TYPE", &type,
+                                             &type_length) == 0 &&
+                    type && type_length != 0) {
+                    copy_probe_value(filesystem_type,
+                                     sizeof(filesystem_type), type,
+                                     type_length);
+                    if (blkid_probe_lookup_value(probe, "UUID", &probe_uuid,
+                                                  &uuid_length) == 0)
+                        copy_probe_value(uuid, sizeof(uuid), probe_uuid,
+                                         uuid_length);
+                    if (blkid_probe_lookup_value(probe, "LABEL", &probe_label,
+                                                  &label_length) == 0)
+                        copy_probe_value(label, sizeof(label), probe_label,
+                                         label_length);
+                }
                 blkid_free_probe(probe);
-                continue;
             }
-            copy_probe_value(filesystem_type, sizeof(filesystem_type), type,
-                             type_length);
-            if (blkid_probe_lookup_value(probe, "UUID", &probe_uuid,
-                                         &uuid_length) == 0)
-                copy_probe_value(uuid, sizeof(uuid), probe_uuid, uuid_length);
-            if (blkid_probe_lookup_value(probe, "LABEL", &probe_label,
-                                         &label_length) == 0)
-                copy_probe_value(label, sizeof(label), probe_label,
-                                 label_length);
-            blkid_free_probe(probe);
         }
-        if (!filesystem_type[0] || is_non_filesystem_type(filesystem_type))
+        if ((!filesystem_type[0] && !is_partition_device(entry->d_name)) ||
+            (filesystem_type[0] && is_non_filesystem_type(filesystem_type)))
             continue;
         for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
             if (!devices[index].in_use) {
@@ -447,6 +606,7 @@ void ace_dos_devices_discover(void)
             device->label[0] = '\0';
     }
     closedir(directory);
+    discover_mounts();
 }
 
 int ace_dos_devices_lookup(const char *name)
@@ -491,6 +651,143 @@ int ace_dos_devices_root(const char *name, char *result, size_t result_size)
     if (ensure_device_mount(match) != 0)
         return -1;
     if (snprintf(result, result_size, "%s", match->mount_path) >=
+        (int)result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+static int path_is_beneath(const char *path, const char *mount_path)
+{
+    size_t mount_length = strlen(mount_path);
+
+    if (mount_length == 1 && mount_path[0] == '/')
+        return path[0] == '/';
+    return strncmp(path, mount_path, mount_length) == 0 &&
+           (path[mount_length] == '\0' || path[mount_length] == '/');
+}
+
+static int find_mount_for_path(const char *path, char *canonical,
+                               size_t canonical_size,
+                               struct mount_record *best,
+                               struct ace_dos_device **device)
+{
+    FILE *stream;
+    char *line = NULL;
+    size_t line_size = 0;
+    size_t best_length = 0;
+
+    if (!realpath(path, canonical) || strlen(canonical) >= canonical_size)
+        return -1;
+    stream = fopen("/proc/self/mountinfo", "r");
+    if (!stream)
+        return -1;
+    *device = NULL;
+    while (getline(&line, &line_size, stream) >= 0) {
+        struct mount_record record;
+        size_t mount_length;
+        struct ace_dos_device *candidate;
+
+        if (parse_mount_record(line, &record) == 0 &&
+            path_is_beneath(canonical, record.mount_path)) {
+            candidate = device_for_id(record.device_id);
+            if (!candidate)
+                continue;
+            mount_length = strlen(record.mount_path);
+            if (mount_length >= best_length) {
+                *best = record;
+                best_length = mount_length;
+                *device = candidate;
+            }
+        }
+    }
+    free(line);
+    fclose(stream);
+    if (!*device) {
+        errno = ENODEV;
+        return -1;
+    }
+    return 0;
+}
+
+static int append_relative_path(const struct mount_record *mount,
+                                const char *host_path, char *result,
+                                size_t result_size)
+{
+    const char *suffix = host_path + strlen(mount->mount_path);
+    const char *root = mount->root;
+    size_t used;
+
+    while (*suffix == '/')
+        suffix++;
+    if (strcmp(root, "/") == 0)
+        root++;
+    else
+        while (*root == '/')
+            root++;
+
+    used = 0;
+    if (snprintf(result + used, result_size - used, "%s%s%s",
+                 root, *root && *suffix ? "/" : "", suffix) >=
+        (int)(result_size - used)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+int ace_dos_devices_name_from_path(const char *path, char *result,
+                                   size_t result_size)
+{
+    char canonical[PATH_MAX];
+    struct mount_record best = {0};
+    struct ace_dos_device *device = NULL;
+    char alias[DEVICE_VALUE_MAX];
+
+    if (!path || !result || result_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (find_mount_for_path(path, canonical, sizeof(canonical), &best,
+                            &device) != 0)
+        return -1;
+
+    if (device->label[0] && ace_dos_devices_lookup(device->label) == 1)
+        snprintf(alias, sizeof(alias), "%s", device->label);
+    else if (ace_dos_devices_lookup(device->kernel_name) == 1)
+        snprintf(alias, sizeof(alias), "%s", device->kernel_name);
+    else if (device->uuid[0] && ace_dos_devices_lookup(device->uuid) == 1)
+        snprintf(alias, sizeof(alias), "%s", device->uuid);
+    else {
+        errno = EEXIST;
+        return -1;
+    }
+
+    if (snprintf(result, result_size, "%s:", alias) >= (int)result_size)
+        return -1;
+    if (append_relative_path(&best, canonical, result + strlen(result),
+                             result_size - strlen(result)) != 0)
+        return -1;
+    return 0;
+}
+
+int ace_dos_devices_volume_root_for_path(const char *path, char *result,
+                                         size_t result_size)
+{
+    char canonical[PATH_MAX];
+    struct mount_record mount;
+    struct ace_dos_device *device;
+
+    if (!result || result_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (find_mount_for_path(path, canonical, sizeof(canonical), &mount,
+                            &device) != 0)
+        return -1;
+    (void)device;
+    if (snprintf(result, result_size, "%s", mount.mount_path) >=
         (int)result_size) {
         errno = ENAMETOOLONG;
         return -1;

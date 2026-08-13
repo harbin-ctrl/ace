@@ -81,7 +81,9 @@ enum amiga_broker_operation {
      * closes, which the kernel reports whether the shell exits, is killed,
      * or crashes.
      */
-    AMIGA_BROKER_ATTACH = 16
+    AMIGA_BROKER_ATTACH = 16,
+    /* Translate an absolute host path back into an AmigaDOS volume name. */
+    AMIGA_BROKER_NAMEFROMHOST = 17
 };
 
 #define AMIGA_BROKER_VAR_LOCAL  0x0001u
@@ -90,6 +92,9 @@ enum amiga_broker_operation {
 #define AMIGA_BROKER_VAR_ALIAS  0x0008u
 #define AMIGA_BROKER_VAR_ANY    0x0010u
 #define AMIGA_BROKER_VAR_VARIABLE 0x0020u
+/* Internal callers may already hold an absolute Linux path (for example a
+ * native lock passed to CurrentDir). It must not receive Amiga '/' semantics. */
+#define AMIGA_BROKER_PATH_HOST  0x80000000u
 
 #define AMIGA_BROKER_MAX_PAYLOAD 16384u
 

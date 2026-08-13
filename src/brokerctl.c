@@ -9,6 +9,7 @@
 static int usage(const char *program)
 {
     fprintf(stderr, "usage: %s pwd | cd PATH | assign NAME PATH | resolve PATH | "
+                    "name PATH | "
                     "getvar NAME | setvar NAME VALUE | setgvar NAME VALUE | "
                     "delvar NAME | result | cli | doslist | hold | "
                     "setresult RC RESULT2\n", program);
@@ -42,12 +43,21 @@ int main(int argc, char **argv)
         puts(result);
         return 0;
     }
-    if (argc == 3 && strcmp(argv[1], "cd") == 0)
-        return native_broker_setcwd(argv[2]) == 0 ? 0 : 1;
+    if (argc == 3 && strcmp(argv[1], "cd") == 0) {
+        if (native_broker_resolve_path(argv[2], result, sizeof(result)) != 0)
+            return 1;
+        return native_broker_setcwd(result) == 0 ? 0 : 1;
+    }
     if (argc == 4 && strcmp(argv[1], "assign") == 0)
         return native_broker_assign(argv[2], argv[3]) == 0 ? 0 : 1;
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
         if (native_broker_resolve_path(argv[2], result, sizeof(result)) != 0)
+            return 1;
+        puts(result);
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "name") == 0) {
+        if (native_broker_name_from_host(argv[2], result, sizeof(result)) != 0)
             return 1;
         puts(result);
         return 0;

@@ -374,12 +374,51 @@ static int append_variable_list(char *result, size_t result_size, size_t *used,
     return 0;
 }
 
+static int normalize_amiga_path(struct broker_session *session,
+                                 const char *path, char *result,
+                                 size_t result_size)
+{
+    char relative[PATH_MAX * 2];
+    char floor[PATH_MAX];
+    const char *cursor = path;
+    size_t parents = 0;
+    size_t used = 0;
+
+    while (*cursor == '/') {
+        parents++;
+        cursor++;
+    }
+    for (size_t index = 0; index < parents; index++) {
+        if (used + 3 >= sizeof(relative)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(relative + used, "../", 3);
+        used += 3;
+    }
+    if (strlen(cursor) >= sizeof(relative) - used) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(relative + used, cursor);
+    if (normalize_path(session->cwd, relative, result, result_size) != 0)
+        return -1;
+    if (ace_dos_devices_volume_root_for_path(session->cwd, floor,
+                                              sizeof(floor)) == 0 &&
+        normalize_path_beneath(floor, result, result, result_size) != 0)
+        return -1;
+    return 0;
+}
+
 static int resolve_path(struct broker_session *session, const char *input,
-                        char *result, size_t result_size)
+                        char *result, size_t result_size, bool host_path)
 {
     const char *colon = strchr(input, ':');
     char base[PATH_MAX];
     const char *relative = input;
+
+    if (host_path)
+        return normalize_path(session->cwd, input, result, result_size);
 
     if (colon && colon != input) {
         char assign_name[MAX_NAME];
@@ -413,7 +452,7 @@ static int resolve_path(struct broker_session *session, const char *input,
             }
         }
     }
-    return normalize_path(session->cwd, relative, result, result_size);
+    return normalize_amiga_path(session, relative, result, result_size);
 }
 
 static int send_response(int fd, int status, const char *payload)
@@ -490,7 +529,12 @@ static int handle_client(struct broker_connection *connection)
 
     switch (request.operation) {
     case AMIGA_BROKER_RESOLVE:
-        if (resolve_path(session, path, result, sizeof(result)) != 0)
+        if (resolve_path(session, path, result, sizeof(result), false) != 0)
+            status = errno;
+        break;
+
+    case AMIGA_BROKER_NAMEFROMHOST:
+        if (ace_dos_devices_name_from_path(path, result, sizeof(result)) != 0)
             status = errno;
         break;
 
@@ -500,7 +544,8 @@ static int handle_client(struct broker_connection *connection)
 
     case AMIGA_BROKER_SETCWD: {
         struct stat information;
-        if (resolve_path(session, path, result, sizeof(result)) != 0 ||
+        if (resolve_path(session, path, result, sizeof(result),
+                         (request.flags & AMIGA_BROKER_PATH_HOST) != 0) != 0 ||
             stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
             status = errno ? errno : ENOTDIR;
         } else {
@@ -531,7 +576,7 @@ static int handle_client(struct broker_connection *connection)
             }
         }
         if (!assign || !assign_name[0] || assign_length >= MAX_NAME ||
-            resolve_path(session, value, result, sizeof(result)) != 0 ||
+            resolve_path(session, value, result, sizeof(result), false) != 0 ||
             stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
             status = errno ? errno : ENOSPC;
         } else {
@@ -716,6 +761,7 @@ static int handle_client(struct broker_connection *connection)
         if (send_response(fd, status, strerror(status)) != 0)
             outcome = -1;
     } else if (request.operation == AMIGA_BROKER_RESOLVE ||
+               request.operation == AMIGA_BROKER_NAMEFROMHOST ||
                request.operation == AMIGA_BROKER_GETCWD ||
                request.operation == AMIGA_BROKER_GETVAR ||
                request.operation == AMIGA_BROKER_LISTVARS ||

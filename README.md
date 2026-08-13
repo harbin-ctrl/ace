@@ -122,19 +122,31 @@ label when valid, and `/dev` path:
 ./build/ace-brokerctl doslist
 ```
 
+The reverse translation can be inspected directly with `name`:
+
+```sh
+./build/ace-brokerctl name /home/erik/repo/ace
+```
+
 The kernel name, UUID, and valid filesystem label are treated as
 case-insensitive DOS aliases for the same filesystem volume. Labels may
 contain spaces when quoted, but may not contain the DOS separator or host path
-separators. Raw devices and filesystems that are swap, encrypted containers,
-RAID members, or other non-filesystem media are not registered as file
-volumes.
+separators. Unformatted partitions are retained as device entries so they can
+be named and inspected even though they cannot be mounted by the DOS volume
+resolver. Swap, encrypted containers, RAID members, and other explicitly
+non-filesystem media are not registered as file volumes.
 
-The first filesystem handler supports VFAT and ext2, ext3, and ext4. On the
-first use of an alias, the broker finds an existing mount of that block
-device, or asks Linux to mount it on demand. The host mountpoint is an
+The first filesystem handler supports VFAT and ext2, ext3, and ext4. The
+broker also enumerates the live Linux mount table. Block-backed mounts are
+attached to their existing DOS volume entries, while filesystems without a
+block device receive synthetic names (for example `RAM:` for tmpfs). On the
+first use of an unmounted supported alias, the broker finds an existing mount
+or asks Linux to mount it on demand. The host mountpoint is an
 implementation detail: sda2:etc/hosts means etc/hosts below the root of the
-filesystem on sda2, even if Linux happens to mount that filesystem at /. ACE
-releases mounts it created when the broker stops.
+filesystem on sda2, even if Linux happens to mount that filesystem at /. When
+an AROS lock is converted back into a name, ACE chooses the longest matching
+mountpoint and strips it, so nested mounts remain independent. ACE releases
+mounts it created when the broker stops.
 
 The first local Exec compatibility layer is now in `src/exec_compat.[ch]`.
 It provides host-backed memory, registered tasks, Amiga signal-bit masks,

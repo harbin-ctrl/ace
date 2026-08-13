@@ -668,17 +668,31 @@ BPTR CurrentDir(BPTR handle)
 LONG NameFromLock(BPTR handle, STRPTR buffer, LONG length)
 {
     struct native_lock *lock = handle;
-    if (!lock || !buffer || length <= 0 || strlen(lock->path) >= (size_t)length) {
+    char amiga_name[PATH_MAX];
+
+    if (!lock || !buffer || length <= 0) {
         native_ioerr = ERROR_LINE_TOO_LONG;
         return DOSFALSE;
     }
-    strcpy(buffer, lock->path);
+    if (native_broker_name_from_host(lock->path, amiga_name,
+                                     sizeof(amiga_name)) != 0) {
+        native_ioerr = errno;
+        return DOSFALSE;
+    }
+    if (strlen(amiga_name) >= (size_t)length) {
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return DOSFALSE;
+    }
+    strcpy(buffer, amiga_name);
     return DOSTRUE;
 }
 
 void SetCurrentDirName(CONST_STRPTR name)
 {
-    (void)name;
+    if (!name)
+        name = "";
+    snprintf(native_cli_set_name, sizeof(native_cli_set_name), "%s", name);
+    native_cli.cli_SetName = native_cli_set_name;
 }
 
 static FILE *selected_input(void)
@@ -929,10 +943,13 @@ struct CommandLineInterface *Cli(void)
         native_cli_prompt[0] = '\0';
     }
     native_cli.cli_Prompt = native_cli_prompt;
-    if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
-        snprintf(native_cli_set_name, sizeof(native_cli_set_name), "%s", cwd);
-    else
+    if (native_broker_getcwd(cwd, sizeof(cwd)) == 0 &&
+        native_broker_name_from_host(cwd, native_cli_set_name,
+                                     sizeof(native_cli_set_name)) == 0) {
+        /* The broker returns the AROS spelling, not the Linux cwd. */
+    } else {
         native_cli_set_name[0] = '\0';
+    }
     native_cli.cli_SetName = native_cli_set_name;
     cli_attach_streams();
     return &native_cli;

@@ -404,6 +404,13 @@ int native_broker_resolve_path(const char *path, char *result, size_t result_siz
     return broker_request(AMIGA_BROKER_RESOLVE, path, NULL, 0, result, result_size);
 }
 
+int native_broker_name_from_host(const char *path, char *result,
+                                 size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_NAMEFROMHOST, path, NULL, 0,
+                          result, result_size);
+}
+
 int native_broker_getcwd(char *result, size_t result_size)
 {
     return broker_request(AMIGA_BROKER_GETCWD, NULL, NULL, 0, result, result_size);
@@ -412,7 +419,8 @@ int native_broker_getcwd(char *result, size_t result_size)
 int native_broker_setcwd(const char *path)
 {
     char ignored[1];
-    return broker_request(AMIGA_BROKER_SETCWD, path, NULL, 0, ignored, sizeof(ignored));
+    return broker_request(AMIGA_BROKER_SETCWD, path, NULL,
+                          AMIGA_BROKER_PATH_HOST, ignored, sizeof(ignored));
 }
 
 int native_broker_assign(const char *name, const char *path)

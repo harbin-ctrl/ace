@@ -12,6 +12,14 @@ int ace_dos_devices_lookup(const char *name);
 /* Resolve a known filesystem volume to a host directory, mounting on demand. */
 int ace_dos_devices_root(const char *name, char *result, size_t result_size);
 
+/* Translate a canonical host path into the AmigaDOS volume-relative name. */
+int ace_dos_devices_name_from_path(const char *path, char *result,
+                                   size_t result_size);
+
+/* Return the host mountpoint that is the hard floor for an Amiga volume. */
+int ace_dos_devices_volume_root_for_path(const char *path, char *result,
+                                         size_t result_size);
+
 /* Release mounts created by the broker. */
 void ace_dos_devices_shutdown(void);
 
