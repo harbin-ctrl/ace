@@ -135,6 +135,18 @@ static int find_command(const char *command, char *result, size_t result_size)
     return -1;
 }
 
+static BOOL line_is_blank(const Buffer *line)
+{
+    for (LONG index = 0; index < line->len; index++) {
+        unsigned char character = (unsigned char)line->buf[index];
+
+        if (character != '\n' && character != '\r' &&
+            !isspace(character))
+            return FALSE;
+    }
+    return TRUE;
+}
+
 static LONG executeLine(ShellState *ss, STRPTR command_args)
 {
     char command_path[PATH_MAX];
@@ -241,9 +253,11 @@ LONG checkLine(ShellState *ss, Buffer *in, Buffer *out, BOOL echo)
 {
     struct CommandLineInterface *cli = Cli();
     BOOL have_command = FALSE;
+    BOOL executed = FALSE;
     LONG result = convertLine(ss, in, out, &have_command);
 
     if (!result && have_command) {
+        executed = TRUE;
         if (echo)
             cliEcho(ss, out->buf);
         result = executeLine(ss, out->buf);
@@ -254,7 +268,7 @@ LONG checkLine(ShellState *ss, Buffer *in, Buffer *out, BOOL echo)
     SelectOutput(cli->cli_StandardOutput);
     cliVarNum(ss, "RC", cli->cli_ReturnCode);
     cliVarNum(ss, "Result2", cli->cli_Result2);
-    if (result && result != RETURN_FAIL)
+    if (result && !executed && result != RETURN_FAIL)
         PrintFault(result, NULL);
     return result;
 }
@@ -273,8 +287,8 @@ LONG interact(ShellState *ss)
         bufferReset(&in);
         bufferReset(&out);
         error = readLine(ss, cli, &in, &more_left);
-        if (!error && in.len)
-            error = checkLine(ss, &in, &out, TRUE);
+        if (!error && in.len && !line_is_blank(&in))
+            (void)checkLine(ss, &in, &out, TRUE);
         Redirection_release(ss);
         if (!more_left)
             break;
