@@ -10,38 +10,39 @@ INSTALL ?= install
 
 COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
-AROS_SRC := /home/erik/aros/workbench/c/shellcommands/Echo.c
-AROS_CD_SRC := /home/erik/aros/workbench/c/shellcommands/CD.c
-AROS_PATHPART_SRC := /home/erik/aros/workbench/c/shellcommands/PathPart.c
-AROS_FAULT_SRC := /home/erik/aros/workbench/c/shellcommands/Fault.c
-AROS_ASK_SRC := /home/erik/aros/workbench/c/shellcommands/Ask.c
-AROS_GET_SRC := /home/erik/aros/workbench/c/shellcommands/Get.c
-AROS_GETENV_SRC := /home/erik/aros/workbench/c/shellcommands/Getenv.c
-AROS_SET_SRC := /home/erik/aros/workbench/c/shellcommands/Set.c
-AROS_UNSET_SRC := /home/erik/aros/workbench/c/shellcommands/Unset.c
-AROS_ALIAS_SRC := /home/erik/aros/workbench/c/shellcommands/Alias.c
-AROS_UNALIAS_SRC := /home/erik/aros/workbench/c/shellcommands/Unalias.c
-AROS_FAILAT_SRC := /home/erik/aros/workbench/c/shellcommands/FailAt.c
-AROS_WHY_SRC := /home/erik/aros/workbench/c/shellcommands/Why.c
-AROS_PROMPT_SRC := /home/erik/aros/workbench/c/shellcommands/Prompt.c
+AROS_ROOT ?= $(HOME)/aros
+AROS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Echo.c
+AROS_CD_SRC := $(AROS_ROOT)/workbench/c/shellcommands/CD.c
+AROS_PATHPART_SRC := $(AROS_ROOT)/workbench/c/shellcommands/PathPart.c
+AROS_FAULT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Fault.c
+AROS_ASK_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Ask.c
+AROS_GET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Get.c
+AROS_GETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Getenv.c
+AROS_SET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Set.c
+AROS_UNSET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Unset.c
+AROS_ALIAS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Alias.c
+AROS_UNALIAS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Unalias.c
+AROS_FAILAT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/FailAt.c
+AROS_WHY_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Why.c
+AROS_PROMPT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Prompt.c
 INSTALL_LNX_SRC := src/lnx.c
-AROS_MAKEDIR_SRC := /home/erik/aros/workbench/c/MakeDir.c
-AROS_ENDCLI_SRC := /home/erik/aros/workbench/c/shellcommands/EndCLI.c
-AROS_NEWCLI_SRC := /home/erik/aros/workbench/c/shellcommands/NewCLI.c
-AROS_CON_HANDLER_SRC := /home/erik/aros/rom/filesys/console_handler/con_handler.c
-AROS_CON_SUPPORT_SRC := /home/erik/aros/rom/filesys/console_handler/support.c
-AROS_CON_COMPLETION_SRC := /home/erik/aros/rom/filesys/console_handler/completion.c
+AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
+AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
+AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
+AROS_CON_HANDLER_SRC := $(AROS_ROOT)/rom/filesys/console_handler/con_handler.c
+AROS_CON_SUPPORT_SRC := $(AROS_ROOT)/rom/filesys/console_handler/support.c
+AROS_CON_COMPLETION_SRC := $(AROS_ROOT)/rom/filesys/console_handler/completion.c
 AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
                     convertArg convertBackTicks convertLine convertLineDot \
                     convertRedir convertVar interpreter readLine redirection
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
 AROS_REAL_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
-                      -I/home/erik/aros/arch/all-pc/include \
-                      -I/home/erik/aros/arch/x86_64-all/include \
-                      -I/home/erik/aros/compiler/arossupport/include \
-                      -I/home/erik/aros/compiler/include \
-                      -I/home/erik/aros/rom/devs/console \
-                      -I/home/erik/aros/rom/filesys/console_handler
+                      -I$(AROS_ROOT)/arch/all-pc/include \
+                      -I$(AROS_ROOT)/arch/x86_64-all/include \
+                      -I$(AROS_ROOT)/compiler/arossupport/include \
+                      -I$(AROS_ROOT)/compiler/include \
+                      -I$(AROS_ROOT)/rom/devs/console \
+                      -I$(AROS_ROOT)/rom/filesys/console_handler
 AROS_REAL_CFLAGS := -Wno-implicit-function-declaration \
                     -Wno-int-conversion -Wno-int-to-pointer-cast \
                     -Wno-pointer-sign -Wno-sign-compare \
@@ -154,13 +155,13 @@ $(BUILD)/aros-newcli.o: $(AROS_NEWCLI_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I/home/erik/aros/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
-$(BUILD)/aros-real-shell.o: /home/erik/aros/workbench/c/Shell/Shell.c | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I/home/erik/aros/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
+$(BUILD)/aros-real-shell.o: $(AROS_ROOT)/workbench/c/Shell/Shell.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
-$(BUILD)/aros-shell-%.o: /home/erik/aros/workbench/c/Shell/%.c | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I/home/erik/aros/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
+$(BUILD)/aros-shell-%.o: $(AROS_ROOT)/workbench/c/Shell/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
 $(BUILD)/Echo.o: $(AROS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
