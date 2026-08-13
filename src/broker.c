@@ -1010,6 +1010,12 @@ static int handle_client(struct broker_connection *connection)
             status = errno;
         break;
 
+    case AMIGA_BROKER_RESOLVE_BENEATH:
+        if (normalize_mapped_path_beneath(path, value, result,
+                                          sizeof(result)) != 0)
+            status = errno;
+        break;
+
     case AMIGA_BROKER_NAMEFROMHOST:
         if (name_from_host_with_mappings(path, result, sizeof(result)) != 0)
             status = errno;
@@ -1340,6 +1346,7 @@ static int handle_client(struct broker_connection *connection)
         if (send_response(fd, status, strerror(status)) != 0)
             outcome = -1;
     } else if (request.operation == AMIGA_BROKER_RESOLVE ||
+               request.operation == AMIGA_BROKER_RESOLVE_BENEATH ||
                request.operation == AMIGA_BROKER_NAMEFROMHOST ||
                request.operation == AMIGA_BROKER_GETCWD ||
                request.operation == AMIGA_BROKER_GETVAR ||

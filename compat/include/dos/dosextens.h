@@ -26,6 +26,9 @@ struct Process {
     LONG pr_Result2;
     APTR pr_WindowPtr;
     BPTR pr_CES;
+    BPTR pr_CIS;
+    BPTR pr_COS;
+    struct MsgPort *pr_ConsoleTask;
     LONG pr_TaskNum;
     BPTR pr_HomeDir;
     struct List pr_LocalVars;
@@ -130,6 +133,18 @@ struct DosList {
     } dol_misc;
     BSTR dol_Name;
 };
+
+struct DevProc {
+    struct MsgPort *dvp_Port;
+    BPTR dvp_Lock;
+    ULONG dvp_Flags;
+    struct DosList *dvp_DevNode;
+};
+
+#define DVPB_UNLOCK 0
+#define DVPB_ASSIGN 1
+#define DVPF_UNLOCK (1L << DVPB_UNLOCK)
+#define DVPF_ASSIGN (1L << DVPB_ASSIGN)
 
 #define DLT_DEVICE     0
 #define DLT_DIRECTORY  1

@@ -320,6 +320,51 @@ static void test_scroll_raster_direction(void)
     free(frame);
 }
 
+/*
+ * A COMPLEMENT RectFill is how stdconclass.c draws and erases its cursor, and
+ * on planar hardware it inverts the pen index rather than the colour: pen n
+ * becomes pen n ^ ACE_GFX_PEN_MASK. Three bands make that observable -- pen 0
+ * has to come back as pen 7 and not merely as "some inverse of black", which
+ * an RGB complement would also satisfy given this palette's white pen 1.
+ */
+static void test_complement_inverts_pen_index(void)
+{
+    const int cell_height = g_font->tf_YSize;
+    const int sample_x = g_font->tf_XSize / 2;
+    const unsigned bands[] = { 0, 1, 2 };
+    uint8_t *frame;
+    unsigned i;
+
+    SetDrMd(g_rp, JAM2);
+    for (i = 0; i < 3; i++) {
+        SetAPen(g_rp, bands[i]);
+        RectFill(g_rp, 0, cell_height * (int)i, WIN_WIDTH - 1,
+                 cell_height * (int)(i + 1) - 1);
+    }
+
+    SetDrMd(g_rp, COMPLEMENT);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, cell_height * 3 - 1);
+
+    frame = read_frame();
+    for (i = 0; i < 3; i++)
+        assert(pixel_matches(frame, sample_x,
+                             cell_height * (int)i + cell_height / 2,
+                             test_palette[bands[i] ^ ACE_GFX_PEN_MASK]));
+    free(frame);
+
+    /* stdcon_unrendercursor() erases with a second COMPLEMENT pass, so the
+       inversion has to be its own undo. */
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, cell_height * 3 - 1);
+    SetDrMd(g_rp, JAM2);
+
+    frame = read_frame();
+    for (i = 0; i < 3; i++)
+        assert(pixel_matches(frame, sample_x,
+                             cell_height * (int)i + cell_height / 2,
+                             test_palette[bands[i]]));
+    free(frame);
+}
+
 int main(void)
 {
     test_class_construction();
@@ -356,6 +401,7 @@ int main(void)
     }
 
     test_scroll_raster_direction();
+    test_complement_inverts_pen_index();
 
     ace_gfx_destroy_rastport(g_rp);
     ace_gfx_unload_font(g_font);

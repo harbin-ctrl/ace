@@ -86,7 +86,11 @@ enum amiga_broker_operation {
     AMIGA_BROKER_NAMEFROMHOST = 17,
     /* Return the current session's assignments for the DOS compatibility
      * layer that implements the unmodified AROS Assign command. */
-    AMIGA_BROKER_LISTASSIGNS = 18
+    AMIGA_BROKER_LISTASSIGNS = 18,
+    /* Resolve a relative DOS path beneath a specific host-side assignment
+     * target. The AROS DOS dispatcher chooses the target; the broker only
+     * performs component mapping and containment checks here. */
+    AMIGA_BROKER_RESOLVE_BENEATH = 19
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

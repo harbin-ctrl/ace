@@ -60,6 +60,9 @@ void ace_gfx_unload_font(struct TextFont *font);
 int ace_gfx_font_family_complete(const char *family);
 
 #define ACE_GFX_PEN_COUNT 8
+/* The bitplane depth behind that pen count, as the mask a COMPLEMENT draw
+ * inverts a pen index against. Three planes give pens 0-7 and a mask of 7. */
+#define ACE_GFX_PEN_MASK (ACE_GFX_PEN_COUNT - 1)
 
 /*
  * Creates a RastPort over a freshly allocated width x height BitMap, with the

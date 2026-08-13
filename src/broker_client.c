@@ -409,6 +409,13 @@ int native_broker_resolve_path(const char *path, char *result, size_t result_siz
     return broker_request(AMIGA_BROKER_RESOLVE, path, NULL, 0, result, result_size);
 }
 
+int native_broker_resolve_beneath(const char *base, const char *relative,
+                                  char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_RESOLVE_BENEATH, base, relative, 0,
+                          result, result_size);
+}
+
 int native_broker_name_from_host(const char *path, char *result,
                                  size_t result_size)
 {

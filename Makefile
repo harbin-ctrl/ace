@@ -51,6 +51,7 @@ AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
 AROS_ASSIGN_SRC := $(AROS_ROOT)/workbench/c/Assign.c
+AROS_DOSPATH_DIR := $(AROS_ROOT)/rom/dos
 AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
@@ -149,7 +150,7 @@ all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(B
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
@@ -181,6 +182,14 @@ AROS_ASSIGN_CFLAGS := -Wno-implicit-function-declaration \
 AROS_ASSIGN_INCLUDES := -I$(CURDIR)/compat/aros-real/include -I$(COMPAT) \
                         -I$(AROS_ROOT)/compiler/include -Isrc
 
+AROS_DOSPATH_CFLAGS := -Wno-implicit-function-declaration \
+                       -Wno-int-conversion -Wno-int-to-pointer-cast \
+                       -Wno-pointer-sign -Wno-unused-variable \
+                       -Wno-sign-compare -Wno-missing-field-initializers \
+                       -Wno-unused-but-set-variable -Wno-strict-aliasing
+AROS_DOSPATH_INCLUDES := -I$(COMPAT) -Isrc
+DOS_RUNTIME_OBJ := $(BUILD)/dos-runtime.o
+
 $(BUILD)/Assign.o: $(AROS_ASSIGN_SRC) src/assign_compat.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_ASSIGN_CFLAGS) -D__AROS__ $(AROS_ASSIGN_INCLUDES) \
 	    -include src/assign_compat.h -c $< -o $@
@@ -191,8 +200,23 @@ $(BUILD)/assign_entry.o: src/assign_entry.c src/broker_client.h | $(BUILD)
 $(BUILD)/assign_compat.o: src/assign_compat.c src/assign_compat.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
+$(BUILD)/aros-dos-getdeviceproc.o: $(AROS_DOSPATH_DIR)/getdeviceproc.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DGetDeviceProc=ace_aros_GetDeviceProc -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
+$(BUILD)/aros-dos-freedeviceproc.o: $(AROS_DOSPATH_DIR)/freedeviceproc.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DFreeDeviceProc=ace_aros_FreeDeviceProc -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
+$(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
+                    $(BUILD)/aros-dos-getdeviceproc.o \
+                    $(BUILD)/aros-dos-freedeviceproc.o | $(BUILD)
+	$(CC) $(CFLAGS) -r $^ -o $@
+
 $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
-                 $(BUILD)/assign_compat.o $(BUILD)/native_dos.o \
+                 $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
                  $(BUILD)/native_command.o $(BUILD)/native_args.o \
                  $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
@@ -369,58 +393,58 @@ $(BUILD)/Why.o: $(AROS_WHY_SRC) | $(BUILD)
 $(BUILD)/Prompt.o: $(AROS_PROMPT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/makedir_entry.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/makedir_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/EndCLI: $(BUILD)/endcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/EndCLI: $(BUILD)/endcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/LNX: $(BUILD)/LNX.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Echo: $(BUILD)/Echo.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Echo: $(BUILD)/Echo.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/CD: $(BUILD)/CD.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/CD: $(BUILD)/CD.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/PathPart: $(BUILD)/PathPart.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/PathPart: $(BUILD)/PathPart.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Fault: $(BUILD)/Fault.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Fault: $(BUILD)/Fault.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Ask: $(BUILD)/Ask.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Ask: $(BUILD)/Ask.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Get: $(BUILD)/Get.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Get: $(BUILD)/Get.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Getenv: $(BUILD)/Getenv.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Getenv: $(BUILD)/Getenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Set: $(BUILD)/Set.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Set: $(BUILD)/Set.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Unset: $(BUILD)/Unset.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Unset: $(BUILD)/Unset.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Alias: $(BUILD)/Alias.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Alias: $(BUILD)/Alias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Unalias: $(BUILD)/Unalias.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Unalias: $(BUILD)/Unalias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/FailAt: $(BUILD)/FailAt.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/FailAt: $(BUILD)/FailAt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Why: $(BUILD)/Why.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Prompt: $(BUILD)/Prompt.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o
@@ -435,13 +459,13 @@ $(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
 
-$(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
+$(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-shell: $(BUILD)/ace-launcher.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 clean:

@@ -916,16 +916,50 @@ ULONG SetSoftStyle(struct RastPort *rp, ULONG style, ULONG enable)
     return old;
 }
 
+/*
+ * COMPLEMENT on planar hardware inverts the pen *index*: every bitplane bit is
+ * flipped, so a cell holding pen n comes back as pen n ^ ACE_GFX_PEN_MASK.
+ * stdconclass.c draws its cursor exactly that way -- SetDrMd(rp, COMPLEMENT)
+ * and then RectFill over the cell -- so on the three bitplanes simulated here
+ * a cursor over the background lands on pen 7, not on whatever colour happens
+ * to be the RGB inverse of the background.
+ *
+ * This surface holds resolved xRGB pixels rather than bitplanes, so the pen
+ * arithmetic is simulated: each pixel is matched back to the palette entry
+ * that produced it, that index is inverted, and the resulting pen's colour is
+ * written. Antialiased glyph edges hold blends of two pens that match no
+ * palette entry; those keep the plain RGB inverse, which is both the closest
+ * answer available and self-inverse, so the second COMPLEMENT pass that
+ * stdcon_unrendercursor() draws still restores them exactly.
+ *
+ * Matching takes the lowest pen holding a colour, so a palette with repeated
+ * entries -- pens 4-7 mirroring 0-3 to imitate a two-bitplane screen, say --
+ * still restores what it displays, even though the index it round-trips
+ * through is not the one it started from.
+ */
 static void apply_complement(struct ace_gfx_rp_private *priv, int x0, int y0,
                              int x1, int y1)
 {
+    uint32_t pen_pixels[ACE_GFX_PEN_COUNT];
+    unsigned pen;
     int x, y;
+
+    for (pen = 0; pen < ACE_GFX_PEN_COUNT; pen++)
+        pen_pixels[pen] = pen_pixel(priv, pen);
 
     for (y = y0; y <= y1; y++) {
         uint32_t *row = row_ptr(priv, y);
 
-        for (x = x0; x <= x1; x++)
-            row[x] ^= 0x00ffffffu;
+        for (x = x0; x <= x1; x++) {
+            for (pen = 0; pen < ACE_GFX_PEN_COUNT; pen++) {
+                if (row[x] == pen_pixels[pen]) {
+                    row[x] = pen_pixels[pen ^ ACE_GFX_PEN_MASK];
+                    break;
+                }
+            }
+            if (pen == ACE_GFX_PEN_COUNT)
+                row[x] ^= 0x00ffffffu;
+        }
     }
 }
 

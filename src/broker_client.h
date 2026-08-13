@@ -7,6 +7,8 @@
 int native_broker_ensure(void);
 int native_broker_attach(void);
 int native_broker_resolve_path(const char *path, char *result, size_t result_size);
+int native_broker_resolve_beneath(const char *base, const char *relative,
+                                  char *result, size_t result_size);
 int native_broker_name_from_host(const char *path, char *result,
                                  size_t result_size);
 int native_broker_getcwd(char *result, size_t result_size);

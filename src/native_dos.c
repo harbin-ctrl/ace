@@ -24,6 +24,7 @@
 #include "broker_client.h"
 #include "native_host.h"
 #include "broker_protocol.h"
+#include "aros_dos_path.h"
 
 static LONG native_ioerr;
 
@@ -154,6 +155,14 @@ static void native_refresh_local_vars(void)
 }
 
 struct native_lock {
+    /* Keep the public prefix compatible with AROS's FileLock.  The imported
+       GetDeviceProc() code reads fl_Task when it advances a multi-assign;
+       the host bridge uses the lock pointer itself as its handler marker. */
+    BPTR fl_Link;
+    IPTR fl_Key;
+    LONG fl_Access;
+    struct MsgPort *fl_Task;
+    BPTR fl_Volume;
     char path[PATH_MAX];
     /* Opened by Examine() when the lock is a directory; consumed by
        ExNext(). Real AmigaDOS ties this scan position to the filesystem
@@ -177,6 +186,15 @@ struct native_lock {
 static struct native_lock native_initial_dir;
 static BPTR native_current_dir;
 
+static void native_init_lock(struct native_lock *lock, const char *path,
+                              LONG access)
+{
+    memset(lock, 0, sizeof(*lock));
+    snprintf(lock->path, sizeof(lock->path), "%s", path);
+    lock->fl_Access = access;
+    lock->fl_Task = (struct MsgPort *)lock;
+}
+
 /* Commands run as separate host processes, but ACE deliberately gives them
    one broker session so an Amiga command such as CD can update the shell's
    directory.  The shell process therefore has to refresh its cached native
@@ -191,9 +209,7 @@ static int native_sync_current_dir(void)
     if (native_broker_getcwd(current, sizeof(current)) != 0)
         return -1;
     if (!native_current_dir) {
-        memset(&native_initial_dir, 0, sizeof(native_initial_dir));
-        snprintf(native_initial_dir.path, sizeof(native_initial_dir.path),
-                 "%s", current);
+        native_init_lock(&native_initial_dir, current, SHARED_LOCK);
         native_current_dir = &native_initial_dir;
         return 0;
     }
@@ -394,6 +410,35 @@ LONG Strnicmp(CONST_STRPTR left, CONST_STRPTR right, LONG length)
     return strncasecmp(left, right, (size_t)length);
 }
 
+LONG SplitName(CONST_STRPTR path, LONG separator, STRPTR buffer,
+               LONG buffer_position, LONG buffer_size)
+{
+    const char *end;
+    size_t length;
+
+    if (!path || !buffer || buffer_position < 0 || buffer_size <= 0)
+        return 0;
+    end = strchr(path, (int)separator);
+    if (!end)
+        return 0;
+    length = (size_t)(end - path);
+    if (length > (size_t)buffer_size - 1)
+        length = (size_t)buffer_size - 1;
+    memcpy(buffer + buffer_position, path, length);
+    buffer[buffer_position + length] = '\0';
+    return (LONG)(length + 1);
+}
+
+BOOL ErrorReport(LONG error, ULONG type, IPTR object, APTR requester)
+{
+    (void)type;
+    (void)object;
+    (void)requester;
+    SetIoErr(error);
+    /* ACE has no requester UI at this DOS layer. */
+    return DOSFALSE;
+}
+
 UBYTE ToUpper(ULONG character)
 {
     return (UBYTE)toupper((int)character);
@@ -563,16 +608,115 @@ void FreeDosObject(LONG type, APTR object)
     free(object);
 }
 
+static int native_named_device_path(CONST_STRPTR name)
+{
+    const char *colon;
+
+    if (!name || strncasecmp(name, "PROGDIR:", 8) == 0 ||
+        strncasecmp(name, "NIL:", 4) == 0)
+        return 0;
+    colon = strchr(name, ':');
+    return colon && colon != name;
+}
+
+static int native_device_base(struct DevProc *device, char *result,
+                              size_t result_size)
+{
+    struct native_lock *lock = device ? device->dvp_Lock : NULL;
+
+    if (!lock && device && device->dvp_DevNode)
+        lock = device->dvp_DevNode->dol_Lock;
+    if (!lock)
+        return -1;
+    if (snprintf(result, result_size, "%s", lock->path) >=
+        (int)result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
+static int native_device_relative(CONST_STRPTR name, char *result,
+                                  size_t result_size)
+{
+    const char *colon = strchr(name, ':');
+    const char *cursor = colon + 1;
+    size_t used = 0;
+
+    while (*cursor == '/') {
+        if (used + 3 >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(result + used, "../", 3);
+        used += 3;
+        cursor++;
+    }
+    if (strlen(cursor) >= result_size - used) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(result + used, cursor);
+    return 0;
+}
+
+static int native_union_candidate(CONST_STRPTR name, struct DevProc *device,
+                                  char *result, size_t result_size)
+{
+    char base[PATH_MAX];
+    char relative[PATH_MAX * 2];
+
+    if (native_device_base(device, base, sizeof(base)) != 0 ||
+        native_device_relative(name, relative, sizeof(relative)) != 0)
+        return -1;
+    {
+        return native_broker_resolve_beneath(base, relative, result,
+                                             result_size);
+    }
+}
+
+static int native_union_existing(CONST_STRPTR name, char *result,
+                                 size_t result_size)
+{
+    struct DevProc *device = ace_aros_GetDeviceProc(name, NULL);
+    int saved_error = ERROR_OBJECT_NOT_FOUND;
+
+    while (device) {
+        struct stat information;
+
+        if (native_union_candidate(name, device, result, result_size) == 0) {
+            if (stat(result, &information) == 0) {
+                ace_aros_FreeDeviceProc(device);
+                return 0;
+            }
+            saved_error = errno;
+            if (saved_error != ENOENT && saved_error != ENOTDIR) {
+                ace_aros_FreeDeviceProc(device);
+                errno = saved_error;
+                return -1;
+            }
+        } else {
+            saved_error = errno;
+        }
+        device = ace_aros_GetDeviceProc(name, device);
+    }
+    errno = saved_error;
+    return -1;
+}
+
 BPTR Lock(CONST_STRPTR name, LONG mode)
 {
     char resolved[PATH_MAX];
     struct stat information;
     struct native_lock *lock;
 
-    (void)mode;
-    if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
+    if ((native_named_device_path(name) ?
+         native_union_existing(name, resolved, sizeof(resolved)) :
+         native_broker_resolve_path(name, resolved, sizeof(resolved))) != 0 ||
         stat(resolved, &information) != 0) {
-        native_ioerr = errno;
+        native_ioerr = native_named_device_path(name) ?
+                       (errno == ENOENT || errno == ENOTDIR ?
+                        ERROR_OBJECT_NOT_FOUND : errno) : errno;
         return NULL;
     }
     lock = calloc(1, sizeof(*lock));
@@ -580,7 +724,7 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
         native_ioerr = ERROR_NO_FREE_STORE;
         return NULL;
     }
-    strcpy(lock->path, resolved);
+    native_init_lock(lock, resolved, mode);
     /* Match AmigaDOS Lock(): a successful locate has no pending error. */
     native_ioerr = 0;
     return lock;
@@ -604,12 +748,7 @@ BPTR native_lock_host_path(const char *path)
         native_ioerr = ERROR_NO_FREE_STORE;
         return NULL;
     }
-    if (snprintf(lock->path, sizeof(lock->path), "%s", path) >=
-        (int)sizeof(lock->path)) {
-        free(lock);
-        native_ioerr = ERROR_LINE_TOO_LONG;
-        return NULL;
-    }
+    native_init_lock(lock, path, SHARED_LOCK);
     native_ioerr = 0;
     return lock;
 }
@@ -650,7 +789,7 @@ BPTR CreateDir(CONST_STRPTR name)
         native_ioerr = ERROR_NO_FREE_STORE;
         return BNULL;
     }
-    snprintf(lock->path, sizeof(lock->path), "%s", resolved);
+    native_init_lock(lock, resolved, EXCLUSIVE_LOCK);
     return lock;
 }
 
@@ -731,7 +870,10 @@ BPTR DupLock(BPTR handle)
         native_ioerr = ERROR_NO_FREE_STORE;
         return BNULL;
     }
-    strcpy(copy->path, lock->path);
+    memcpy(copy, lock, sizeof(*copy));
+    copy->fl_Task = (struct MsgPort *)copy;
+    copy->fl_Link = NULL;
+    copy->fl_Volume = lock->fl_Volume;
     copy->scan = NULL;
     copy->scan_key = 0;
     return copy;
@@ -833,19 +975,40 @@ BPTR Open(CONST_STRPTR name, LONG mode)
     if (name && strncasecmp(name, "CON:", 4) == 0)
         return native_console_open(name);
 
-    if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+    if (native_named_device_path(name)) {
+        struct DevProc *device = ace_aros_GetDeviceProc(name, NULL);
+
+        file = NULL;
+        while (device) {
+            if (native_union_candidate(name, device, resolved,
+                                       sizeof(resolved)) == 0)
+                file = fopen(resolved, access);
+            if (file || mode == MODE_NEWFILE ||
+                (file == NULL && errno != ENOENT && errno != ENOTDIR))
+                break;
+            device = ace_aros_GetDeviceProc(name, device);
+        }
+        if (device)
+            ace_aros_FreeDeviceProc(device);
+        if (file)
+            native_ioerr = 0;
+        else
+            native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+    } else if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
         native_ioerr = errno;
         return NULL;
+    } else {
+        file = fopen(resolved, access);
     }
-    file = fopen(resolved, access);
-    if (!file && mode == MODE_OLDFILE && name && !strchr(name, '/') &&
+    if (!file && mode == MODE_OLDFILE && !native_named_device_path(name) &&
+        name && !strchr(name, '/') &&
         !strchr(name, ':')) {
         if (native_command_path(name, resolved, sizeof(resolved)) == 0)
             file = fopen(resolved, access);
     }
-    if (!file)
+    if (!file && !native_named_device_path(name))
         native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
-    else
+    else if (file)
         native_ioerr = 0;
     return (BPTR)file;
 }

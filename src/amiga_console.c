@@ -48,6 +48,70 @@ static const uint32_t default_palette[ACE_CONSOLE_PEN_COUNT] = {
     0x5555ffu, 0xffff55u, 0xff55ffu, 0x55ffffu,
 };
 
+/*
+ * Named palettes, so eight pens can be chosen rather than hand-mixed. The pen
+ * order follows default_palette above: pen 0 is the background and pen 1 the
+ * text -- the two stdconclass.c's penmap[] redirects to BACKGROUNDPEN and
+ * TEXTPEN -- and pens 2-7 carry the six accents CSI 32m-37m reach.
+ *
+ * Pen 7 is worth choosing deliberately: it doubles as the cursor colour. The
+ * console draws its cursor with a COMPLEMENT RectFill, and over the
+ * background that inverts pen 0 to pen 0 ^ ACE_GFX_PEN_MASK, which is pen 7
+ * on the three bitplanes ACE simulates.
+ *
+ * "Retro" is Commodore's own eight Workbench 3.1 defaults, kept in their own
+ * order rather than remapped into the accent order the imported schemes use;
+ * that ordering is the historical artifact, so bending it would be a lie.
+ * The rest are transcribed from each project's published palette.
+ */
+struct palette_preset {
+    const char *name;
+    uint32_t colors[ACE_CONSOLE_PEN_COUNT];
+};
+
+static const struct palette_preset palette_presets[] = {
+    /* AROS workbench/prefs/palette/prefs.c defaultcolor[], which carries
+       Commodore's 12-bit registers ($AAA, $68B, $E44 ...) intact. */
+    { "Retro",
+      { 0xaaaaaau, 0x000000u, 0xffffffu, 0x6688bbu,
+        0xee4444u, 0x55dd55u, 0x0044ddu, 0xee9900u } },
+    { "ACE Default",
+      { 0x000000u, 0xffffffu, 0xff5555u, 0x55ff55u,
+        0x5555ffu, 0xffff55u, 0xff55ffu, 0x55ffffu } },
+    { "Catppuccin Latte",
+      { 0xeff1f5u, 0x4c4f69u, 0xd20f39u, 0x40a02bu,
+        0x1e66f5u, 0xdf8e1du, 0x8839efu, 0x179299u } },
+    { "Catppuccin Mocha",
+      { 0x1e1e2eu, 0xcdd6f4u, 0xf38ba8u, 0xa6e3a1u,
+        0x89b4fau, 0xf9e2afu, 0xcba6f7u, 0x94e2d5u } },
+    /* Dracula names no plain blue; its purple stands in, as it does in the
+       scheme's own terminal mappings. */
+    { "Dracula",
+      { 0x282a36u, 0xf8f8f2u, 0xff5555u, 0x50fa7bu,
+        0xbd93f9u, 0xf1fa8cu, 0xff79c6u, 0x8be9fdu } },
+    { "Gruvbox Dark",
+      { 0x282828u, 0xebdbb2u, 0xfb4934u, 0xb8bb26u,
+        0x83a598u, 0xfabd2fu, 0xd3869bu, 0x8ec07cu } },
+    { "Nord",
+      { 0x2e3440u, 0xd8dee9u, 0xbf616au, 0xa3be8cu,
+        0x81a1c1u, 0xebcb8bu, 0xb48eadu, 0x88c0d0u } },
+    { "Solarized Dark",
+      { 0x002b36u, 0x839496u, 0xdc322fu, 0x859900u,
+        0x268bd2u, 0xb58900u, 0xd33682u, 0x2aa198u } },
+    { "Solarized Light",
+      { 0xfdf6e3u, 0x657b83u, 0xdc322fu, 0x859900u,
+        0x268bd2u, 0xb58900u, 0xd33682u, 0x2aa198u } },
+    /* Official Tango defines no cyan; 0x06989a is the value GNOME Terminal
+       added to complete the scheme, and is what "Tango" means for a
+       terminal. */
+    { "Tango",
+      { 0x2e3436u, 0xd3d7cfu, 0xcc0000u, 0x4e9a06u,
+        0x3465a4u, 0xc4a000u, 0x75507bu, 0x06989au } },
+};
+
+#define PALETTE_PRESET_COUNT \
+    ((int)(sizeof(palette_presets) / sizeof(palette_presets[0])))
+
 struct console_window {
     GtkWidget *window;
     GtkWidget *menu_bar;
@@ -302,51 +366,214 @@ static uint32_t palette_rgb(const GdkRGBA *color)
     return (red << 16) | (green << 8) | blue;
 }
 
+/*
+ * The palette dialog is a fixed list of named schemes over an editable set of
+ * eight pens. Picking a scheme greys the pens out -- they then only report
+ * what was picked -- and the trailing "Custom" row hands them back.
+ */
+struct palette_dialog {
+    GtkWidget *buttons[ACE_CONSOLE_PEN_COUNT];
+    GtkWidget *custom_frame;
+    GtkWidget *custom_swatch;
+    /* The user's own eight pens, held across excursions into the presets so
+       that browsing the list never costs them their colours. */
+    uint32_t custom[ACE_CONSOLE_PEN_COUNT];
+    int selected; /* index into palette_presets, or -1 for Custom */
+};
+
+/* Draws a row's eight pens as one strip, so the list can be read by colour
+   rather than by name alone. */
+static gboolean draw_palette_swatch(GtkWidget *widget, cairo_t *cr,
+                                    gpointer data)
+{
+    const uint32_t *colors = data;
+    int width = gtk_widget_get_allocated_width(widget);
+    int height = gtk_widget_get_allocated_height(widget);
+    int i;
+
+    for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
+        int x0 = width * i / ACE_CONSOLE_PEN_COUNT;
+        int x1 = width * (i + 1) / ACE_CONSOLE_PEN_COUNT;
+        GdkRGBA color = palette_rgba(colors[i]);
+
+        gdk_cairo_set_source_rgba(cr, &color);
+        cairo_rectangle(cr, x0, 0, x1 - x0, height);
+        cairo_fill(cr);
+    }
+    return TRUE;
+}
+
+static GtkWidget *palette_list_row(const char *name, const uint32_t *colors,
+                                   int index)
+{
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *label = gtk_label_new(name);
+    GtkWidget *swatch = gtk_drawing_area_new();
+
+    gtk_widget_set_margin_start(box, 8);
+    gtk_widget_set_margin_end(box, 8);
+    gtk_widget_set_margin_top(box, 5);
+    gtk_widget_set_margin_bottom(box, 5);
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_widget_set_size_request(swatch, 136, 16);
+    gtk_widget_set_valign(swatch, GTK_ALIGN_CENTER);
+    g_signal_connect(swatch, "draw", G_CALLBACK(draw_palette_swatch),
+                     (gpointer)colors);
+    gtk_box_pack_start(GTK_BOX(box), label, TRUE, TRUE, 0);
+    gtk_box_pack_end(GTK_BOX(box), swatch, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(row), box);
+    g_object_set_data(G_OBJECT(row), "preset-index", GINT_TO_POINTER(index));
+    g_object_set_data(G_OBJECT(row), "swatch", swatch);
+    return row;
+}
+
+/* GtkColorButton emits color-set only for user edits, never for the
+   programmatic set_rgba() below, so the user's colours survive a tour of the
+   presets without needing to be snapshotted on the way out. */
+static void palette_custom_edited(GtkColorButton *button, gpointer data)
+{
+    struct palette_dialog *dialog = data;
+    int i;
+
+    for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
+        GdkRGBA color;
+
+        gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog->buttons[i]),
+                                   &color);
+        dialog->custom[i] = palette_rgb(&color);
+    }
+    (void)button;
+    gtk_widget_queue_draw(dialog->custom_swatch);
+}
+
+static void palette_row_selected(GtkListBox *list, GtkListBoxRow *row,
+                                 gpointer data)
+{
+    struct palette_dialog *dialog = data;
+    const uint32_t *colors;
+    int index;
+    int i;
+
+    (void)list;
+    if (!row)
+        return;
+    index = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "preset-index"));
+    dialog->selected = index;
+    colors = index >= 0 ? palette_presets[index].colors : dialog->custom;
+
+    for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
+        GdkRGBA color = palette_rgba(colors[i]);
+
+        gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(dialog->buttons[i]),
+                                   &color);
+    }
+    gtk_widget_set_sensitive(dialog->custom_frame, index < 0);
+}
+
 static void choose_palette(GtkWidget *widget, gpointer data)
 {
     struct console_window *console = data;
+    struct palette_dialog state;
     GtkWidget *dialog;
+    GtkWidget *content;
+    GtkWidget *scroller;
+    GtkWidget *list;
     GtkWidget *grid;
-    GtkWidget *buttons[ACE_CONSOLE_PEN_COUNT];
+    GtkWidget *custom_row;
     uint32_t palette[ACE_CONSOLE_PEN_COUNT];
     int i;
 
     (void)widget;
+    memcpy(state.custom, console->palette, sizeof(state.custom));
+    state.selected = -1;
+    for (i = 0; i < PALETTE_PRESET_COUNT; i++) {
+        if (memcmp(palette_presets[i].colors, console->palette,
+                   sizeof(state.custom)) == 0) {
+            state.selected = i;
+            break;
+        }
+    }
+
     dialog = gtk_dialog_new_with_buttons(
         "Choose Palette", GTK_WINDOW(console->window), GTK_DIALOG_MODAL,
         "_Cancel", GTK_RESPONSE_CANCEL, "_Apply", GTK_RESPONSE_OK, NULL);
     gtk_window_set_type_hint(GTK_WINDOW(dialog), GDK_WINDOW_TYPE_HINT_UTILITY);
-    grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 12);
-    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),
-                       grid, TRUE, TRUE, 0);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 420, 520);
+    content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+    gtk_box_set_spacing(GTK_BOX(content), 12);
 
+    /* The list is sized to stand on its own rather than to fit its contents:
+       it has to be visible without hunting, and scroll rather than grow as
+       schemes are added. */
+    scroller = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(scroller),
+                                               220);
+    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scroller),
+                                        GTK_SHADOW_IN);
+    list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_BROWSE);
+    gtk_container_add(GTK_CONTAINER(scroller), list);
+    gtk_box_pack_start(GTK_BOX(content), scroller, TRUE, TRUE, 0);
+
+    grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    state.custom_frame = gtk_frame_new("Custom colors");
+    gtk_container_add(GTK_CONTAINER(state.custom_frame), grid);
+    gtk_box_pack_start(GTK_BOX(content), state.custom_frame, FALSE, FALSE, 0);
+
+    /* Two rows of four pens; each pen is a label over its button, so the two
+       pen rows occupy four grid rows. */
     for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
         char label_text[32];
-        GtkWidget *label = NULL;
-        GdkRGBA color = palette_rgba(console->palette[i]);
+        GtkWidget *label;
+        GdkRGBA color = palette_rgba(state.custom[i]);
+        int column = i % 4;
+        int base = (i / 4) * 2;
 
         snprintf(label_text, sizeof(label_text), "Pen %d%s", i,
-                 i == 0 ? " (background)" : i == 1 ? " (text)" : "");
+                 i == 0 ? " (bg)" : i == 1 ? " (text)" :
+                 i == 7 ? " (cursor)" : "");
         label = gtk_label_new(label_text);
         gtk_widget_set_halign(label, GTK_ALIGN_START);
-        buttons[i] = gtk_color_button_new_with_rgba(&color);
-        gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(buttons[i]), FALSE);
-        gtk_grid_attach(GTK_GRID(grid), label, 0, i, 1, 1);
-        gtk_grid_attach(GTK_GRID(grid), buttons[i], 1, i, 1, 1);
+        state.buttons[i] = gtk_color_button_new_with_rgba(&color);
+        gtk_color_chooser_set_use_alpha(GTK_COLOR_CHOOSER(state.buttons[i]),
+                                        FALSE);
+        gtk_widget_set_hexpand(state.buttons[i], TRUE);
+        g_signal_connect(state.buttons[i], "color-set",
+                         G_CALLBACK(palette_custom_edited), &state);
+        gtk_grid_attach(GTK_GRID(grid), label, column, base, 1, 1);
+        gtk_grid_attach(GTK_GRID(grid), state.buttons[i], column, base + 1,
+                        1, 1);
     }
+
+    for (i = 0; i < PALETTE_PRESET_COUNT; i++)
+        gtk_container_add(GTK_CONTAINER(list),
+                          palette_list_row(palette_presets[i].name,
+                                           palette_presets[i].colors, i));
+    custom_row = palette_list_row("Custom", state.custom, -1);
+    state.custom_swatch = g_object_get_data(G_OBJECT(custom_row), "swatch");
+    gtk_container_add(GTK_CONTAINER(list), custom_row);
+
+    g_signal_connect(list, "row-selected", G_CALLBACK(palette_row_selected),
+                     &state);
+    gtk_list_box_select_row(
+        GTK_LIST_BOX(list),
+        state.selected >= 0
+            ? gtk_list_box_get_row_at_index(GTK_LIST_BOX(list), state.selected)
+            : GTK_LIST_BOX_ROW(custom_row));
     gtk_widget_show_all(dialog);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-        memcpy(palette, console->palette, sizeof(palette));
-        for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
-            GdkRGBA color;
-
-            gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(buttons[i]), &color);
-            palette[i] = palette_rgb(&color);
-        }
+        memcpy(palette,
+               state.selected >= 0 ? palette_presets[state.selected].colors
+                                   : state.custom,
+               sizeof(palette));
         if (ace_console_device_set_palette(console->device, palette) != 0) {
             gtk_widget_destroy(dialog);
             show_error(console, "The palette could not be applied to ACE Shell.");

@@ -25,7 +25,9 @@ static struct DosList dos_entries[ASSIGN_LIST_MAX];
 static size_t dos_entry_count;
 static char *dos_entry_names[ASSIGN_LIST_MAX];
 static char *dos_entry_assign_names[ASSIGN_LIST_MAX];
+static int dos_list_loaded;
 static int dos_list_locked;
+static int dos_cleanup_registered;
 
 static BSTR make_bstr(const char *value)
 {
@@ -47,11 +49,33 @@ static const char *bstr_text(BSTR value)
     return value ? value + 1 : "";
 }
 
+static struct DosList *find_loaded_assign(const char *name)
+{
+    for (size_t index = 0; index < dos_entry_count; index++) {
+        LONG type = dos_entries[index].dol_Type;
+
+        if ((type == DLT_DIRECTORY || type == DLT_LATE ||
+             type == DLT_NONBINDING) &&
+            strcasecmp(bstr_text(dos_entries[index].dol_Name), name) == 0)
+            return &dos_entries[index];
+    }
+    return NULL;
+}
+
 static void clear_dos_entries(void)
 {
     for (size_t index = 0; index < dos_entry_count; index++) {
         if (dos_entries[index].dol_Lock)
             UnLock(dos_entries[index].dol_Lock);
+        while (dos_entries[index].dol_misc.dol_assign.dol_List) {
+            struct AssignList *assign =
+                dos_entries[index].dol_misc.dol_assign.dol_List;
+
+            dos_entries[index].dol_misc.dol_assign.dol_List = assign->al_Next;
+            if (assign->al_Lock)
+                UnLock(assign->al_Lock);
+            free(assign);
+        }
         free(dos_entry_names[index]);
         free(dos_entry_assign_names[index]);
     }
@@ -105,11 +129,26 @@ static void load_devices(ULONG flags)
             continue;
         if (flags & LDF_VOLUMES) {
             struct DosList *volume = append_dos_entry(fields[0], DLT_VOLUME);
-            if (volume)
-                volume->dol_Lock = Lock(fields[0], SHARED_LOCK);
+            if (volume) {
+                char volume_name[PATH_MAX];
+                char volume_root[PATH_MAX];
+
+                if (snprintf(volume_name, sizeof(volume_name), "%s:",
+                             fields[0]) < (int)sizeof(volume_name) &&
+                    native_broker_resolve_path(volume_name, volume_root,
+                                               sizeof(volume_root)) == 0)
+                    volume->dol_Lock = native_lock_host_path(volume_root);
+                /* GetDeviceProc() needs a non-NULL handler marker for an
+                   online host-backed volume. The host bridge never sends a
+                   packet through this value. */
+                volume->dol_Task = (APTR)volume;
+            }
         }
-        if (flags & LDF_DEVICES)
-            (void)append_dos_entry(fields[0], DLT_DEVICE);
+        if (flags & LDF_DEVICES) {
+            struct DosList *device = append_dos_entry(fields[0], DLT_DEVICE);
+            if (device)
+                device->dol_Task = (APTR)device;
+        }
     }
 }
 
@@ -133,6 +172,25 @@ static void load_assigns(ULONG flags)
         if (!name || !type_text || !root)
             continue;
         type = (LONG)strtol(type_text, NULL, 10);
+        entry = find_loaded_assign(name);
+        if (entry && type == DLT_DIRECTORY) {
+            struct AssignList **tail = &entry->dol_misc.dol_assign.dol_List;
+            struct AssignList *assign = calloc(1, sizeof(*assign));
+
+            if (!assign)
+                continue;
+            while (*tail)
+                tail = &(*tail)->al_Next;
+            assign->al_Lock = native_lock_host_path(root);
+            if (!assign->al_Lock) {
+                free(assign);
+                continue;
+            }
+            *tail = assign;
+            continue;
+        }
+        if (entry)
+            continue;
         entry = append_dos_entry(name, type);
         if (!entry)
             continue;
@@ -148,11 +206,16 @@ static void load_assigns(ULONG flags)
 
 struct DosList *LockDosList(ULONG flags)
 {
-    if (dos_list_locked)
-        clear_dos_entries();
-    dos_list_locked = 1;
-    load_devices(flags);
-    load_assigns(flags);
+    if (!dos_list_loaded) {
+        if (!dos_cleanup_registered) {
+            atexit(clear_dos_entries);
+            dos_cleanup_registered = 1;
+        }
+        load_devices(flags);
+        load_assigns(flags);
+        dos_list_loaded = 1;
+    }
+    dos_list_locked++;
     return NULL;
 }
 
@@ -192,8 +255,8 @@ struct DosList *FindDosEntry(struct DosList *list, CONST_STRPTR name,
 void UnLockDosList(ULONG flags)
 {
     (void)flags;
-    clear_dos_entries();
-    dos_list_locked = 0;
+    if (dos_list_locked > 0)
+        dos_list_locked--;
 }
 
 BOOL AddDosEntry(struct DosList *entry)

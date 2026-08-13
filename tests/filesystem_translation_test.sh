@@ -8,7 +8,10 @@ mapping_test_dir=$(mktemp -d "$repo_dir/.ace-filesystem-mapping.XXXXXX")
 mapping_colon_dir="$mapping_test_dir/Hi:This:is:a:long:filename:blahblahblah"
 mapping_long_component=$(awk 'BEGIN { for (i = 0; i < 150; i++) printf "l" }')
 mapping_long_dir="$mapping_test_dir/$mapping_long_component"
-mkdir "$mapping_colon_dir" "$mapping_long_dir"
+mapping_union_first="$mapping_test_dir/union-first"
+mapping_union_second="$mapping_test_dir/union-second"
+mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
+      "$mapping_union_second" "$mapping_union_second/only-second"
 
 cd "$repo_dir"
 
@@ -28,7 +31,9 @@ cleanup()
         [ -e "$file" ] && unlink "$file" 2>/dev/null || true
     done
     rmdir "$test_dir" 2>/dev/null || true
-    rmdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_test_dir" \
+    rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
+          "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
+          "$mapping_test_dir" \
           2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
@@ -82,6 +87,20 @@ case "$mapped_dir_output" in
         echo "mapped directory could not be opened" >&2
         exit 1
         ;;
+esac
+
+# Assign is a true multi-directory union. The AROS GetDeviceProc() iterator
+# must advance from the first AssignList target to the second when the object
+# is absent from the first target.
+union_first=$(control name "$mapping_union_first")
+union_second=$(control name "$mapping_union_second")
+union_output=$(printf 'Assign ACE_UNION: %s %s\nCD ACE_UNION:only-second\nCD\nEndCLI\n' \
+    "$union_first" "$union_second" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-union-test "$repo_dir/build/ace-user-shell")
+case "$union_output" in
+    *"$union_second/only-second"*) ;;
+    *) echo "multi-assign union did not search its later target" >&2; exit 1 ;;
 esac
 
 broker_pid=$(sed -n '1p' "$socket_path.lock")

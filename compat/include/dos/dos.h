@@ -11,7 +11,9 @@
 #define MODE_NEWFILE 1006
 #define MODE_READWRITE 1004
 #define SHARED_LOCK  -2
+#define EXCLUSIVE_LOCK -1
 #define ACCESS_READ  -2
+#define ACCESS_WRITE -1
 #define CHANGE_LOCK  1
 #define OFFSET_BEGINNING (-1)
 #define OFFSET_CURRENT 0
@@ -44,6 +46,7 @@
 #define ERROR_NO_MORE_ENTRIES   232
 #define ERROR_NOT_IMPLEMENTED   236
 #define ERROR_BUFFER_OVERFLOW   303
+#define ERROR_IS_SOFT_LINK      201
 
 #define SIGBREAKF_CTRL_C (1u << 12)
 #define SIGBREAKF_CTRL_D (1u << 13)
@@ -60,8 +63,11 @@
    engine reads (DOSBase->dl_Root->rn_Flags & RNF_WILDSTAR, whether '*' is
    also a wildcard). ACE has no library-open protocol to fill in the rest,
    so this is the whole struct rather than a shadow of a bigger real one. */
+struct MsgPort;
+
 struct RootNode {
     ULONG rn_Flags;
+    struct MsgPort *rn_BootProc;
 };
 
 struct DosLibrary {
@@ -206,6 +212,8 @@ struct CSource;
 BPTR AllocDosObject(LONG type, APTR tags);
 void FreeDosObject(LONG type, APTR object);
 BPTR Lock(CONST_STRPTR name, LONG mode);
+struct DevProc *GetDeviceProc(CONST_STRPTR name, struct DevProc *dp);
+void FreeDeviceProc(struct DevProc *dp);
 LONG UnLock(BPTR lock);
 BPTR CreateDir(CONST_STRPTR name);
 LONG ChangeMode(LONG type, BPTR object, LONG mode);
@@ -244,6 +252,8 @@ void SetIoErr(LONG error);
 LONG Fault(LONG error, CONST_STRPTR header, STRPTR buffer, LONG length);
 BOOL PrintFault(LONG error, CONST_STRPTR header);
 LONG Printf(CONST_STRPTR format, ...);
+LONG SplitName(CONST_STRPTR path, LONG separator, STRPTR buffer,
+               LONG buffer_position, LONG buffer_size);
 
 void CopyMem(CONST_APTR source, APTR destination, ULONG length);
 STRPTR FilePart(CONST_STRPTR path);
