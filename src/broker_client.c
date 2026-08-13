@@ -356,6 +356,11 @@ static int broker_request(uint32_t operation, const char *path,
         int fd = broker_connection();
         int outcome;
 
+        if (fd < 0) {
+            if (native_broker_ensure() != 0)
+                return -1;
+            fd = broker_connection();
+        }
         if (fd < 0)
             return -1;
         outcome = broker_exchange(fd, operation, path, value, flags, result,
