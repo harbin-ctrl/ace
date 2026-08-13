@@ -30,6 +30,20 @@
 static int shell_done;
 static char shell_directory[PATH_MAX];
 
+static int resolve_executable_path(const char *argv0, char *path,
+                                   size_t path_size)
+{
+    ssize_t length;
+
+    if (realpath(argv0, path))
+        return 0;
+    length = readlink("/proc/self/exe", path, path_size - 1);
+    if (length < 0 || (size_t)length >= path_size - 1)
+        return -1;
+    path[length] = '\0';
+    return 0;
+}
+
 static int split_words(char *line, char **words, size_t capacity)
 {
     char *read = line;
@@ -308,7 +322,7 @@ static int launch_console(const char *argv0)
 
     if (!session || !*session)
         session = "default";
-    if (!realpath(argv0, executable)) {
+    if (resolve_executable_path(argv0, executable, sizeof(executable)) != 0) {
         fputs("ace-shell: console unavailable\n", stderr);
         return RETURN_FAIL;
     }
@@ -352,7 +366,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: %s [--console-child]\n", argv[0]);
         return RETURN_FAIL;
     }
-    if (realpath(argv[0], executable)) {
+    if (resolve_executable_path(argv[0], executable, sizeof(executable)) == 0) {
         char *slash = strrchr(executable, '/');
         if (slash) {
             *slash = '\0';
