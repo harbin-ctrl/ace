@@ -164,6 +164,66 @@ void ace_console_device_close(struct ace_console_device *device)
     ace_boopsi_cleanup();
 }
 
+/*
+ * The retained stream only exists to repaint the console after a font or
+ * palette change, so it needs to hold what is still on screen, not the whole
+ * session. Left unbounded it made those two operations cost time
+ * proportional to how long the shell had been running -- the console had to
+ * re-render, and re-scroll past, every line ever written.
+ *
+ * What is kept is sized from the console's own grid -- several screenfuls of
+ * text, so a repaint reproduces every visible line and a good deal of what
+ * preceded it -- with a floor for tiny windows and a ceiling so a very large
+ * one cannot make the repaint slow again. Older bytes are dropped from the
+ * front at a line boundary: a partial escape sequence at the cut would
+ * otherwise be replayed as stray text.
+ */
+#define ACE_CONSOLE_HISTORY_SCREENS 8
+#define ACE_CONSOLE_HISTORY_MIN (32u * 1024u)
+#define ACE_CONSOLE_HISTORY_MAX (256u * 1024u)
+
+static size_t history_limit(struct ace_console_device *device)
+{
+    size_t columns;
+    size_t rows;
+    size_t limit;
+
+    if (!device->font || device->font->tf_XSize == 0 ||
+        device->font->tf_YSize == 0)
+        return ACE_CONSOLE_HISTORY_MIN;
+    columns = (size_t)device->amiga_window.Width / device->font->tf_XSize;
+    rows = (size_t)device->amiga_window.Height / device->font->tf_YSize;
+    /* One newline per line on top of the cells themselves. */
+    limit = ACE_CONSOLE_HISTORY_SCREENS * rows * (columns + 1);
+    if (limit < ACE_CONSOLE_HISTORY_MIN)
+        limit = ACE_CONSOLE_HISTORY_MIN;
+    if (limit > ACE_CONSOLE_HISTORY_MAX)
+        limit = ACE_CONSOLE_HISTORY_MAX;
+    return limit;
+}
+
+static void trim_history(struct ace_console_device *device)
+{
+    size_t limit = history_limit(device);
+    size_t cut;
+
+    if (device->history_length <= limit)
+        return;
+
+    cut = device->history_length - limit;
+    while (cut < device->history_length && device->history[cut] != '\n')
+        cut++;
+    if (cut < device->history_length)
+        cut++; /* start just after the newline, not on it */
+    if (cut >= device->history_length) {
+        device->history_length = 0;
+        return;
+    }
+    memmove(device->history, device->history + cut,
+            device->history_length - cut);
+    device->history_length -= cut;
+}
+
 static int save_history(struct ace_console_device *device,
                         const void *data, size_t length)
 {
@@ -178,6 +238,7 @@ static int save_history(struct ace_console_device *device,
         device->history_valid = 0;
         return -1;
     }
+    trim_history(device);
     needed = device->history_length + length;
     if (needed <= device->history_capacity) {
         memcpy(device->history + device->history_length, data, length);
@@ -202,6 +263,7 @@ static int save_history(struct ace_console_device *device,
     device->history_capacity = capacity;
     memcpy(device->history + device->history_length, data, length);
     device->history_length = needed;
+
     return 0;
 }
 
@@ -364,11 +426,39 @@ int ace_console_device_resize(struct ace_console_device *device,
     if (width == device->amiga_window.Width &&
         height == device->amiga_window.Height)
         return 0;
-    return replace_render_state(device, width, height, device->font,
-                                device->palette);
+    if (ace_gfx_resize_rastport(device->rp, width, height) != 0)
+        return -1;
+    device->amiga_window.Width = (UWORD)width;
+    device->amiga_window.Height = (UWORD)height;
+    Console_NewWindowSize(device->unit);
+    return 0;
 }
 
 cairo_surface_t *ace_console_device_surface(struct ace_console_device *device)
 {
     return device ? ace_gfx_rastport_surface(device->rp) : NULL;
+}
+
+int ace_console_device_origin_y(struct ace_console_device *device)
+{
+    return device ? ace_gfx_rastport_origin_y(device->rp) : 0;
+}
+
+void ace_console_device_size(struct ace_console_device *device,
+                             int *width_out, int *height_out)
+{
+    if (width_out)
+        *width_out = device ? device->amiga_window.Width : 0;
+    if (height_out)
+        *height_out = device ? device->amiga_window.Height : 0;
+}
+
+int ace_console_device_take_damage(struct ace_console_device *device,
+                                   int *x_out, int *y_out,
+                                   int *width_out, int *height_out)
+{
+    if (!device)
+        return 0;
+    return ace_gfx_take_damage(device->rp, x_out, y_out, width_out,
+                               height_out);
 }

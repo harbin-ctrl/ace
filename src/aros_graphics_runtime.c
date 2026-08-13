@@ -64,10 +64,31 @@
 #define ACE_GFX_STYLE_ITALIC      2
 #define ACE_GFX_STYLE_BOLD_ITALIC 3
 
+/*
+ * Glyphs are looked up once per style and then drawn through
+ * cairo_show_glyphs() rather than cairo_show_text(). The toy text API
+ * re-runs UTF-8 decoding and a FreeType character-map lookup on every call;
+ * a console redraws the same 96 ASCII codes millions of times, so the
+ * mapping is cached at font-load time instead. Drawing from explicit glyph
+ * indices also lets Text() place every glyph on the console's own integer
+ * cell pitch instead of letting the font's fractional advance accumulate
+ * across a run.
+ *
+ * Bytes are mapped to code points as Latin-1: console.device hands
+ * graphics.library raw bytes, and tf_LoChar/tf_HiChar below already declare
+ * 32..255 as the covered range.
+ */
+#define ACE_GFX_GLYPH_LO 0x20
+#define ACE_GFX_GLYPH_HI 0xff
+
 struct ace_gfx_font_private {
     struct TextFont tf;
     char family[128];
+    int pixel_size;
     cairo_font_face_t *face[4];
+    cairo_scaled_font_t *scaled[4];
+    unsigned long glyph[4][ACE_GFX_GLYPH_HI + 1];
+    int glyph_cached[4];
 };
 
 static cairo_font_face_t *load_face(const char *family, int bold, int italic)
@@ -144,12 +165,79 @@ int ace_gfx_font_family_complete(const char *family)
     return complete;
 }
 
+/*
+ * One scaled font per style, built once. cairo_set_scaled_font() then costs
+ * a reference compare, where cairo_set_font_face()/cairo_set_font_size() per
+ * call made cairo re-resolve the scaled font out of its global cache on
+ * every run of text.
+ */
+static int create_scaled_fonts(struct ace_gfx_font_private *priv)
+{
+    cairo_font_options_t *options = cairo_font_options_create();
+    cairo_matrix_t font_matrix;
+    cairo_matrix_t ctm;
+    int i;
+    int ok = 1;
+
+    /*
+     * Metric hinting is left on: it snaps the advance width to a whole
+     * pixel, which is exactly the fixed cell pitch consoleclass.c lays the
+     * grid out on, so hinted glyphs land on the same integer columns Text()
+     * positions them at.
+     */
+    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
+    cairo_matrix_init_scale(&font_matrix, priv->pixel_size, priv->pixel_size);
+    cairo_matrix_init_identity(&ctm);
+
+    for (i = 0; i < 4; i++) {
+        priv->scaled[i] = cairo_scaled_font_create(priv->face[i], &font_matrix,
+                                                   &ctm, options);
+        if (!priv->scaled[i] ||
+            cairo_scaled_font_status(priv->scaled[i]) != CAIRO_STATUS_SUCCESS)
+            ok = 0;
+    }
+    cairo_font_options_destroy(options);
+    return ok;
+}
+
+static int utf8_from_latin1(unsigned code, char *out)
+{
+    if (code < 0x80) {
+        out[0] = (char)code;
+        return 1;
+    }
+    out[0] = (char)(0xc0 | (code >> 6));
+    out[1] = (char)(0x80 | (code & 0x3f));
+    return 2;
+}
+
+static void ensure_glyph_cache(struct ace_gfx_font_private *priv, int style)
+{
+    unsigned code;
+
+    if (priv->glyph_cached[style])
+        return;
+    priv->glyph_cached[style] = 1;
+
+    for (code = ACE_GFX_GLYPH_LO; code <= ACE_GFX_GLYPH_HI; code++) {
+        char utf8[4];
+        int length = utf8_from_latin1(code, utf8);
+        cairo_glyph_t *glyphs = NULL;
+        int count = 0;
+
+        if (cairo_scaled_font_text_to_glyphs(priv->scaled[style], 0.0, 0.0,
+                                             utf8, length, &glyphs, &count,
+                                             NULL, NULL, NULL)
+                == CAIRO_STATUS_SUCCESS && count == 1)
+            priv->glyph[style][code] = glyphs[0].index;
+        cairo_glyph_free(glyphs);
+    }
+}
+
 struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
                                    const char **reason_out)
 {
     struct ace_gfx_font_private *priv;
-    cairo_surface_t *probe_surface;
-    cairo_t *probe_cr;
     cairo_font_extents_t extents;
     cairo_text_extents_t cell_extents;
 
@@ -181,22 +269,27 @@ struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
     }
 
     strncpy(priv->family, choice->family, sizeof(priv->family) - 1);
+    priv->pixel_size = choice->pixel_size;
+
+    if (!create_scaled_fonts(priv)) {
+        if (reason_out)
+            *reason_out = "font could not be scaled to the requested size";
+        ace_gfx_unload_font(&priv->tf);
+        return NULL;
+    }
 
     /*
      * Measured, not guessed: tf_XSize/tf_YSize/tf_Baseline are what
      * consoleclass.c reads to set the fixed character-cell pitch
      * (cu_XRSize/cu_YRSize) the whole console grid is built on, so they have
      * to be the real advance width and line metrics of the chosen face at
-     * the chosen size, not a nominal point size.
+     * the chosen size, not a nominal point size. Measuring through the same
+     * scaled font Text() draws with keeps the declared cell and the rendered
+     * glyph on identical metrics.
      */
-    probe_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-    probe_cr = cairo_create(probe_surface);
-    cairo_set_font_face(probe_cr, priv->face[ACE_GFX_STYLE_REGULAR]);
-    cairo_set_font_size(probe_cr, choice->pixel_size);
-    cairo_font_extents(probe_cr, &extents);
-    cairo_text_extents(probe_cr, "M", &cell_extents);
-    cairo_destroy(probe_cr);
-    cairo_surface_destroy(probe_surface);
+    cairo_scaled_font_extents(priv->scaled[ACE_GFX_STYLE_REGULAR], &extents);
+    cairo_scaled_font_text_extents(priv->scaled[ACE_GFX_STYLE_REGULAR], "M",
+                                   &cell_extents);
 
     priv->tf.tf_Message.mn_Node.ln_Type = 0; /* NT_FONT, unused downstream */
     priv->tf.tf_Message.mn_Node.ln_Name = priv->family;
@@ -234,25 +327,26 @@ void ace_gfx_unload_font(struct TextFont *font)
         return;
     priv = (struct ace_gfx_font_private *)font;
     for (i = 0; i < 4; i++) {
+        if (priv->scaled[i])
+            cairo_scaled_font_destroy(priv->scaled[i]);
         if (priv->face[i])
             cairo_font_face_destroy(priv->face[i]);
     }
     free(priv);
 }
 
-static cairo_font_face_t *face_for_style(struct TextFont *font, UBYTE algo_style)
+static int style_index(UBYTE algo_style)
 {
-    struct ace_gfx_font_private *priv = (struct ace_gfx_font_private *)font;
     int bold = (algo_style & FSF_BOLD) != 0;
     int italic = (algo_style & FSF_ITALIC) != 0;
 
     if (bold && italic)
-        return priv->face[ACE_GFX_STYLE_BOLD_ITALIC];
+        return ACE_GFX_STYLE_BOLD_ITALIC;
     if (bold)
-        return priv->face[ACE_GFX_STYLE_BOLD];
+        return ACE_GFX_STYLE_BOLD;
     if (italic)
-        return priv->face[ACE_GFX_STYLE_ITALIC];
-    return priv->face[ACE_GFX_STYLE_REGULAR];
+        return ACE_GFX_STYLE_ITALIC;
+    return ACE_GFX_STYLE_REGULAR;
 }
 
 /* -------------------------------------------------------------------------
@@ -269,12 +363,62 @@ static cairo_font_face_t *face_for_style(struct TextFont *font, UBYTE algo_style
  * is used for here, rather than repurposing a field with real meaning.
  * ---------------------------------------------------------------------- */
 
+/*
+ * The pixel buffer is addressed directly for every operation that moves or
+ * fills whole spans -- RectFill, ScrollRaster, the COMPLEMENT cursor, and
+ * the opaque cell background under text. Those are rectangle copies and
+ * solid fills; routing them through cairo meant a pixman composite (and, in
+ * ScrollRaster's case, a whole second surface) for work a memmove already
+ * does. Cairo still draws every glyph, which is the part that needs it.
+ *
+ * Mixing the two is the documented cairo contract: flush before touching the
+ * data, mark the touched rectangle dirty afterwards. raw_begin()/raw_end()
+ * are that pair, and both are near-free on an image surface.
+ */
+/*
+ * Extra rows allocated below the visible console so a full-width scroll can
+ * be a change of viewing origin instead of a copy of the whole console. A
+ * console scrolls by one text line at a time, so this buys headroom/line
+ * scrolls before a real copy is needed, and the deeper the headroom the
+ * rarer that copy. It is spent as a memory budget rather than a fixed row
+ * count so that a wide window does not turn it into tens of megabytes, with
+ * a floor that still covers a good many lines on the narrowest console.
+ */
+#define ACE_GFX_HEADROOM_BYTES (6u * 1024u * 1024u)
+#define ACE_GFX_HEADROOM_MIN_ROWS 256
+#define ACE_GFX_HEADROOM_MAX_ROWS 2048
+
+static int scroll_headroom_rows(int width)
+{
+    size_t rows = ACE_GFX_HEADROOM_BYTES / ((size_t)width * sizeof(uint32_t));
+
+    if (rows > ACE_GFX_HEADROOM_MAX_ROWS)
+        rows = ACE_GFX_HEADROOM_MAX_ROWS;
+    if (rows < ACE_GFX_HEADROOM_MIN_ROWS)
+        rows = ACE_GFX_HEADROOM_MIN_ROWS;
+    return (int)rows;
+}
+
 struct ace_gfx_rp_private {
     cairo_surface_t *surface;
     cairo_t *cr;
+    uint32_t *base_pixels;
+    int stride_px;
+    /* The allocation is at least as large as the console in both axes; a
+     * resize that still fits inside it reuses it rather than reallocating. */
+    int alloc_width;
+    int alloc_height;
+    /* Row of the allocation that the console's row 0 currently lives on. */
+    int origin_y;
     int width;
     int height;
     uint32_t palette[ACE_GFX_PEN_COUNT];
+    /* Union of everything drawn since the last ace_gfx_take_damage(), as an
+     * inclusive rectangle. Empty when damage_x1 < damage_x0. */
+    int damage_x0;
+    int damage_y0;
+    int damage_x1;
+    int damage_y1;
 };
 
 static void rgb_components(uint32_t rgb, double *r, double *g, double *b)
@@ -289,6 +433,178 @@ static uint32_t pen_rgb(struct ace_gfx_rp_private *priv, ULONG pen)
     if (pen >= ACE_GFX_PEN_COUNT)
         return 0;
     return priv->palette[pen];
+}
+
+/* CAIRO_FORMAT_RGB24 stores one 32-bit xRGB word per pixel. */
+static uint32_t pen_pixel(struct ace_gfx_rp_private *priv, ULONG pen)
+{
+    return 0xff000000u | pen_rgb(priv, pen);
+}
+
+static uint32_t *row_ptr(struct ace_gfx_rp_private *priv, int y)
+{
+    return priv->base_pixels +
+           (size_t)(priv->origin_y + y) * priv->stride_px;
+}
+
+/* Moves the viewing window inside the allocation and keeps the cairo
+ * context's user space pinned to the console's own coordinates. */
+static void set_origin(struct ace_gfx_rp_private *priv, int origin_y)
+{
+    priv->origin_y = origin_y;
+    cairo_identity_matrix(priv->cr);
+    cairo_translate(priv->cr, 0.0, origin_y);
+}
+
+static void damage_clear(struct ace_gfx_rp_private *priv)
+{
+    priv->damage_x0 = 0;
+    priv->damage_y0 = 0;
+    priv->damage_x1 = -1;
+    priv->damage_y1 = -1;
+}
+
+static void damage_add(struct ace_gfx_rp_private *priv, int x0, int y0,
+                       int x1, int y1)
+{
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > priv->width - 1)
+        x1 = priv->width - 1;
+    if (y1 > priv->height - 1)
+        y1 = priv->height - 1;
+    if (x0 > x1 || y0 > y1)
+        return;
+
+    if (priv->damage_x1 < priv->damage_x0) {
+        priv->damage_x0 = x0;
+        priv->damage_y0 = y0;
+        priv->damage_x1 = x1;
+        priv->damage_y1 = y1;
+        return;
+    }
+    if (x0 < priv->damage_x0)
+        priv->damage_x0 = x0;
+    if (y0 < priv->damage_y0)
+        priv->damage_y0 = y0;
+    if (x1 > priv->damage_x1)
+        priv->damage_x1 = x1;
+    if (y1 > priv->damage_y1)
+        priv->damage_y1 = y1;
+}
+
+static void damage_all(struct ace_gfx_rp_private *priv)
+{
+    damage_clear(priv);
+    damage_add(priv, 0, 0, priv->width - 1, priv->height - 1);
+}
+
+static void raw_begin(struct ace_gfx_rp_private *priv)
+{
+    cairo_surface_flush(priv->surface);
+}
+
+static void raw_end(struct ace_gfx_rp_private *priv, int x0, int y0,
+                    int x1, int y1)
+{
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > priv->width - 1)
+        x1 = priv->width - 1;
+    if (y1 > priv->height - 1)
+        y1 = priv->height - 1;
+    if (x0 > x1 || y0 > y1)
+        return;
+    cairo_surface_mark_dirty_rectangle(priv->surface, x0, priv->origin_y + y0,
+                                       x1 - x0 + 1, y1 - y0 + 1);
+    damage_add(priv, x0, y0, x1, y1);
+}
+
+/*
+ * Solid fill of an inclusive rectangle, clipped to the surface. The first
+ * row is written word by word and the rest are memcpy'd from it, which hands
+ * the bulk of a full-screen clear to the C library's vectorised copy instead
+ * of a scalar store loop.
+ */
+static void fill_rect_raw(struct ace_gfx_rp_private *priv, int x0, int y0,
+                          int x1, int y1, uint32_t pixel)
+{
+    uint32_t *first;
+    int width;
+    int x;
+    int y;
+
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > priv->width - 1)
+        x1 = priv->width - 1;
+    if (y1 > priv->height - 1)
+        y1 = priv->height - 1;
+    if (x0 > x1 || y0 > y1)
+        return;
+
+    width = x1 - x0 + 1;
+    first = row_ptr(priv, y0) + x0;
+    for (x = 0; x < width; x++)
+        first[x] = pixel;
+    for (y = y0 + 1; y <= y1; y++)
+        memcpy(row_ptr(priv, y) + x0, first, (size_t)width * sizeof(uint32_t));
+}
+
+/*
+ * Slack added to the width when the console outgrows its allocation, so that
+ * a drag which widens the window a pixel at a time reallocates a handful of
+ * times rather than on every step. The height needs none of its own: the
+ * scroll headroom below the console already is that slack.
+ */
+#define ACE_GFX_GROW_SLACK 128
+
+/*
+ * Allocates the backing surface for a width x height console -- wider and
+ * taller than the console itself, for growth slack and scroll headroom --
+ * and caches its data pointer and stride. On success the caller owns
+ * priv->surface/priv->cr.
+ */
+static int surface_bind(struct ace_gfx_rp_private *priv, int width, int height)
+{
+    cairo_surface_t *surface;
+    cairo_t *cr;
+    int alloc_width = width + ACE_GFX_GROW_SLACK;
+    int alloc_height;
+    int stride;
+
+    alloc_height = height + scroll_headroom_rows(alloc_width);
+    surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, alloc_width,
+                                         alloc_height);
+    cr = cairo_create(surface);
+    cairo_surface_flush(surface);
+    stride = cairo_image_surface_get_stride(surface);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS ||
+        cairo_status(cr) != CAIRO_STATUS_SUCCESS ||
+        !cairo_image_surface_get_data(surface) || stride <= 0 ||
+        stride % (int)sizeof(uint32_t) != 0) {
+        cairo_destroy(cr);
+        cairo_surface_destroy(surface);
+        return -1;
+    }
+
+    priv->surface = surface;
+    priv->cr = cr;
+    priv->base_pixels = (uint32_t *)cairo_image_surface_get_data(surface);
+    priv->stride_px = stride / (int)sizeof(uint32_t);
+    priv->alloc_width = alloc_width;
+    priv->alloc_height = alloc_height;
+    priv->origin_y = 0;
+    priv->width = width;
+    priv->height = height;
+    damage_all(priv);
+    return 0;
 }
 
 struct RastPort *ace_gfx_create_rastport(int width, int height,
@@ -313,10 +629,12 @@ struct RastPort *ace_gfx_create_rastport(int width, int height,
         return NULL;
     }
 
-    priv->surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, width, height);
-    priv->cr = cairo_create(priv->surface);
-    priv->width = width;
-    priv->height = height;
+    if (surface_bind(priv, width, height) != 0) {
+        free(rp);
+        free(bm);
+        free(priv);
+        return NULL;
+    }
     for (i = 0; i < ACE_GFX_PEN_COUNT; i++)
         priv->palette[i] = rgb ? rgb[i] : (i == 0 ? 0x000000u : 0xffffffu);
 
@@ -339,13 +657,9 @@ struct RastPort *ace_gfx_create_rastport(int width, int height,
     rp->RP_Extra = priv;
 
     /* Establish the surface in the background pen, as a fresh screen is. */
-    {
-        double r, g, b;
-
-        rgb_components(pen_rgb(priv, rp->BgPen), &r, &g, &b);
-        cairo_set_source_rgb(priv->cr, r, g, b);
-        cairo_paint(priv->cr);
-    }
+    raw_begin(priv);
+    fill_rect_raw(priv, 0, 0, width - 1, height - 1, pen_pixel(priv, rp->BgPen));
+    raw_end(priv, 0, 0, width - 1, height - 1);
 
     return rp;
 }
@@ -364,6 +678,119 @@ void ace_gfx_destroy_rastport(struct RastPort *rp)
     }
     free(rp->BitMap);
     free(rp);
+}
+
+int ace_gfx_resize_rastport(struct RastPort *rp, int width, int height)
+{
+    struct ace_gfx_rp_private *priv;
+    struct ace_gfx_rp_private next;
+    int keep_width;
+    int keep_height;
+    int y;
+
+    if (!rp || width <= 0 || height <= 0 || width > 65535 || height > 65535)
+        return -1;
+    priv = rp->RP_Extra;
+    if (!priv)
+        return -1;
+    if (priv->width == width && priv->height == height)
+        return 0;
+
+    keep_width = priv->width < width ? priv->width : width;
+    keep_height = priv->height < height ? priv->height : height;
+
+    /*
+     * A live resize arrives as a stream of sizes, so the common case must
+     * not allocate: as long as the new console still fits inside the
+     * existing allocation, only the newly uncovered strip is painted and the
+     * pixels already in place stay exactly where they are.
+     */
+    if (width <= priv->alloc_width && height <= priv->alloc_height) {
+        int old_width = priv->width;
+        int old_height = priv->height;
+
+        cairo_surface_flush(priv->surface);
+        if (priv->origin_y + height > priv->alloc_height) {
+            /* Scrolling has pushed the viewing origin too far down for the
+             * taller console to fit below it. Fold what is on screen back to
+             * the top of the allocation rather than allocate again. */
+            uint32_t *visible = row_ptr(priv, 0);
+
+            memmove(priv->base_pixels, visible,
+                    (size_t)keep_height * priv->stride_px * sizeof(uint32_t));
+            set_origin(priv, 0);
+        }
+        /* The new extent has to be in place before the fills: fill_rect_raw()
+         * clips to the console, and these are the cells it just gained. */
+        priv->width = width;
+        priv->height = height;
+        if (width > old_width)
+            fill_rect_raw(priv, old_width, 0, width - 1, keep_height - 1,
+                          pen_pixel(priv, rp->BgPen));
+        if (height > old_height)
+            fill_rect_raw(priv, 0, old_height, width - 1, height - 1,
+                          pen_pixel(priv, rp->BgPen));
+        cairo_surface_mark_dirty(priv->surface);
+        damage_all(priv);
+        rp->BitMap->BytesPerRow = (UWORD)((width + 15) & ~15) / 8;
+        rp->BitMap->Rows = (UWORD)height;
+        return 0;
+    }
+
+    next = *priv;
+    if (surface_bind(&next, width, height) != 0)
+        return -1;
+
+    /*
+     * Carry the old pixels over row by row and paint only the strip the
+     * larger surface newly exposes.
+     */
+
+    cairo_surface_flush(priv->surface);
+    for (y = 0; y < keep_height; y++)
+        memcpy(row_ptr(&next, y), row_ptr(priv, y),
+               (size_t)keep_width * sizeof(uint32_t));
+    if (width > keep_width)
+        fill_rect_raw(&next, keep_width, 0, width - 1, keep_height - 1,
+                      pen_pixel(&next, rp->BgPen));
+    if (height > keep_height)
+        fill_rect_raw(&next, 0, keep_height, width - 1, height - 1,
+                      pen_pixel(&next, rp->BgPen));
+    cairo_surface_mark_dirty(next.surface);
+
+    cairo_destroy(priv->cr);
+    cairo_surface_destroy(priv->surface);
+    *priv = next;
+    rp->BitMap->BytesPerRow = (UWORD)((width + 15) & ~15) / 8;
+    rp->BitMap->Rows = (UWORD)height;
+    return 0;
+}
+
+int ace_gfx_take_damage(struct RastPort *rp, int *x_out, int *y_out,
+                        int *width_out, int *height_out)
+{
+    struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
+
+    if (!priv || priv->damage_x1 < priv->damage_x0)
+        return 0;
+    if (x_out)
+        *x_out = priv->damage_x0;
+    if (y_out)
+        *y_out = priv->damage_y0;
+    if (width_out)
+        *width_out = priv->damage_x1 - priv->damage_x0 + 1;
+    if (height_out)
+        *height_out = priv->damage_y1 - priv->damage_y0 + 1;
+    damage_clear(priv);
+    return 1;
+}
+
+void ace_gfx_damage_all(struct RastPort *rp)
+{
+    struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
+
+    if (priv)
+        damage_all(priv);
 }
 
 void ace_gfx_set_pen_rgb(struct RastPort *rp, int pen, uint32_t rgb)
@@ -393,11 +820,16 @@ cairo_surface_t *ace_gfx_rastport_surface(struct RastPort *rp)
     return priv ? priv->surface : NULL;
 }
 
+int ace_gfx_rastport_origin_y(struct RastPort *rp)
+{
+    struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
+
+    return priv ? priv->origin_y : 0;
+}
+
 void ace_gfx_read_rgb(struct RastPort *rp, uint8_t *out, size_t out_capacity)
 {
     struct ace_gfx_rp_private *priv = rp ? rp->RP_Extra : NULL;
-    unsigned char *pixels;
-    int stride;
     int x, y;
     size_t needed;
 
@@ -408,11 +840,9 @@ void ace_gfx_read_rgb(struct RastPort *rp, uint8_t *out, size_t out_capacity)
         return;
 
     cairo_surface_flush(priv->surface);
-    pixels = cairo_image_surface_get_data(priv->surface);
-    stride = cairo_image_surface_get_stride(priv->surface);
 
     for (y = 0; y < priv->height; y++) {
-        uint32_t *row = (uint32_t *)(pixels + y * stride);
+        uint32_t *row = row_ptr(priv, y);
 
         for (x = 0; x < priv->width; x++) {
             uint32_t argb = row[x];
@@ -489,21 +919,25 @@ ULONG SetSoftStyle(struct RastPort *rp, ULONG style, ULONG enable)
 static void apply_complement(struct ace_gfx_rp_private *priv, int x0, int y0,
                              int x1, int y1)
 {
-    unsigned char *pixels;
-    int stride;
     int x, y;
 
-    cairo_surface_flush(priv->surface);
-    pixels = cairo_image_surface_get_data(priv->surface);
-    stride = cairo_image_surface_get_stride(priv->surface);
-
     for (y = y0; y <= y1; y++) {
-        uint32_t *row = (uint32_t *)(pixels + y * stride);
+        uint32_t *row = row_ptr(priv, y);
 
         for (x = x0; x <= x1; x++)
             row[x] ^= 0x00ffffffu;
     }
-    cairo_surface_mark_dirty(priv->surface);
+}
+
+/* Clips an inclusive box to the surface. Returns 0 when nothing is left. */
+static int clip_box(struct ace_gfx_rp_private *priv, WORD xMin, WORD yMin,
+                    WORD xMax, WORD yMax, int *x0, int *y0, int *x1, int *y1)
+{
+    *x0 = xMin < 0 ? 0 : xMin;
+    *y0 = yMin < 0 ? 0 : yMin;
+    *x1 = xMax >= priv->width ? priv->width - 1 : xMax;
+    *y1 = yMax >= priv->height ? priv->height - 1 : yMax;
+    return *x0 <= *x1 && *y0 <= *y1;
 }
 
 void RectFill(struct RastPort *rp, WORD xMin, WORD yMin, WORD xMax, WORD yMax)
@@ -514,148 +948,262 @@ void RectFill(struct RastPort *rp, WORD xMin, WORD yMin, WORD xMax, WORD yMax)
     if (!rp)
         return;
     priv = rp->RP_Extra;
-    x0 = xMin < 0 ? 0 : xMin;
-    y0 = yMin < 0 ? 0 : yMin;
-    x1 = xMax >= priv->width ? priv->width - 1 : xMax;
-    y1 = yMax >= priv->height ? priv->height - 1 : yMax;
-    if (x0 > x1 || y0 > y1)
+    if (!clip_box(priv, xMin, yMin, xMax, yMax, &x0, &y0, &x1, &y1))
         return;
 
-    if (rp->DrawMode == COMPLEMENT) {
+    raw_begin(priv);
+    if (rp->DrawMode & COMPLEMENT)
         apply_complement(priv, x0, y0, x1, y1);
-        return;
+    else
+        fill_rect_raw(priv, x0, y0, x1, y1, pen_pixel(priv, rp->FgPen));
+    raw_end(priv, x0, y0, x1, y1);
+}
+
+/*
+ * A console spends nearly all of its scrolling on one shape: everything from
+ * the top-left corner, moved up by one text line. That case is served by
+ * moving the viewing origin down inside the over-allocated surface instead
+ * of copying the console, which turns the per-line cost from a copy of the
+ * whole window into a fill of the one uncovered line.
+ *
+ * The scroll box does not always reach the right and bottom edges of the
+ * surface -- a window whose pixel size is not a whole number of cells leaves
+ * a margin -- and moving the origin moves that margin too. That is only
+ * indistinguishable from a real scroll if the margin already holds the
+ * colour the scroll would fill with, so it is checked rather than assumed;
+ * a margin holding anything else falls back to the copying path below.
+ *
+ * Returns 0 if the caller should take the general path instead.
+ */
+static int scroll_by_origin(struct ace_gfx_rp_private *priv, int dy,
+                            int x1, int y1, uint32_t fill)
+{
+    int keep = priv->height - dy;
+    int x;
+    int y;
+
+    for (x = x1 + 1; x < priv->width; x++)
+        for (y = 0; y < priv->height; y++)
+            if (row_ptr(priv, y)[x] != fill)
+                return 0;
+    for (y = y1 + 1; y < priv->height; y++)
+        for (x = 0; x <= x1; x++)
+            if (row_ptr(priv, y)[x] != fill)
+                return 0;
+
+    cairo_surface_flush(priv->surface);
+    if (priv->origin_y + dy + priv->height > priv->alloc_height) {
+        /* Headroom is used up: fold the surviving rows back to the top of
+         * the allocation. Whole rows move together, so the padding at the
+         * end of each row travels with them. */
+        memmove(priv->base_pixels,
+                priv->base_pixels +
+                    (size_t)(priv->origin_y + dy) * priv->stride_px,
+                (size_t)keep * priv->stride_px * sizeof(uint32_t));
+        set_origin(priv, 0);
+    } else {
+        set_origin(priv, priv->origin_y + dy);
     }
 
-    {
-        double r, g, b;
-
-        rgb_components(pen_rgb(priv, rp->FgPen), &r, &g, &b);
-        cairo_set_source_rgb(priv->cr, r, g, b);
-        cairo_rectangle(priv->cr, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        cairo_fill(priv->cr);
-    }
+    fill_rect_raw(priv, 0, keep, priv->width - 1, priv->height - 1, fill);
+    cairo_surface_mark_dirty_rectangle(priv->surface, 0,
+                                       priv->origin_y + keep, priv->width, dy);
+    damage_all(priv);
+    return 1;
 }
 
 void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
                   WORD xMax, WORD yMax)
 {
     struct ace_gfx_rp_private *priv;
-    cairo_surface_t *snapshot;
-    cairo_t *snapshot_cr;
+    uint32_t fill;
     int x0, y0, x1, y1;
     int box_w, box_h;
+    int adx, ady;
+    int copy_w, copy_h;
+    int src_x, dst_x, src_y, dst_y;
+    int i;
 
-    if (!rp)
+    if (!rp || (dx == 0 && dy == 0))
         return;
     priv = rp->RP_Extra;
-    x0 = xMin < 0 ? 0 : xMin;
-    y0 = yMin < 0 ? 0 : yMin;
-    x1 = xMax >= priv->width ? priv->width - 1 : xMax;
-    y1 = yMax >= priv->height ? priv->height - 1 : yMax;
-    if (x0 > x1 || y0 > y1)
+    if (!clip_box(priv, xMin, yMin, xMax, yMax, &x0, &y0, &x1, &y1))
         return;
     box_w = x1 - x0 + 1;
     box_h = y1 - y0 + 1;
+    fill = pen_pixel(priv, rp->FgPen);
+    adx = dx < 0 ? -dx : dx;
+    ady = dy < 0 ? -dy : dy;
 
     /*
-     * The source and destination regions of the blit overlap whenever a
-     * scroll moves content within the same box, which every caller in
-     * stdconclass.c does. Cairo's own surface cannot be its own source and
-     * destination for an overlapping copy, so the box is captured to a
-     * snapshot first and blitted back with the Amiga ScrollRaster sign
-     * convention: positive dx/dy moves the pixels left/up, so the source
-     * surface is placed at (x0 - dx, y0 - dy).
+     * The Amiga sign convention: positive dx/dy moves the pixels left/up.
+     * The surviving pixels are moved with a per-row memmove -- source and
+     * destination overlap on every scroll a console does, and memmove is
+     * defined for that -- and only the strip the scroll vacates is filled.
+     * The vacated strip takes the current FgPen: stdconclass.c always does
+     * SetAPen(rp, backgroundPen) immediately before calling ScrollRaster(),
+     * which only makes sense if that is the colour used.
      */
-    snapshot = cairo_image_surface_create(CAIRO_FORMAT_RGB24, box_w, box_h);
-    snapshot_cr = cairo_create(snapshot);
-    cairo_set_source_surface(snapshot_cr, priv->surface, -x0, -y0);
-    cairo_paint(snapshot_cr);
-    cairo_destroy(snapshot_cr);
+    if (dx == 0 && dy > 0 && dy < priv->height && x0 == 0 && y0 == 0 &&
+        scroll_by_origin(priv, dy, x1, y1, fill))
+        return;
 
-    {
-        double r, g, b;
-
-        rgb_components(pen_rgb(priv, rp->FgPen), &r, &g, &b);
-        cairo_set_source_rgb(priv->cr, r, g, b);
-        cairo_rectangle(priv->cr, x0, y0, box_w, box_h);
-        cairo_fill(priv->cr);
+    raw_begin(priv);
+    if (adx >= box_w || ady >= box_h) {
+        fill_rect_raw(priv, x0, y0, x1, y1, fill);
+        raw_end(priv, x0, y0, x1, y1);
+        return;
     }
 
-    cairo_save(priv->cr);
-    cairo_rectangle(priv->cr, x0, y0, box_w, box_h);
-    cairo_clip(priv->cr);
-    cairo_set_source_surface(priv->cr, snapshot, x0 - dx, y0 - dy);
-    cairo_paint(priv->cr);
-    cairo_restore(priv->cr);
+    copy_w = box_w - adx;
+    copy_h = box_h - ady;
+    src_x = x0 + (dx > 0 ? adx : 0);
+    dst_x = x0 + (dx > 0 ? 0 : adx);
+    src_y = y0 + (dy > 0 ? ady : 0);
+    dst_y = y0 + (dy > 0 ? 0 : ady);
 
-    cairo_surface_destroy(snapshot);
+    /* Copy away from the vacated edge so an unread source row is never
+     * overwritten first. */
+    if (dy > 0) {
+        for (i = 0; i < copy_h; i++)
+            memmove(row_ptr(priv, dst_y + i) + dst_x,
+                    row_ptr(priv, src_y + i) + src_x,
+                    (size_t)copy_w * sizeof(uint32_t));
+    } else {
+        for (i = copy_h - 1; i >= 0; i--)
+            memmove(row_ptr(priv, dst_y + i) + dst_x,
+                    row_ptr(priv, src_y + i) + src_x,
+                    (size_t)copy_w * sizeof(uint32_t));
+    }
+
+    if (dy > 0)
+        fill_rect_raw(priv, x0, dst_y + copy_h, x1, y1, fill);
+    else if (dy < 0)
+        fill_rect_raw(priv, x0, y0, x1, dst_y - 1, fill);
+    if (dx > 0)
+        fill_rect_raw(priv, dst_x + copy_w, dst_y, x1, dst_y + copy_h - 1,
+                      fill);
+    else if (dx < 0)
+        fill_rect_raw(priv, x0, dst_y, dst_x - 1, dst_y + copy_h - 1, fill);
+
+    raw_end(priv, x0, y0, x1, y1);
 }
+
+/*
+ * Glyphs are handed to cairo in batches rather than one show_glyphs() call
+ * for the whole run so the position array stays on the stack.
+ */
+#define ACE_GFX_GLYPH_BATCH 128
 
 void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
 {
     struct ace_gfx_rp_private *priv;
-    cairo_font_face_t *face;
+    struct ace_gfx_font_private *font;
+    cairo_glyph_t batch[ACE_GFX_GLYPH_BATCH];
+    ULONG drawn;
     ULONG i;
+    int style;
+    int opaque;
     int pen_x = rp ? rp->cp_x : 0;
     int pen_y = rp ? rp->cp_y : 0;
     int cell_w = rp && rp->Font ? rp->Font->tf_XSize : 0;
     int cell_h = rp && rp->Font ? rp->Font->tf_YSize : 0;
     int baseline = rp && rp->Font ? rp->Font->tf_Baseline : 0;
+    int top;
+    int run_w;
+    int fits;
+    unsigned fg_pen;
+    unsigned bg_pen;
+    double r, g, b;
 
-    if (!rp || !string || !rp->Font || cell_w <= 0 || cell_h <= 0)
+    if (!rp || !string || !rp->Font || cell_w <= 0 || cell_h <= 0 || count == 0)
         return;
     priv = rp->RP_Extra;
-    face = face_for_style(rp->Font, rp->AlgoStyle);
+    font = (struct ace_gfx_font_private *)rp->Font;
+    style = style_index(rp->AlgoStyle);
+    ensure_glyph_cache(font, style);
 
-    for (i = 0; i < count; i++) {
-        int x = pen_x + (int)i * cell_w;
-        char glyph[2] = { (char)string[i], 0 };
-        double fr, fg, fb;
+    /*
+     * INVERSVID swaps the two pens for the duration of the draw, and the
+     * JAM2 bit is what makes the cell background opaque -- setabpen() in
+     * stdconclass.c builds exactly those two flags out of the console's
+     * CON_TXTFLAGS_REVERSED/CONCEALED state.
+     */
+    fg_pen = rp->FgPen;
+    bg_pen = rp->BgPen;
+    if (rp->DrawMode & INVERSVID) {
+        unsigned swap = fg_pen;
 
-        if (x + cell_w > priv->width)
-            break;
+        fg_pen = bg_pen;
+        bg_pen = swap;
+    }
+    opaque = (rp->DrawMode & JAM2) != 0;
 
-        /*
-         * Antialiased glyph rendering can paint a pixel or two past a
-         * glyph's own advance width -- real font hinting/kerning, not a
-         * bug -- which would otherwise bleed into a neighboring character
-         * cell. A monospace terminal grid should never let that happen, so
-         * every draw in this cell, glyph included, is clipped to it.
-         */
-        cairo_save(priv->cr);
-        cairo_rectangle(priv->cr, x, pen_y - baseline, cell_w, cell_h);
-        cairo_clip(priv->cr);
+    /* Cells that fall off the right edge are not drawn, but the pen still
+     * advances by the full count, as real graphics.library's does. */
+    fits = pen_x >= priv->width ? 0 : (priv->width - pen_x) / cell_w;
+    drawn = count < (ULONG)fits ? count : (ULONG)fits;
+    if (drawn == 0) {
+        rp->cp_x = (WORD)(pen_x + (int)count * cell_w);
+        return;
+    }
+    top = pen_y - baseline;
+    run_w = (int)drawn * cell_w;
 
-        /*
-         * JAM2 paints the cell's background pen before the glyph, matching
-         * an opaque terminal cell; JAM1 leaves whatever is already there,
-         * matching real graphics.library's transparent text mode.
-         */
-        if (rp->DrawMode == JAM2 || rp->DrawMode == JAM1 + JAM2) {
-            rgb_components(pen_rgb(priv, rp->BgPen), &fr, &fg, &fb);
-            cairo_set_source_rgb(priv->cr, fr, fg, fb);
-            cairo_paint(priv->cr);
-        }
-
-        rgb_components(pen_rgb(priv, rp->FgPen), &fr, &fg, &fb);
-        cairo_set_source_rgb(priv->cr, fr, fg, fb);
-        cairo_set_font_face(priv->cr, face);
-        cairo_set_font_size(priv->cr, rp->Font->tf_YSize);
-        cairo_move_to(priv->cr, x, pen_y);
-        cairo_show_text(priv->cr, glyph);
-
-        if (rp->AlgoStyle & FSF_UNDERLINED) {
-            cairo_move_to(priv->cr, x, pen_y + 1.0);
-            cairo_line_to(priv->cr, x + cell_w, pen_y + 1.0);
-            cairo_set_line_width(priv->cr, 1.0);
-            cairo_stroke(priv->cr);
-        }
-
-        cairo_restore(priv->cr);
+    if (opaque) {
+        raw_begin(priv);
+        fill_rect_raw(priv, pen_x, top, pen_x + run_w - 1, top + cell_h - 1,
+                      0xff000000u | pen_rgb(priv, bg_pen));
+        raw_end(priv, pen_x, top, pen_x + run_w - 1, top + cell_h - 1);
     }
 
+    /*
+     * Antialiased glyph rendering can paint a pixel or two past a glyph's
+     * own advance width -- real font hinting/kerning, not a bug -- which
+     * would otherwise bleed out of the run into a neighbouring character
+     * cell. A monospace terminal grid should never let that happen, so the
+     * whole run is drawn under a clip to its own cells.
+     */
+    cairo_save(priv->cr);
+    cairo_rectangle(priv->cr, pen_x, top, run_w, cell_h);
+    cairo_clip(priv->cr);
+    rgb_components(pen_rgb(priv, fg_pen), &r, &g, &b);
+    cairo_set_source_rgb(priv->cr, r, g, b);
+    cairo_set_scaled_font(priv->cr, font->scaled[style]);
+
+    i = 0;
+    while (i < drawn) {
+        int in_batch = 0;
+
+        while (i < drawn && in_batch < ACE_GFX_GLYPH_BATCH) {
+            unsigned char code = (unsigned char)string[i];
+
+            /* Control codes never reach a cell; console.device turns them
+             * into commands before Text() ever sees them. */
+            if (code >= ACE_GFX_GLYPH_LO && font->glyph[style][code] != 0) {
+                batch[in_batch].index = font->glyph[style][code];
+                batch[in_batch].x = pen_x + (double)i * cell_w;
+                batch[in_batch].y = pen_y;
+                in_batch++;
+            }
+            i++;
+        }
+        if (in_batch != 0)
+            cairo_show_glyphs(priv->cr, batch, in_batch);
+    }
+
+    if (rp->AlgoStyle & FSF_UNDERLINED) {
+        cairo_move_to(priv->cr, pen_x, pen_y + 1.0);
+        cairo_line_to(priv->cr, pen_x + run_w, pen_y + 1.0);
+        cairo_set_line_width(priv->cr, 1.0);
+        cairo_stroke(priv->cr);
+    }
+    cairo_restore(priv->cr);
+
+    damage_add(priv, pen_x, top, pen_x + run_w - 1, top + cell_h - 1);
     rp->cp_x = (WORD)(pen_x + (int)count * cell_w);
 }
+
 
 /* -------------------------------------------------------------------------
  * Scratch raster (AllocRaster/FreeRaster/InitTmpRas)

@@ -39,14 +39,36 @@ static const struct wl_interface appmenu_interface = {
     0, NULL,
 };
 
+/*
+ * ACE's Wayland objects live on their own event queue rather than the
+ * display's default one. The default queue belongs to GDK: dispatching it --
+ * which is what a plain wl_display_roundtrip() does -- runs GDK's own event
+ * handlers from wherever ACE happens to be, and this code is called from a
+ * GTK timeout, so that is a re-entrant dispatch into GTK from inside a GTK
+ * callback. A private queue keeps ACE's round trip to ACE's own objects;
+ * GDK's events are still delivered, but GDK dispatches them itself.
+ */
 struct appmenu_state {
     struct wl_display *display;
+    struct wl_event_queue *queue;
     struct wl_registry *registry;
     struct org_kde_kwin_appmenu_manager *manager;
     uint32_t manager_name;
     struct org_kde_kwin_appmenu *appmenu;
     struct wl_surface *surface;
+    /*
+     * The address is re-sent for a short while after the surface appears,
+     * because a compositor may not have built its view for the surface at
+     * the moment ACE first offers one, and then left alone. Re-sending it
+     * several times a second for the life of the window is protocol traffic
+     * that buys nothing: a compositor restart replaces GDK's whole display
+     * and is picked up by ensure_manager(), and a manager that comes or goes
+     * is reported on the registry listener below.
+     */
+    int settle_ticks;
 };
+
+#define APPMENU_SETTLE_TICKS 8
 
 static struct appmenu_state state;
 
@@ -93,6 +115,9 @@ static void registry_global(void *data, struct wl_registry *registry,
         appmenu->manager = (struct org_kde_kwin_appmenu_manager *)
             wl_registry_bind(registry, name, &manager_interface,
                              version < 2 ? version : 2);
+        /* A manager that only just appeared has never been told ACE's
+         * address, so start the settle window over. */
+        appmenu->settle_ticks = 0;
     }
 }
 
@@ -121,16 +146,37 @@ static const struct wl_registry_listener registry_listener = {
 
 static gboolean ensure_manager(GdkDisplay *display)
 {
-    if (state.display != gdk_wayland_display_get_wl_display(
-            GDK_WAYLAND_DISPLAY(display))) {
+    struct wl_display *wl = gdk_wayland_display_get_wl_display(
+        GDK_WAYLAND_DISPLAY(display));
+
+    if (state.display != wl) {
+        /* A new display means a new compositor connection -- a restart, or
+         * the first call. Everything bound to the old one is gone. */
         ace_appmenu_wayland_forget();
-        state.display = gdk_wayland_display_get_wl_display(
-            GDK_WAYLAND_DISPLAY(display));
-        state.registry = wl_display_get_registry(state.display);
+        state.display = wl;
+        state.queue = wl_display_create_queue(wl);
+        if (!state.queue) {
+            state.display = NULL;
+            return FALSE;
+        }
+        state.registry = wl_display_get_registry(wl);
+        if (!state.registry) {
+            ace_appmenu_wayland_forget();
+            return FALSE;
+        }
+        /* Objects the registry creates inherit its queue, so this is the
+         * only proxy that has to be reassigned by hand. */
+        wl_proxy_set_queue((struct wl_proxy *)state.registry, state.queue);
         wl_registry_add_listener(state.registry, &registry_listener, &state);
+        /* One round trip, on ACE's own queue, to learn what the compositor
+         * offers. */
+        (void)wl_display_roundtrip_queue(state.display, state.queue);
+    } else {
+        /* Pick up a manager that appeared or went away since the last check.
+         * This only dispatches events already delivered to ACE's queue, so
+         * it neither blocks nor touches GDK's. */
+        (void)wl_display_dispatch_queue_pending(state.display, state.queue);
     }
-    if (!state.manager)
-        (void)wl_display_roundtrip(state.display);
     return state.manager != NULL;
 }
 
@@ -169,9 +215,14 @@ gboolean ace_appmenu_wayland_advertise(GtkWindow *window,
     if (!state.appmenu) {
         state.appmenu = manager_create(state.manager, surface);
         state.surface = surface;
+        state.settle_ticks = 0;
     }
+    if (state.settle_ticks >= APPMENU_SETTLE_TICKS)
+        return TRUE;
+
     service_name = g_dbus_connection_get_unique_name(bus);
     appmenu_set_address(state.appmenu, service_name, object_path);
+    state.settle_ticks++;
     if (wl_display_flush(state.display) < 0)
         return FALSE;
     return TRUE;
@@ -192,6 +243,12 @@ void ace_appmenu_wayland_forget(void)
         wl_registry_destroy(state.registry);
         state.registry = NULL;
     }
+    /* The queue outlives every proxy assigned to it, so it goes last. */
+    if (state.queue) {
+        wl_event_queue_destroy(state.queue);
+        state.queue = NULL;
+    }
     state.display = NULL;
     state.manager_name = 0;
+    state.settle_ticks = 0;
 }

@@ -68,8 +68,29 @@ void ace_console_device_set_pen_rgb(struct ace_console_device *device,
 int ace_console_device_resize(struct ace_console_device *device,
                               int width, int height);
 
-/* The RastPort's pixel surface, for the caller to blit directly. Owned by
-   the device; do not destroy it, and do not hold it past close(). */
+/*
+ * The RastPort's pixel surface, for the caller to blit directly. Owned by
+ * the device; do not destroy it, and do not hold it past close().
+ *
+ * The surface is deliberately taller than the console window so that
+ * scrolling can move a viewing origin rather than copy every pixel, so a
+ * caller must take the console's top row from ace_console_device_origin_y()
+ * rather than from row zero of the surface.
+ */
 cairo_surface_t *ace_console_device_surface(struct ace_console_device *device);
+int ace_console_device_origin_y(struct ace_console_device *device);
+
+/* The console's own pixel extent, which is smaller than the surface's. */
+void ace_console_device_size(struct ace_console_device *device,
+                             int *width_out, int *height_out);
+
+/*
+ * Bounding box of everything the console has drawn since the last call, so
+ * the window only has to repaint what changed. Returns 0 when nothing has
+ * been drawn.
+ */
+int ace_console_device_take_damage(struct ace_console_device *device,
+                                   int *x_out, int *y_out,
+                                   int *width_out, int *height_out);
 
 #endif

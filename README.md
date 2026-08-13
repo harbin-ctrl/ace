@@ -74,10 +74,27 @@ AROS source. It supports multiple directory names and the `ALL` switch for
 creating intermediate directories. Its DOS argument layer now supports
 multi-valued `/M` arguments and explicit `FreeArgs()` cleanup.
 
-The broker currently owns per-session current directories and Assigns.  Its
-protocol is deliberately small and binary; the DOS shim is the layer where
-future path translation, volume labels, mounts, locks, and process state will
-be added.
+`Dir` is now built from the original AROS `workbench/c/Dir.c` together with
+the real AROS DOS pattern-matching and `ExAll()` sources. It exercises the
+host filesystem seam through `Lock()`, `Examine()`, `ExNext()`, `DupLock()`,
+and `CurrentDir()`, including recursive `ALL` listings and the `DIRS` and
+`FILES` filters:
+
+```sh
+./build/Dir .
+./build/Dir . ALL
+./build/Dir src/#?.c FILES
+```
+
+AmigaDOS `#?` is the wildcard spelling used by the real AROS matcher. The
+host seam deliberately leaves the optional `*`-as-wildcard root flag disabled,
+so a bare `*` remains a literal pattern character, matching the configured
+AmigaDOS behavior.
+
+The broker owns per-session current directories and Assigns.  Its protocol is
+deliberately small and binary; the DOS shim now has the first read-only host
+filesystem lock/enumeration seam, while richer volume, mount, and device
+semantics remain future work.
 
 LNX is the explicit Linux escape hatch. It executes the named Linux program
 directly with execv() and an explicit PATH search, passing the remaining arguments unchanged; it never
@@ -183,10 +200,10 @@ The diagnostic `cli` output is four lines: return code, `Result2`, fail
 level, and prompt. A real interactive AmigaDOS-compatible command dispatcher
 will consume this state in the next shell layer.
 
-The first classic-console shell slice is now available. It uses a menu-free
-GTK drawing surface as the Linux console, a full-duplex Unix stream for the
-child CLI, and a cloned broker session. The surface is gray by default
-and renders a first classic terminal subset: Amiga/ANSI CSI cursor movement,
+The first classic-console shell slice is now available. It uses a GTK drawing
+surface as the Linux console, a full-duplex Unix stream for the
+child CLI, and a cloned broker session. The surface starts with the classic
+eight-pen palette and renders a first classic terminal subset: Amiga/ANSI CSI cursor movement,
 colors, text attributes, erasing, tabs, scrolling, and local line editing.
 
 The live window now feeds keyboard bytes into the real AROS console-handler
@@ -199,7 +216,7 @@ history. It is only the host window and character-cell renderer.
 `src/console_device.[ch]` remains the smaller standalone console-device test
 seam. The real-handler bridge is in `src/aros_console_editor.[ch]`; it is the
 staging point for the remaining DOS packet and task integration. AROS
-Workbench, menus, clipboard, and packet/task ABI remain deliberately outside
+Workbench integration, clipboard, and packet/task ABI remain deliberately outside
 this profile.
 
 ```sh
@@ -208,7 +225,7 @@ export ACE_SESSION=main-shell
 ./build/ace-shell
 ```
 
-Running `ace-shell` opens a separate menu-free console window and returns to
+Running `ace-shell` opens a separate console window and returns to
 the launching terminal. The window runs the original AROS `Shell.c` through
 the installed `ace-user-shell` binary.
 
@@ -239,8 +256,19 @@ is compiled from the original AROS `NewCLI.c` (which includes
 are currently backed by the host compatibility layer; the compatibility
 layer launches the ACE console and clones the broker session.
 
-The GTK surface deliberately has no AROS menus, Workbench integration, or
-clipboard extensions.
+The ACE Shell window has a GTK menu with typeface and eight-pen palette
+dialogs. The console retains a bounded tail of its output stream, so applying
+a new typeface or palette rebuilds the AROS console and repaints it
+immediately. The drawing-area size allocation follows window resizes and
+updates the real AROS window geometry; a resize keeps the pixels already on
+screen rather than re-rendering the stream, and the console's background pen
+fills whatever the window has gained until the console catches up. When the
+installed appmenu GTK module and compositor support it, ACE exports the menu
+model and actions over D-Bus and advertises that address to the compositor's
+Wayland appmenu interface for the desktop/right-click menu; the local menu bar
+is hidden while that advertisement is live and returns if it is lost.
+Otherwise the same menu remains below the title bar.
+AROS Workbench and clipboard extensions remain outside this profile.
 
 ## BOOPSI
 
@@ -346,17 +374,26 @@ is what actually exercises the escape-sequence *parser*, since
 the resulting pixels back to confirm:
 
 ```sh
-make test-graphics
+make test-graphics test-console-device-bridge
 ```
+
+The bridge test also writes retained output, changes all eight palette slots,
+resizes the backing surface both smaller and larger, and changes the typeface,
+checking that the repainted surface keeps both its content and its new
+background. It scrolls far enough to exhaust the surface's scroll headroom
+several times over and then scrolls that content back off the top, which
+catches a scroll that fails to move what is on screen or fails to clear what
+it uncovers, and it checks that the console reports the region it drew into.
 
 This needs `cairo` and `fontconfig` development files, and at least one
 complete monospace family on the host; `Liberation Mono`, `DejaVu Sans Mono`,
 and the `monospace` fontconfig alias are tried in that order, both for the
-test and for the live `ace-console` window. The eventual font, size, and
-palette choice is meant to be an entirely host-side preference -- a GTK
-settings UI persisted to `$HOME/.config`, validated the same way -- not
-something this seam decides; see HANDOFF.md for what is still hardcoded and
-what is still not real (keyboard input, window resize, cursor blink).
+test and for the live `ace-console` window. The ACE Shell menu offers a
+monospace typeface chooser and eight color slots, validated through the same
+font-loading path as startup. The selected font family, font size, and eight
+palette entries are saved immediately to `$HOME/.config/ace.conf` and loaded
+on the next start. See HANDOFF.md for what is still not real (keyboard input,
+cursor blink).
 
 Global variables currently last only for the lifetime of the broker. The
 `SAVE`/`ENVARC:` persistence behavior is still reserved for a later draft.

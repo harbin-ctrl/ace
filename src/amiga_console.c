@@ -14,7 +14,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "console_device.h"
 #include "aros_console_editor.h"
 #include "aros_graphics_runtime.h"
 #include "ace_appmenu_wayland.h"
@@ -59,6 +58,9 @@ struct console_window {
     int font_size;
     uint32_t palette[ACE_CONSOLE_PEN_COUNT];
     guint menu_probe_source;
+    guint resize_source;
+    int pending_width;
+    int pending_height;
     gboolean menu_type_hint_restored;
     gboolean menu_wayland_live;
     GDBusConnection *menu_bus;
@@ -540,46 +542,22 @@ static gboolean update_menu_visibility(gpointer data)
     return G_SOURCE_CONTINUE;
 }
 
-struct pending_output {
-    struct console_window *console;
-    size_t length;
-    unsigned char data[];
-};
-
-static gboolean apply_output(gpointer data)
+/*
+ * Repaint only the rectangle the console actually drew into. A console spends
+ * most of its time changing one line or one cell, and asking GTK to redraw
+ * the whole window for that means handing the compositor a full window's
+ * worth of pixels on every frame.
+ */
+static void queue_console_damage(struct console_window *console)
 {
-    struct pending_output *output = data;
-    struct console_window *console = output->console;
+    int x;
+    int y;
+    int width;
+    int height;
 
-    /*
-     * The real entry point console.c's beginio()/CMD_WRITE would call.
-     * ACE's rendering path never goes through DoIO()/BeginIO() -- see
-     * HANDOFF.md -- so this calls the real ANSI/CSI parser directly with
-     * the same arguments beginio() would have passed it.
-     */
-    ace_console_device_write(console->device, output->data, output->length);
-    gtk_widget_queue_draw(console->drawing_area);
-    free(output);
-    return G_SOURCE_REMOVE;
-}
-
-static int render_output(void *context, const void *data, size_t length,
-                         size_t *actual)
-{
-    struct pending_output *output;
-
-    if (length > (size_t)-1 - sizeof(*output))
-        return AMIGA_IOERR_UNITBUSY;
-    output = malloc(sizeof(*output) + length);
-    if (!output)
-        return AMIGA_IOERR_UNITBUSY;
-    output->console = context;
-    output->length = length;
-    memcpy(output->data, data, length);
-    g_idle_add(apply_output, output);
-    if (actual)
-        *actual = length;
-    return AMIGA_IOERR_OK;
+    if (ace_console_device_take_damage(console->device, &x, &y, &width,
+                                       &height))
+        gtk_widget_queue_draw_area(console->drawing_area, x, y, width, height);
 }
 
 static void drain_editor_output(struct console_window *console)
@@ -593,20 +571,68 @@ static void drain_editor_output(struct console_window *console)
         if (length != 0)
             ace_console_device_write(console->device, output, length);
     } while (length != 0);
-    gtk_widget_queue_draw(console->drawing_area);
+    queue_console_damage(console);
 }
 
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     struct console_window *console = data;
     cairo_surface_t *surface = ace_console_device_surface(console->device);
+    GdkRGBA background = palette_rgba(console->palette[0]);
+    GtkAllocation allocation;
+    int origin_y = ace_console_device_origin_y(console->device);
+    int width;
+    int height;
 
-    (void)widget;
     if (!surface)
         return FALSE;
-    cairo_set_source_surface(cr, surface, 0, 0);
+    ace_console_device_size(console->device, &width, &height);
+    gtk_widget_get_allocation(widget, &allocation);
+
+    /* A resize enlarges the widget before the console has caught up with it.
+     * Paint the shortfall in the background pen so the gap reads as empty
+     * console rather than as whatever the compositor last had there. */
+    if (width < allocation.width || height < allocation.height) {
+        cairo_set_source_rgb(cr, background.red, background.green,
+                             background.blue);
+        if (width < allocation.width)
+            cairo_rectangle(cr, width, 0, allocation.width - width,
+                            allocation.height);
+        if (height < allocation.height)
+            cairo_rectangle(cr, 0, height, width, allocation.height - height);
+        cairo_fill(cr);
+    }
+
+    /*
+     * The surface carries growth slack and scroll headroom around the
+     * console, so the console's own rows start at origin_y and the blit is
+     * clipped to the console's extent.
+     */
+    cairo_save(cr);
+    cairo_rectangle(cr, 0, 0, width, height);
+    cairo_clip(cr);
+    cairo_set_source_surface(cr, surface, 0, -origin_y);
     cairo_paint(cr);
+    cairo_restore(cr);
     return FALSE;
+}
+
+static gboolean apply_pending_resize(gpointer data)
+{
+    struct console_window *console = data;
+    int width = console->pending_width;
+    int height = console->pending_height;
+
+    console->resize_source = 0;
+    if (width <= 0 || height <= 0)
+        return G_SOURCE_REMOVE;
+    if (ace_console_device_resize(console->device, width, height) != 0) {
+        fprintf(stderr, "ace-console: failed to resize console.device to %dx%d\n",
+                width, height);
+        return G_SOURCE_REMOVE;
+    }
+    gtk_widget_queue_draw(console->drawing_area);
+    return G_SOURCE_REMOVE;
 }
 
 static void drawing_area_size_allocate(GtkWidget *widget,
@@ -617,13 +643,17 @@ static void drawing_area_size_allocate(GtkWidget *widget,
 
     if (allocation->width <= 0 || allocation->height <= 0)
         return;
-    if (ace_console_device_resize(console->device, allocation->width,
-                                  allocation->height) != 0) {
-        fprintf(stderr, "ace-console: failed to resize console.device to %dx%d\n",
-                allocation->width, allocation->height);
-        return;
-    }
-    gtk_widget_queue_draw(widget);
+    console->pending_width = allocation->width;
+    console->pending_height = allocation->height;
+    if (console->resize_source != 0)
+        g_source_remove(console->resize_source);
+    /* A live resize delivers a stream of allocations, and each one puts the
+     * console's whole character grid through AROS's geometry path. Coalesce
+     * them to about one frame so the console tracks the drag closely without
+     * running that path several times per frame; draw_console() paints the
+     * background into whatever the console has not caught up with yet. */
+    console->resize_source = g_timeout_add(16, apply_pending_resize, console);
+    (void)widget;
 }
 
 static int send_input(struct console_window *console, const void *data,
@@ -711,13 +741,24 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
     return FALSE;
 }
 
+/*
+ * How much shell output one main-loop turn will absorb. Draining the socket
+ * in one pass is what keeps a burst of output from costing a console write
+ * and a repaint per 4KB the socket happened to deliver, but an unbounded
+ * drain would let a program that prints without pause hold the main loop --
+ * and with it the keyboard and the window -- for as long as it kept
+ * printing. At this size the loop comes back for air several times a second
+ * even under a flood.
+ */
+#define OUTPUT_DRAIN_MAX (16 * 1024)
+
 static gboolean read_console(GIOChannel *channel, GIOCondition condition,
                              gpointer data)
 {
     struct console_window *console = data;
-    size_t actual;
-    char buffer[4096];
-    ssize_t length;
+    char buffer[8192];
+    size_t drained = 0;
+    int closed = 0;
 
     (void)channel;
     if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
@@ -725,15 +766,42 @@ static gboolean read_console(GIOChannel *channel, GIOCondition condition,
             gtk_widget_destroy(console->window);
         return G_SOURCE_REMOVE;
     }
-    length = read(console->stream_fd, buffer, sizeof(buffer));
-    if (length <= 0) {
+
+    while (drained < OUTPUT_DRAIN_MAX) {
+        ssize_t length = recv(console->stream_fd, buffer, sizeof(buffer),
+                              MSG_DONTWAIT);
+
+        if (length > 0) {
+            /*
+             * The real entry point console.c's beginio()/CMD_WRITE would
+             * call. ACE's rendering path never goes through DoIO()/BeginIO()
+             * -- see HANDOFF.md -- so this calls the real ANSI/CSI parser
+             * directly with the same arguments beginio() would have passed
+             * it.
+             */
+            ace_console_device_write(console->device, buffer, (size_t)length);
+            drained += (size_t)length;
+            continue;
+        }
+        if (length == 0) {
+            closed = 1;
+            break;
+        }
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            break;
+        closed = 1;
+        break;
+    }
+
+    if (drained != 0)
+        queue_console_damage(console);
+    if (closed) {
         if (console->window)
             gtk_widget_destroy(console->window);
         return G_SOURCE_REMOVE;
     }
-    if (render_output(console, buffer, (size_t)length, &actual) !=
-            AMIGA_IOERR_OK || actual != (size_t)length)
-        return G_SOURCE_REMOVE;
     return G_SOURCE_CONTINUE;
 }
 
@@ -746,6 +814,10 @@ static void console_destroy(GtkWidget *widget, gpointer data)
     if (console->menu_probe_source != 0) {
         g_source_remove(console->menu_probe_source);
         console->menu_probe_source = 0;
+    }
+    if (console->resize_source != 0) {
+        g_source_remove(console->resize_source);
+        console->resize_source = 0;
     }
     ace_appmenu_wayland_forget();
     if (console->child_pid > 0) {

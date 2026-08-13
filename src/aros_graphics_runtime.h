@@ -73,6 +73,22 @@ struct RastPort *ace_gfx_create_rastport(int width, int height,
                                          const uint32_t rgb[ACE_GFX_PEN_COUNT]);
 void ace_gfx_destroy_rastport(struct RastPort *rp);
 
+/* Changes the pixel surface dimensions while preserving the existing
+ * RastPort, font, parser state, and visible pixels. */
+int ace_gfx_resize_rastport(struct RastPort *rp, int width, int height);
+
+/*
+ * The bounding box of everything drawn since the last call, so the window
+ * owner can repaint just that area instead of the whole console. Returns 0
+ * and leaves the outputs untouched when nothing has been drawn; returns 1
+ * and resets the accumulator otherwise.
+ */
+int ace_gfx_take_damage(struct RastPort *rp, int *x_out, int *y_out,
+                        int *width_out, int *height_out);
+
+/* Marks the whole surface as needing repaint, e.g. after a resize. */
+void ace_gfx_damage_all(struct RastPort *rp);
+
 /* Replaces one pen's RGB entry, e.g. after a screen DrawInfo remap. */
 void ace_gfx_set_pen_rgb(struct RastPort *rp, int pen, uint32_t rgb);
 
@@ -92,7 +108,14 @@ void ace_gfx_rastport_size(struct RastPort *rp, int *width_out,
  * of its own (the live GTK window) to blit directly instead of round-
  * tripping through ace_gfx_read_rgb()'s byte array. Owned by the RastPort;
  * do not destroy it, and do not hold it past ace_gfx_destroy_rastport().
+ *
+ * The surface is taller than the console: spare rows below the visible area
+ * let a scroll move the viewing origin instead of copying every pixel. A
+ * caller blitting it must therefore take the console's rows from
+ * ace_gfx_rastport_origin_y() downwards, not from the top of the surface,
+ * and must not assume the surface's height is the console's height.
  */
 cairo_surface_t *ace_gfx_rastport_surface(struct RastPort *rp);
+int ace_gfx_rastport_origin_y(struct RastPort *rp);
 
 #endif

@@ -30,6 +30,71 @@ from a host TrueType font rather than a bitmap font ACE would have to ship --
 see the file header for what AROS's console classes do and do not require of
 a font.
 
+### How graphics.library draws, and why it is shaped that way
+
+The seam started out routing every drawing call through cairo, one character
+cell at a time. Measured on this Raspberry Pi with a 900x576 console, that
+cost 10.8 ms for each line of output once the console had filled up and
+started scrolling -- five and a half seconds for five hundred lines -- and a
+typeface or palette change took six seconds. Three things were responsible,
+and the file is now organised around avoiding them.
+
+**Scrolling does not copy the console.** `ScrollRaster()` used to snapshot the
+whole scroll box into a second cairo surface, fill the box, and blit the
+snapshot back: four passes over the console plus a two-megabyte allocation,
+for every single line. It was 86% of the profile. A console almost always
+scrolls the same shape -- everything from the top-left corner, up by one text
+line -- so the surface is allocated taller than the console and that case
+moves the *viewing origin* down inside it instead, leaving the pixels alone
+and filling only the one line the scroll uncovers. The origin is folded back
+to the top of the allocation when the headroom runs out, which is the only
+time a scroll copies anything. `ace_gfx_rastport_surface()`'s callers
+therefore have to read the console's rows from
+`ace_gfx_rastport_origin_y()` rather than from row zero, which is the one
+externally visible consequence.
+
+The scroll box does not always reach the surface's right and bottom edges --
+a window whose pixel size is not a whole number of cells leaves a margin --
+and moving the origin moves that margin too. `scroll_by_origin()` checks that
+the margin already holds the colour the scroll would fill with rather than
+assuming it, and hands back to the copying path if it does not.
+
+**Rectangles are filled, moved and inverted directly.** `RectFill()`,
+`ScrollRaster()` and the COMPLEMENT cursor are rectangle copies and solid
+fills; going through cairo meant a pixman composite for work a `memmove`
+already does. They write the image surface's pixels between a
+`cairo_surface_flush()` / `cairo_surface_mark_dirty_rectangle()` pair, which
+is cairo's documented contract for exactly this and costs nothing on an image
+surface. Cairo still draws every glyph, which is the part that needs it.
+
+**Glyphs are looked up once.** `Text()` used to call `cairo_set_font_face()`,
+`cairo_set_font_size()` and `cairo_show_text()` per character, each of which
+re-resolved the scaled font and redid a FreeType character-map lookup. There
+is now one `cairo_scaled_font_t` per style built at font load, a cached glyph
+index per byte, and one `cairo_show_glyphs()` per run of text with every
+glyph positioned explicitly on the console's own integer cell pitch. Two real
+bugs fell out of that rewrite: the old code rendered at `tf_YSize` (the line
+height) while `tf_XSize` had been measured at the requested pixel size, so
+glyphs were wider than the cells they were laid out on; and `INVERSVID`,
+which `setabpen()` in `stdconclass.c` sets for reverse video, was ignored
+rather than swapping the two pens.
+
+Together these take a line of output from 10.8 ms to 0.34 ms, a resize step
+from 7.2 ms to effectively nothing, and a typeface or palette change from six
+seconds to about 0.3 -- and, because the retained stream is now bounded, that
+last figure no longer grows with how long the shell has been running. Driving
+the real window end to end, twenty thousand lines render in six seconds where
+they would previously have taken more than three minutes.
+
+The cost is memory: the surface carries scroll headroom (a 6 MB budget,
+clamped to between 256 and 2048 rows) and 128 columns of width slack, so it
+is roughly twice the console's own size. A resize that still fits inside that
+allocation does not reallocate at all, which is what makes a live drag cheap.
+
+`ace_gfx_take_damage()` reports the bounding box of everything drawn since
+the last call, so `amiga_console.c` repaints only what changed instead of
+handing the compositor a whole window per frame.
+
 The real ANSI/CSI parser, `rom/devs/console/support.c`'s `writeToConsole()`,
 is compiled the same way and is now what the live `ace-console` window
 actually calls: `src/console_device_bridge.c` builds one real `ConUnit` per
@@ -60,6 +125,16 @@ an already-parsed command). The CSI test drives `CSI n C` (cursor forward),
 confirmed present in `support.c`'s real command table; ANSI SGR color is not
 -- this AROS checkout's `stdconclass.c` has no `C_SELECT_GRAPHIC_RENDITION`
 case at all, confirmed by reading its dispatcher, not assumed.
+
+The first read-only filesystem-facing command is now real AROS `Dir.c`, built
+with the original DOS `patternmatching`, `MatchFirst`/`MatchNext`/`MatchEnd`,
+and `ExAll` implementations. `src/native_dos.c` supplies the host-backed
+`Lock`/`Examine`/`ExNext`/`DupLock`/`CurrentDir` seam, Unix metadata conversion,
+and the RawDoFmt-compatible `VPrintf` path that `Dir` uses for its formatted
+columns. The command has been exercised against regular and nested host
+directories, `#?` patterns, `ALL`, `DIRS`, `FILES`, and missing paths. The
+compatibility layer intentionally leaves the DOS root's optional `*` wildcard
+flag disabled, matching the configured AmigaDOS pattern behavior.
 
 ## Build on another host
 
@@ -151,18 +226,32 @@ itself (cursor movement, backspace, history) already runs on real AROS
 code, via `process_input()` from Phase 1 -- only the *encoding* of GDK key
 events into the bytes it expects is ACE's, and stays that way.
 
-Font and palette selection is meant to be entirely host-side: a GTK
-preferences UI lets the user choose a family, size, and palette, persisted to
-`$HOME/.config`, validated against `ace_gfx_font_family_complete()` so only
-families with genuine regular/bold/italic/bold-italic faces are offered.
-`aros_graphics_runtime.c`'s font/palette API already takes these as
-parameters rather than hardcoding them (`src/console_device_bridge.c` and
-`amiga_console.c` currently hardcode a candidate list -- `Liberation Mono`,
-`DejaVu Sans Mono`, `monospace` -- as a placeholder), but the preferences UI
-and config persistence do not exist yet. Also not implemented: window
-resize (`NewWindowSize`, real AROS support exists in `consoleclass.c` but
-nothing calls it, so the RastPort is fixed at `CONSOLE_WIDTH`/
-`CONSOLE_HEIGHT`), cursor blink (real console.device does not appear to
+Font and palette selection is host-side: the ACE Shell GTK menu offers a
+monospace typeface chooser and eight color slots, validated through the same
+`ace_gfx_load_font()` path as startup. The bridge retains the raw console
+stream, rebuilds the real console unit and RastPort for a typeface or palette
+change, and replays the stream so the visible contents are repainted
+immediately with the new cell metrics and eight pens.
+
+The retained stream is bounded, at several screenfuls sized from the console's
+own grid and dropped from the front at a line boundary. It exists only to
+repaint after a typeface or palette change, so it needs to hold what is still
+on screen, not the whole session; unbounded, it made those two operations cost
+time proportional to how long the shell had been running, since the repaint had
+to re-render and re-scroll past every line ever written.
+
+A window resize does not go through that rebuild at all. `ace_gfx_resize_-`
+`rastport()` changes the surface's dimensions with the pixels intact and the
+bridge then invokes AROS's real `Console_NewWindowSize()` geometry path, so a
+live drag costs a geometry update rather than a re-render of the stream --
+which is what it used to cost, on every intermediate size GTK delivered. GTK
+`size-allocate` coalesces those to about one frame, and `draw_console()` fills
+whatever the window has gained with the console's background pen until the
+console catches up. The drawing area is no longer fixed at the initial
+`CONSOLE_WIDTH`/`CONSOLE_HEIGHT`. The selected font family, font size, and all
+eight palette entries are written immediately to `$HOME/.config/ace.conf` and
+loaded before the first RastPort is created. Also not implemented:
+cursor blink (real console.device does not appear to
 drive this from a timer either -- `stdcon_drawcursor()` only fires on
 explicit `RenderCursor`/`UnRenderCursor` calls tied to command processing and
 window-active state), and DSR cursor-position-report replies
@@ -170,6 +259,30 @@ window-active state), and DSR cursor-position-report replies
 program that sends `ESC[6n` gets no reply, since answering it needs the
 task/message-port layer described above).
 
-After the display seam, the next work is expanding the DOS filesystem/device
-seam and porting more AROS commands while keeping the AROS source behavior
-intact.
+### The window's own two seams
+
+`read_console()` drains the shell's socket in one pass per main-loop turn and
+repaints once, rather than allocating a buffer and posting a `g_idle_add()`
+callback for each 4KB the socket happened to deliver. The drain is capped at
+`OUTPUT_DRAIN_MAX` so a program that prints without pause cannot hold the main
+loop -- and with it the keyboard and the window -- for as long as it keeps
+printing.
+
+`ace_appmenu_wayland.c` puts ACE's Wayland objects on their own
+`wl_event_queue`. The default queue belongs to GDK, and the previous code
+called `wl_display_roundtrip()` on it from inside a GTK timeout that fires
+four times a second: that both blocks and dispatches GDK's own event handlers
+re-entrantly from inside a GTK callback, which is a plausible source of the
+compositor-level instability this window had. A private queue keeps ACE's
+round trip to ACE's own objects, and the periodic check is now a non-blocking
+`wl_display_dispatch_queue_pending()` on that queue. The address is still
+re-sent for a settle window after the surface appears -- a compositor may not
+have built its view when ACE first offers one -- and then left alone, since a
+compositor restart replaces GDK's whole display (caught by `ensure_manager()`)
+and a manager coming or going is reported on the registry listener.
+
+The next work is expanding the DOS filesystem/device seam beyond this first
+read-only command and porting more AROS commands while keeping the AROS source
+behavior intact. `Dir` is a useful baseline for those ports: it already proves
+the real AROS pattern engine and directory enumeration can run on the broker's
+host-path model.
