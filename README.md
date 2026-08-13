@@ -13,6 +13,17 @@ make
 ./build/ace-broker /tmp/ace-broker.sock
 ```
 
+Install the built commands and console runtime into `/usr/local/bin`:
+
+```sh
+make install
+```
+
+Use `PREFIX` for a different installation root, for example
+`make PREFIX="$HOME/.local" install`. All installed ACE programs share one
+directory so they can locate the companion shell, console, broker, and AROS
+commands at runtime.
+
 For testing, the project also provides quiet lifecycle commands:
 
 ```sh

@@ -2,6 +2,9 @@ CC ?= cc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-pointer-sign -O2
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+INSTALL ?= install
 
 COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
@@ -25,6 +28,9 @@ AROS_SHELL_NAMES := buffer cliEcho cliLen cliNan cliPrompt cliVarNum \
                     convertArg convertBackTicks convertLine convertLineDot \
                     convertRedir convertVar interpreter redirection
 AROS_SHELL_OBJS := $(addprefix $(BUILD)/aros-shell-,$(addsuffix .o,$(AROS_SHELL_NAMES)))
+INSTALL_BINS := Echo CD PathPart Fault Ask Get Getenv Set Unset Alias Unalias \
+                FailAt Why Prompt MakeDir ace-shell ace-console NewCLI \
+                ace-broker ace-brokerctl
 
 all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/ace-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o
 
@@ -193,10 +199,15 @@ $(BUILD)/ace-shell: $(BUILD)/aros-shell-runtime.o $(AROS_SHELL_OBJS) $(BUILD)/na
 clean:
 	$(RM) -r $(BUILD)
 
+install: all
+	$(INSTALL) -d $(DESTDIR)$(BINDIR)
+	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
+	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
+
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
 
 test-exec-compat: $(BUILD)/exec-compat-test
 	$(BUILD)/exec-compat-test
 
-.PHONY: all clean test-console-device test-exec-compat
+.PHONY: all clean install test-console-device test-exec-compat

@@ -7,9 +7,14 @@ if (( ! sourced )); then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+if [[ -x $script_dir/build/ace-broker ]]; then
+    ace_runtime_dir=$script_dir/build
+else
+    ace_runtime_dir=$script_dir
+fi
 broker_socket=${ACE_BROKER_SOCKET:-/tmp/ace-broker.sock}
 broker_pid_file=${ACE_BROKER_PIDFILE:-${broker_socket}.pid}
-experimental_commands=$script_dir/build
+experimental_commands=$ace_runtime_dir
 broker_pids=()
 
 remove_experimental_commands_from_path()
