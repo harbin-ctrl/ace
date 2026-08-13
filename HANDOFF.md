@@ -399,6 +399,46 @@ available guess at one whose shell is gone. It is a guess: losing it costs a
 session its current directory, assigns and variables, which is recoverable and
 logged. Real ownership tracking would be better and still needs designing.
 
+### The greyed-out menu items were labwc's, not ACE's
+
+Worth recording, because it cost a lot of time and the symptom points the
+wrong way. On a host whose labwc predates the fix below, ACE's exported menu
+appears with **Typeface and Palette greyed and Quit active**. That looks
+exactly like the provider race fixed in "Fix ACE appmenu provider lifecycle",
+and it is tempting to go back into ACE's D-Bus export. Don't; check the
+compositor's version first.
+
+ACE's export is verifiable from the shell, and was correct throughout:
+
+```sh
+busctl --user list | grep ace-console          # find the connection, e.g. :1.858
+P=/org/appmenu/gtk/window/menus/menubar/ace_shell
+gdbus call --session --dest :1.858 --object-path $P \
+    --method org.gtk.Menus.Start "[uint32 0, uint32 1]"
+gdbus call --session --dest :1.858 --object-path $P \
+    --method org.gtk.Actions.DescribeAll
+```
+
+`DescribeAll` returns `{'quit': (true…), 'typeface': (true…), 'palette':
+(true…)}` -- all three present, all three enabled -- and the model carries the
+right labels and `app.` action names. Nothing on ACE's side is disabled.
+
+The cause is in labwc's appmenu consumer, fixed by `4e782e8` ("Fix appmenu
+lifecycle and action readiness") and `90348bc` ("Wait for every remote appmenu
+action") in the onscreen-windows tree. Its own comment names the mechanism,
+including why Quit is the item that keeps working:
+
+> GDBusActionGroup handles DescribeAll asynchronously and emits one
+> action-added signal per dictionary entry. Merely checking that the action
+> list is non-empty races with that sequence: if "quit" is the first entry, a
+> snapshot taken from its signal marks every later action disabled.
+
+`quit` is the first entry in ACE's dictionary, so a compositor without those
+commits snapshots on it and disables `typeface` and `palette`. The fix belongs
+in labwc; the only thing ACE could do about it is rename its actions so that
+the alphabetically-or-insertion-first one is not the one that matters, which
+would be superstition rather than engineering.
+
 ### The window's own two seams
 
 `read_console()` drains the shell's socket in one pass per main-loop turn and
