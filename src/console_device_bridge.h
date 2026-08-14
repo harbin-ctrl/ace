@@ -48,6 +48,13 @@ void ace_console_device_close(struct ace_console_device *device);
 void ace_console_device_write(struct ace_console_device *device,
                               const void *data, size_t length);
 
+/* Replies from the imported console classes travel back to the child over
+   the GUI's shell socket, just as they would enter a real CON: input queue. */
+void ace_console_device_set_input_fd(struct ace_console_device *device, int fd);
+
+/* Deliver an AROS SIZEWINDOW raw event after a GTK resize. */
+void ace_console_device_notify_resize(struct ace_console_device *device);
+
 /* Rebuilds the console unit around a new complete monospace font and replays
    the saved console stream into the new cell grid. */
 int ace_console_device_set_font(struct ace_console_device *device,

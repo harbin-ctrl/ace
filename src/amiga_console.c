@@ -124,6 +124,9 @@ struct console_window {
     guint resize_source;
     int pending_width;
     int pending_height;
+    int title_state;
+    char title_buffer[1024];
+    size_t title_length;
     gboolean menu_type_hint_restored;
     gboolean menu_wayland_live;
     GDBusConnection *menu_bus;
@@ -843,8 +846,114 @@ static gboolean apply_pending_resize(gpointer data)
                 width, height);
         return G_SOURCE_REMOVE;
     }
+    ace_console_device_notify_resize(console->device);
     gtk_widget_queue_draw(console->drawing_area);
     return G_SOURCE_REMOVE;
+}
+
+static void set_console_title(struct console_window *console)
+{
+    console->title_buffer[console->title_length] = '\0';
+    gtk_window_set_title(GTK_WINDOW(console->window), console->title_buffer);
+}
+
+static void output_console_byte(struct console_window *console,
+                                unsigned char byte, unsigned char *ordinary,
+                                size_t *ordinary_length)
+{
+    if (*ordinary_length == 8192) {
+        ace_console_device_write(console->device, ordinary, *ordinary_length);
+        *ordinary_length = 0;
+    }
+    ordinary[(*ordinary_length)++] = byte;
+}
+
+/* Strip ACE's private OSC 2 title messages before the bytes reach the AROS
+ * console parser. All other bytes, including ANSI/CSI sequences, are passed
+ * through unchanged. The state is kept on the window because a socket read
+ * can split a control sequence at any byte. */
+static void output_console(struct console_window *console,
+                           const unsigned char *data, size_t length)
+{
+    unsigned char ordinary[8192];
+    size_t ordinary_length = 0;
+
+    while (length-- != 0) {
+        unsigned char byte = *data++;
+
+        switch (console->title_state) {
+        case 0:
+            if (byte == 0x1b)
+                console->title_state = 1;
+            else
+                output_console_byte(console, byte, ordinary,
+                                    &ordinary_length);
+            break;
+        case 1:
+            if (byte == ']') {
+                console->title_state = 2;
+            } else {
+                output_console_byte(console, 0x1b, ordinary,
+                                    &ordinary_length);
+                output_console_byte(console, byte, ordinary,
+                                    &ordinary_length);
+                console->title_state = 0;
+            }
+            break;
+        case 2:
+            if (byte == '2') {
+                console->title_state = 3;
+            } else {
+                output_console_byte(console, 0x1b, ordinary,
+                                    &ordinary_length);
+                output_console_byte(console, ']', ordinary, &ordinary_length);
+                output_console_byte(console, byte, ordinary,
+                                    &ordinary_length);
+                console->title_state = 0;
+            }
+            break;
+        case 3:
+            if (byte == ';') {
+                console->title_length = 0;
+                console->title_state = 4;
+            } else {
+                output_console_byte(console, 0x1b, ordinary,
+                                    &ordinary_length);
+                output_console_byte(console, ']', ordinary, &ordinary_length);
+                output_console_byte(console, '2', ordinary, &ordinary_length);
+                output_console_byte(console, byte, ordinary,
+                                    &ordinary_length);
+                console->title_state = 0;
+            }
+            break;
+        default:
+            if (byte == '\a') {
+                set_console_title(console);
+                console->title_state = 0;
+            } else if (byte == 0x1b ||
+                       console->title_length + 1 >=
+                           sizeof(console->title_buffer)) {
+                /* Invalid or overlong titles are rendered literally instead
+                 * of swallowing the rest of the program's output. */
+                output_console_byte(console, 0x1b, ordinary,
+                                    &ordinary_length);
+                output_console_byte(console, ']', ordinary, &ordinary_length);
+                output_console_byte(console, '2', ordinary, &ordinary_length);
+                output_console_byte(console, ';', ordinary, &ordinary_length);
+                for (size_t index = 0; index < console->title_length; index++)
+                    output_console_byte(console,
+                                        (unsigned char)console->title_buffer[index],
+                                        ordinary, &ordinary_length);
+                output_console_byte(console, byte, ordinary, &ordinary_length);
+                console->title_state = 0;
+            } else {
+                console->title_buffer[console->title_length++] = (char)byte;
+            }
+            break;
+        }
+    }
+    if (ordinary_length != 0)
+        ace_console_device_write(console->device, ordinary, ordinary_length);
 }
 
 static void drawing_area_size_allocate(GtkWidget *widget,
@@ -885,6 +994,111 @@ static int send_input(struct console_window *console, const void *data,
     return 0;
 }
 
+/*
+ * The console input codes an Amiga program expects for the keys that are not
+ * characters. These are the console.device raw sequences, the same ones the
+ * Amiga terminal description in an unmodified program's own key table is
+ * written against -- Vim's builtin_amiga[] in term.c, for instance. The
+ * shifted arrows and the 101-key block matter as soon as a full-screen
+ * program is running: without them those keys reach the program as nothing
+ * at all.
+ */
+struct console_key {
+    guint keyval;
+    guint modifiers;
+    const char *sequence;
+};
+
+#define KEY_ANY_MODIFIERS ((guint)-1)
+
+static const struct console_key console_keys[] = {
+    { GDK_KEY_Return,        KEY_ANY_MODIFIERS, "\n" },
+    { GDK_KEY_KP_Enter,      KEY_ANY_MODIFIERS, "\n" },
+    { GDK_KEY_BackSpace,     KEY_ANY_MODIFIERS, "\b" },
+    { GDK_KEY_Delete,        KEY_ANY_MODIFIERS, "\177" },
+    { GDK_KEY_Escape,        KEY_ANY_MODIFIERS, "\033" },
+    { GDK_KEY_Tab,           0,                 "\t" },
+    { GDK_KEY_Tab,           GDK_SHIFT_MASK,    "\233Z" },
+    { GDK_KEY_ISO_Left_Tab,  KEY_ANY_MODIFIERS, "\233Z" },
+    { GDK_KEY_Up,            GDK_SHIFT_MASK,    "\233T" },
+    { GDK_KEY_Down,          GDK_SHIFT_MASK,    "\233S" },
+    { GDK_KEY_Left,          GDK_SHIFT_MASK,    "\233 A" },
+    { GDK_KEY_Right,         GDK_SHIFT_MASK,    "\233 @" },
+    { GDK_KEY_Up,            KEY_ANY_MODIFIERS, "\233A" },
+    { GDK_KEY_Down,          KEY_ANY_MODIFIERS, "\233B" },
+    { GDK_KEY_Right,         KEY_ANY_MODIFIERS, "\233C" },
+    { GDK_KEY_Left,          KEY_ANY_MODIFIERS, "\233D" },
+    { GDK_KEY_Insert,        GDK_SHIFT_MASK,    "\23350~" },
+    { GDK_KEY_Home,          GDK_SHIFT_MASK,    "\23354~" },
+    { GDK_KEY_End,           GDK_SHIFT_MASK,    "\23355~" },
+    { GDK_KEY_Insert,        KEY_ANY_MODIFIERS, "\23340~" },
+    { GDK_KEY_Page_Up,       KEY_ANY_MODIFIERS, "\23341~" },
+    { GDK_KEY_Page_Down,     KEY_ANY_MODIFIERS, "\23342~" },
+    { GDK_KEY_Home,          KEY_ANY_MODIFIERS, "\23344~" },
+    { GDK_KEY_End,           KEY_ANY_MODIFIERS, "\23345~" },
+    { GDK_KEY_Help,          KEY_ANY_MODIFIERS, "\233?~" },
+    { GDK_KEY_F1,            GDK_SHIFT_MASK,    "\23310~" },
+    { GDK_KEY_F2,            GDK_SHIFT_MASK,    "\23311~" },
+    { GDK_KEY_F3,            GDK_SHIFT_MASK,    "\23312~" },
+    { GDK_KEY_F4,            GDK_SHIFT_MASK,    "\23313~" },
+    { GDK_KEY_F5,            GDK_SHIFT_MASK,    "\23314~" },
+    { GDK_KEY_F6,            GDK_SHIFT_MASK,    "\23315~" },
+    { GDK_KEY_F7,            GDK_SHIFT_MASK,    "\23316~" },
+    { GDK_KEY_F8,            GDK_SHIFT_MASK,    "\23317~" },
+    { GDK_KEY_F9,            GDK_SHIFT_MASK,    "\23318~" },
+    { GDK_KEY_F10,           GDK_SHIFT_MASK,    "\23319~" },
+    { GDK_KEY_F1,            KEY_ANY_MODIFIERS, "\2330~" },
+    { GDK_KEY_F2,            KEY_ANY_MODIFIERS, "\2331~" },
+    { GDK_KEY_F3,            KEY_ANY_MODIFIERS, "\2332~" },
+    { GDK_KEY_F4,            KEY_ANY_MODIFIERS, "\2333~" },
+    { GDK_KEY_F5,            KEY_ANY_MODIFIERS, "\2334~" },
+    { GDK_KEY_F6,            KEY_ANY_MODIFIERS, "\2335~" },
+    { GDK_KEY_F7,            KEY_ANY_MODIFIERS, "\2336~" },
+    { GDK_KEY_F8,            KEY_ANY_MODIFIERS, "\2337~" },
+    { GDK_KEY_F9,            KEY_ANY_MODIFIERS, "\2338~" },
+    { GDK_KEY_F10,           KEY_ANY_MODIFIERS, "\2339~" },
+};
+
+/*
+ * Ctrl with a key produces the control character that key names, which is
+ * how a program reads Ctrl-C, and equally how it reads the Ctrl-W, Ctrl-R
+ * and Ctrl-V an editor is driven with. Only Ctrl-C and Ctrl-D used to reach
+ * the shell, and every other Ctrl chord was swallowed here.
+ */
+static int control_character(guint key)
+{
+    if (key >= GDK_KEY_a && key <= GDK_KEY_z)
+        return (int)(key - GDK_KEY_a) + 1;
+    if (key >= GDK_KEY_A && key <= GDK_KEY_Z)
+        return (int)(key - GDK_KEY_A) + 1;
+    switch (key) {
+    case GDK_KEY_at:
+    case GDK_KEY_space:
+    case GDK_KEY_2:
+        return 0;
+    case GDK_KEY_bracketleft:
+    case GDK_KEY_3:
+        return 033;
+    case GDK_KEY_backslash:
+    case GDK_KEY_4:
+        return 034;
+    case GDK_KEY_bracketright:
+    case GDK_KEY_5:
+        return 035;
+    case GDK_KEY_asciicircum:
+    case GDK_KEY_6:
+        return 036;
+    case GDK_KEY_underscore:
+    case GDK_KEY_minus:
+    case GDK_KEY_7:
+        return 037;
+    case GDK_KEY_question:
+        return 0177;
+    default:
+        return -1;
+    }
+}
+
 static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
     struct console_window *console = data;
@@ -894,45 +1108,25 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
     gunichar unicode;
 
     (void)widget;
-    if (key == GDK_KEY_Return || key == GDK_KEY_KP_Enter) {
-        (void)send_input(console, "\n", 1);
-        return TRUE;
-    }
-    if (key == GDK_KEY_BackSpace) {
-        (void)send_input(console, "\b", 1);
-        return TRUE;
-    }
-    if (key == GDK_KEY_Delete) {
-        (void)send_input(console, "\177", 1);
-        return TRUE;
-    }
-    if (key == GDK_KEY_Left) {
-        (void)send_input(console, "\233D", 2);
-        return TRUE;
-    }
-    if (key == GDK_KEY_Right) {
-        (void)send_input(console, "\233C", 2);
-        return TRUE;
-    }
-    if (key == GDK_KEY_Home) {
-        (void)send_input(console, "\23344~", 4);
-        return TRUE;
-    }
-    if (key == GDK_KEY_End) {
-        (void)send_input(console, "\23345~", 4);
-        return TRUE;
-    }
-    if (key == GDK_KEY_Up || key == GDK_KEY_Down || key == GDK_KEY_Tab) {
-        const char *sequence = key == GDK_KEY_Up ? "\233A" :
-                               key == GDK_KEY_Down ? "\233B" : "\t";
-        (void)send_input(console, sequence, strlen(sequence));
+    for (size_t index = 0; index < G_N_ELEMENTS(console_keys); index++) {
+        const struct console_key *entry = &console_keys[index];
+
+        if (entry->keyval != key)
+            continue;
+        if (entry->modifiers != KEY_ANY_MODIFIERS &&
+            entry->modifiers != modifiers)
+            continue;
+        (void)send_input(console, entry->sequence, strlen(entry->sequence));
         return TRUE;
     }
     if (modifiers & GDK_CONTROL_MASK) {
-        if (key == GDK_KEY_c)
-            (void)send_input(console, "\003", 1);
-        else if (key == GDK_KEY_d)
-            (void)send_input(console, "\004", 1);
+        int character = control_character(key);
+
+        if (character >= 0) {
+            char byte = (char)character;
+
+            (void)send_input(console, &byte, 1);
+        }
         return TRUE;
     }
 
@@ -985,7 +1179,8 @@ static gboolean read_console(GIOChannel *channel, GIOCondition condition,
              * directly with the same arguments beginio() would have passed
              * it.
              */
-            ace_console_device_write(console->device, buffer, (size_t)length);
+            output_console(console, (const unsigned char *)buffer,
+                           (size_t)length);
             drained += (size_t)length;
             continue;
         }
@@ -1027,7 +1222,15 @@ static void console_destroy(GtkWidget *widget, gpointer data)
     }
     ace_appmenu_wayland_forget();
     if (console->child_pid > 0) {
-        kill(console->child_pid, SIGHUP);
+        /* Closing the console window is what closing a console window means
+         * for everything running under it, not just for the shell: the
+         * commands the shell started have lost their console too. The child
+         * is a process group leader (see main()), so this reaches a
+         * full-screen program that the shell is currently waiting on --
+         * which would otherwise be left reading a console that can never
+         * produce another byte. */
+        if (kill(-console->child_pid, SIGHUP) != 0)
+            (void)kill(console->child_pid, SIGHUP);
         (void)waitpid(console->child_pid, &status, 0);
     }
     if (console->stream_fd >= 0)
@@ -1116,6 +1319,9 @@ int main(int argc, char **argv)
         return 20;
     if (console.child_pid == 0) {
         close(sockets[0]);
+        /* Everything the shell runs shares one process group, so the console
+         * can hang up on all of it at once when the window closes. */
+        (void)setpgid(0, 0);
         if (dup2(sockets[1], STDIN_FILENO) < 0 ||
             dup2(sockets[1], STDOUT_FILENO) < 0 ||
             dup2(sockets[1], STDERR_FILENO) < 0)
@@ -1124,11 +1330,17 @@ int main(int argc, char **argv)
             close(sockets[1]);
         setenv("ACE_SESSION", session, 1);
         setenv("ACE_CONSOLE_INTERACTIVE", "1", 1);
+        /* This is an Amiga console.device stream, not the host terminal
+         * inherited by the GUI launcher. Unchanged Amiga programs use the
+         * standard TERM value to select their console backend; in particular
+         * Vim's __AROS__ size query is enabled only for TERM=amiga. */
+        setenv("TERM", "amiga", 1);
         execl(shell_path, shell_path, (char *)NULL);
         _exit(20);
     }
     close(sockets[1]);
     console.stream_fd = sockets[0];
+    ace_console_device_set_input_fd(console.device, console.stream_fd);
 
     /* Keep the Wayland app_id, X11 class, launcher desktop file, and
      * icon-theme lookup under the same identity so the panel groups the

@@ -259,7 +259,12 @@ static int native_editor_next_char(FILE *file)
 static int native_input_getc(FILE *file)
 {
     native_load_input_prefix();
-    if (file == stdin && native_input_prefix_position <
+    /* ACE_COMMAND_ARGUMENTS supplies the command line that AmigaDOS
+       ReadArgs() expects to find on a child CLI's cooked Input() stream.
+       A raw terminal program such as unchanged Vim must see the real
+       console bytes immediately; otherwise the synthetic empty argument
+       line's newline is consumed as Vim's first terminal response byte. */
+    if (file == stdin && !native_input_raw && native_input_prefix_position <
         native_input_prefix_length)
         return (unsigned char)native_input_prefix[
             native_input_prefix_position++];
@@ -1456,7 +1461,16 @@ LONG WaitForChar(BPTR handle, LONG timeout)
                     handle != (BPTR)stdin))
         return DOSFALSE;
     native_load_input_prefix();
-    if (native_input_prefix_position < native_input_prefix_length ||
+    /* The synthetic argument line is part of the cooked Input() stream only.
+       A raw-mode reader never consumes it, so counting it here would report
+       a character forever and never reach the select() below -- and a
+       program that polls with WaitForChar(0) to ask whether input is waiting
+       right now, as Vim's char_avail() does before every screen update,
+       would be told "yes" and then block in Read() until a key arrives.
+       Bytes the cooked line editor has already pulled off the descriptor are
+       different: those are real console input, and Read() returns them. */
+    if ((!native_input_raw &&
+         native_input_prefix_position < native_input_prefix_length) ||
         native_editor_line_position < native_editor_line_length)
         return DOSTRUE;
     file = stdin;
@@ -2068,6 +2082,37 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
         return 0;
     if (file == stdin) {
         size_t index;
+
+        /* A raw console Read() is a byte-stream operation.  Reading one
+           byte through stdio and then polling between bytes can return the
+           first byte of an injected console reply by itself when the
+           producer and consumer are scheduled apart.  Unchanged Amiga
+           programs such as Vim expect the complete currently available
+           control reply, so use the underlying descriptor in raw mode. */
+        if (native_input_raw) {
+            ssize_t bytes;
+
+            /* Anything the cooked line editor already read off the
+               descriptor is console input the program has not seen yet --
+               keys typed ahead while the command was starting.  Hand those
+               back before touching the descriptor, and without waiting for
+               more, exactly as a single availability-sized read would. */
+            if (native_editor_line_position < native_editor_line_length) {
+                size_t available = native_editor_line_length -
+                                   native_editor_line_position;
+
+                if (available > (size_t)length)
+                    available = (size_t)length;
+                memcpy(buffer, native_editor_line +
+                       native_editor_line_position, available);
+                native_editor_line_position += available;
+                return (LONG)available;
+            }
+            bytes = read(fileno(file), buffer, (size_t)length);
+            if (bytes < 0)
+                native_ioerr = errno;
+            return (LONG)bytes;
+        }
 
         for (index = 0; index < (size_t)length; index++) {
             /* A raw console read is commonly preceded by WaitForChar(),

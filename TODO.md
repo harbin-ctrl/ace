@@ -43,6 +43,18 @@ all. It was invisible for as long as only five commands used the real parser.
 reintroduction. `tests/filesystem_translation_test.sh` is the natural home: a
 `CD A:` case asserting a prompt non-zero exit under a timeout.
 
+**No standard assigns, so `T:` becomes a filename.** ACE seeds no `SYS:`,
+`C:`, `S:` or `T:`, and an unresolved name is used verbatim, so unmodified Vim
+-- whose Amiga backend defaults `'directory'` and `'backupdir'` to `T:`
+(`os_amiga.h`, `DFLT_DIR`/`DFLT_BDIR`) -- leaves files literally named
+`T:.swp` and `T:.swo` in whatever directory it was started from. Every
+AmigaOS/AROS system has these assigns; any ported program that writes to a
+temporary file will hit the same thing. The work is deciding what each one
+points at under ACE's translated filesystem and whether the broker seeds them
+per session or once, not the assign mechanism itself, which works. Found while
+running Vim on the live console; the rendering and input fixes there did not
+touch it.
+
 **`ace-brokerctl assign` always fails.** `ace-brokerctl assign WORK: /tmp` --
 the form README documents -- exits 1 and says nothing, on this checkout and at
 62c485d before it, so it is not a regression from the parser work. The `Assign`

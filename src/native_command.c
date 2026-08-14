@@ -220,6 +220,31 @@ static const char *command_tail(const char *input)
     return read;
 }
 
+static void native_console_title(const char *title)
+{
+    char sequence[PATH_MAX + 16];
+    const char *interactive = getenv("ACE_CONSOLE_INTERACTIVE");
+    int length;
+
+    /* Piped shells are still valid AROS environments.  GUI title protocol
+       bytes belong only on the live ACE console stream. */
+    if (!interactive || strcmp(interactive, "1") != 0)
+        return;
+    length = snprintf(sequence, sizeof(sequence), "\033]2;%s\007",
+                      title ? title : "ACE Shell");
+    if (length > 0 && (size_t)length < sizeof(sequence)) {
+        (void)Write(Output(), sequence, length);
+        (void)Flush(Output());
+    }
+}
+
+static void native_command_title(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+
+    native_console_title(slash ? slash + 1 : path);
+}
+
 int native_run_background(const char *command)
 {
     char storage[4096];
@@ -312,8 +337,10 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
         return RETURN_FAIL;
     }
     argv[0] = segment->path;
+    native_command_title(segment->path);
     child = fork();
     if (child < 0) {
+        native_console_title("ACE Shell");
         SetIoErr(ERROR_NO_FREE_STORE);
         return RETURN_FAIL;
     }
@@ -326,9 +353,11 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
         _exit(RETURN_FAIL);
     }
     if (waitpid(child, &status, 0) < 0) {
+        native_console_title("ACE Shell");
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return RETURN_FAIL;
     }
+    native_console_title("ACE Shell");
     if (WIFEXITED(status) && WEXITSTATUS(status) == NATIVE_ENDCLI_STATUS) {
         native_request_endcli();
         return RETURN_OK;

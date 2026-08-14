@@ -1,8 +1,10 @@
 #include "console_device_bridge.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <exec/types.h>
 #include <intuition/classes.h>
@@ -18,24 +20,60 @@
 #include "aros_boopsi_runtime.h"
 #include "aros_graphics_runtime.h"
 
+/* One ace-console process owns one console unit.  This sink keeps the
+   imported console classes independent of GTK and the socket transport. */
+static int console_input_fd = -1;
+
+/* Set while the retained stream is being re-rendered.  A repaint is ACE's
+   substitute for the per-cell character map charmapconclass would have kept,
+   so it puts output the program has already produced back through the
+   console a second time.  Rendering that again is the point; answering it
+   again is not, and the difference only shows up on the input side. */
+static int console_replaying;
+
+static void inject_input(const void *data, size_t length)
+{
+    const unsigned char *bytes = data;
+
+    while (length != 0 && console_input_fd >= 0) {
+        ssize_t written = write(console_input_fd, bytes, length);
+
+        if (written < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (written == 0)
+            break;
+        bytes += written;
+        length -= (size_t)written;
+    }
+}
+
 /*
  * con_inject() is how stdconclass.c answers a DSR cursor-position-report
  * request (ESC[6n) by injecting the reply back into the console's input
- * queue -- real behavior, but implemented in console.c's command-port I/O
- * layer, which is deliberately not part of this seam (see HANDOFF.md: ACE's
- * rendering path never goes through DoIO()/BeginIO(), and console.c's own
- * task/message-port machinery is not needed for rendering). A program that
- * sends a cursor-position-report request will not receive a reply; every
- * other escape sequence is unaffected. Documented as a known gap rather
- * than crashing, since a real program legitimately can trigger this path.
+ * queue -- real behavior, but implemented at ACE's shell socket boundary
+ * because the rendering path deliberately does not run console.c's task and
+ * message-port machinery.
+ *
+ * A replay is silent. The program asked its question once and was answered
+ * once; the query bytes are still in the retained stream only because that
+ * stream is how ACE redraws, and re-answering would put a reply the program
+ * never asked for into its input -- in the middle, as it happens, of the
+ * reply it is waiting for, since a repaint is exactly what a resize does.
  */
 VOID con_inject(struct ConsoleBase *console_device, struct ConUnit *unit,
                 const UBYTE *data, LONG size)
 {
     (void)console_device;
     (void)unit;
-    (void)data;
-    (void)size;
+    if (!data || console_replaying)
+        return;
+    if (size < 0)
+        size = (LONG)strlen((const char *)data);
+    if (size > 0)
+        inject_input(data, (size_t)size);
 }
 
 struct ace_console_device {
@@ -51,6 +89,10 @@ struct ace_console_device {
     size_t history_length;
     size_t history_capacity;
     int history_valid;
+    /* The grid the last SIZEWINDOW report described, so a drag that crosses
+       many pixel steps inside one character cell reports once. */
+    int reported_xmax;
+    int reported_ymax;
 };
 
 static const uint32_t default_palette[ACE_GFX_PEN_COUNT] = {
@@ -353,9 +395,11 @@ static void replay_history(struct ace_console_device *device, Object *unit)
 {
     size_t start = replay_start(device);
 
+    console_replaying++;
     if (device->history_length > start)
         write_direct(device, unit, device->history + start,
                      device->history_length - start);
+    console_replaying--;
 }
 
 /*
@@ -546,6 +590,53 @@ int ace_console_device_resize(struct ace_console_device *device,
         replay_history(device, device->unit);
     }
     return 0;
+}
+
+void ace_console_device_set_input_fd(struct ace_console_device *device, int fd)
+{
+    (void)device;
+    console_input_fd = fd;
+}
+
+void ace_console_device_notify_resize(struct ace_console_device *device)
+{
+    struct ConUnit *unit;
+    char report[128];
+    int length;
+
+    if (!device || console_input_fd < 0 || !device->unit)
+        return;
+    unit = (struct ConUnit *)device->unit;
+    if (!CHECK_RAWEVENT((Object *)unit, IECLASS_SIZEWINDOW))
+        return;
+
+    /*
+     * A program answers this report by asking the console for its bounds,
+     * and it reads that answer with a plain read of whatever arrives next.
+     * So a second report sent before the program has asked does not tell it
+     * anything new -- it lands in the answer's place and is read as one, and
+     * a size report is not a valid answer to a bounds request.
+     *
+     * Reporting once per character grid is what keeps that from happening
+     * during a drag, which delivers a resize every frame: the pixel steps in
+     * between change nothing a console program can act on, since a console
+     * program is laid out in cells.
+     */
+    if (unit->cu_XMax == device->reported_xmax &&
+        unit->cu_YMax == device->reported_ymax)
+        return;
+    device->reported_xmax = unit->cu_XMax;
+    device->reported_ymax = unit->cu_YMax;
+
+    /* Match consoleTask's report_raw_event() format: event class, subclass,
+       code, qualifier, pixel X/Y, seconds, and microseconds. */
+    length = snprintf(report, sizeof(report),
+                      "\233%u;0;0;0;%u;%u;0;0|",
+                      (unsigned)IECLASS_SIZEWINDOW,
+                      (unsigned)device->amiga_window.Width,
+                      (unsigned)device->amiga_window.Height);
+    if (length > 0 && (size_t)length < sizeof(report))
+        inject_input(report, (size_t)length);
 }
 
 cairo_surface_t *ace_console_device_surface(struct ace_console_device *device)

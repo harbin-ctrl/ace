@@ -541,10 +541,70 @@ loaded before the first RastPort is created. Also not implemented:
 cursor blink (real console.device does not appear to
 drive this from a timer either -- `stdcon_drawcursor()` only fires on
 explicit `RenderCursor`/`UnRenderCursor` calls tied to command processing and
-window-active state), and DSR cursor-position-report replies
-(`con_inject()` in `console_device_bridge.c` is a documented no-op: a
-program that sends `ESC[6n` gets no reply, since answering it needs the
-task/message-port layer described above).
+window-active state). DSR cursor-position-report replies are now returned:
+The console input side now carries the replies that the imported AROS
+`stdconclass.c` generates. That covers Vim's unchanged `__AROS__`
+`CSI 0 q` window-size query (and the cursor-position report), without
+putting a console task or message-port implementation into ACE. When Vim
+enables raw event 12 with `CSI 12{`, GTK drawing-area resizes are delivered
+back over the same stream in AROS's unchanged `CSI class;subclass;code;
+qualifier;x;y;seconds;microseconds|` format. ACE also consumes a private
+shell title message at the GUI boundary, so foreground commands can name
+the ACE window without sending that private protocol into the AROS console
+parser. Vim itself and the AROS sources remain untouched.
+
+### Three answers ACE was giving that were not true
+
+Running unmodified Vim through the live console turned up three places where
+a seam answered a question confidently and wrongly. None of them looked like
+a bug from the ACE side -- each seam did something reasonable -- and all
+three showed up as the same complaint: Vim mostly works, but the screen
+lags, and the window can be resized without Vim noticing.
+
+**"Yes, there is a character waiting."** `WaitForChar()` counted the
+synthetic argument line `ACE_COMMAND_ARGUMENTS` puts in front of a child's
+cooked `Input()`. A raw reader never consumes that line -- deliberately, so
+that a full-screen program does not read the shell's argument newline as its
+first terminal byte -- so the count never went down and the answer was always
+yes, without ever reaching the `select()` below it. A zero timeout is how a
+program asks whether input is waiting *right now*: Vim's `char_avail()` asks
+it before every screen update, and skips the update when the answer is yes,
+because redrawing is pointless with keys still queued. So every repaint was
+deferred until the *next* keypress, and the `Read()` that followed the false
+yes blocked until one arrived. Pressing `i` appeared to do nothing; the
+`-- INSERT --` for it arrived when the following key was pressed. The
+argument line is now counted only in cooked mode.
+
+**"Here is the console status you asked for."** ACE has no per-cell
+character map -- `charmapconclass` is not in this profile -- so a repaint
+re-renders the retained output stream. That stream still contains any status
+query the program made, and re-rendering re-fired `con_inject()`, sending a
+reply the program never asked for. Harmless anywhere except where it
+actually happens: a grid change is what triggers a repaint, and a grid change
+is also what makes Vim ask for the new console bounds. Vim's unchanged
+`mch_get_shellsize()` writes `CSI 0 q` and then reads whatever arrives next,
+so it read the stale replay reply, or the size report queued behind it,
+`sscanf()` failed, and Vim concluded it was not on a console at all --
+`term_console = FALSE`, 80x24, and no further resize handling for the rest of
+the session. One resize was enough to disable resizing permanently. Replays
+are now silent, which is the honest position: the question was asked once and
+answered once.
+
+**"The window changed size" -- repeatedly.** The same read makes the resize
+report itself dangerous in quantity. A drag delivers a resize every frame,
+and every report provokes a bounds query whose answer is read as the next
+thing on the stream -- so a second report sent before the program asks
+arrives in the answer's place, and a size report is not a valid answer. The
+report is now sent once per character grid rather than once per pixel step,
+which is also the only granularity a program laid out in cells can act on.
+
+Two smaller ones from the same session: the console sent no Escape and no
+Ctrl chord except `Ctrl-C`/`Ctrl-D`, because `gdk_keyval_to_unicode()` maps
+Escape to nothing and the remaining Ctrl keys were swallowed; and closing the
+window signalled only the shell, so a full-screen program the shell was
+waiting on was left reading a console that could never produce another byte,
+spinning at full CPU forever. The shell and everything it runs are now one
+process group, and the console hangs up on the group.
 
 ### Two ways ACE could take unmodified AROS code somewhere it cannot go
 

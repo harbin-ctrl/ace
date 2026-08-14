@@ -7,9 +7,12 @@
 #include "aros_graphics_runtime.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const char *const font_candidates[] = {
     "Liberation Mono", "DejaVu Sans Mono", "monospace", NULL
@@ -235,6 +238,74 @@ int main(void)
     assert(frame_has_ink(frame, width, height, 0x123456u));
     assert(frame_pixel(frame, width, width - 2, height - 2) == 0x123456u);
     free(frame);
+
+    /* The real AROS stdconclass answers Vim's unchanged __AROS__ size query
+     * by injecting the response into the console input stream.  The same
+     * stream carries raw SIZEWINDOW reports after Vim enables event 12. */
+    {
+        int input_pipe[2];
+        char reply[128] = {0};
+        ssize_t length;
+
+        assert(pipe(input_pipe) == 0);
+        /* So "nothing else was injected" can be asserted, not just waited
+         * on. Every injection below is synchronous with the call that
+         * causes it, so anything pending is readable by the time it is. */
+        assert(fcntl(input_pipe[0], F_SETFL, O_NONBLOCK) == 0);
+        ace_console_device_set_input_fd(device, input_pipe[1]);
+        ace_console_device_write(device, "\2330 q", 4);
+        length = read(input_pipe[0], reply, sizeof(reply) - 1);
+        assert(length > 0);
+        reply[length] = '\0';
+        /* The exact cell metrics come from the selected font, so verify the
+         * response protocol here; the rendering assertions above already
+         * exercise the public pixel-to-cell geometry path. */
+        assert(reply[0] == '\233');
+        assert(strstr(reply, "\2331;1;") == reply);
+        assert(strstr(reply, " r") != NULL);
+
+        ace_console_device_write(device, "\033[12{", 5);
+        assert(ace_console_device_resize(device, width - 20, height - 20) == 0);
+        ace_console_device_notify_resize(device);
+        memset(reply, 0, sizeof(reply));
+        length = read(input_pipe[0], reply, sizeof(reply) - 1);
+        assert(length > 0);
+        reply[length] = '\0';
+        assert(reply[0] == '\233');
+        assert(strstr(reply, ";0;0;0;") != NULL);
+        assert(reply[length - 1] == '|');
+        /*
+         * The raw event has to be the whole of it. Changing the grid
+         * repaints, and a repaint re-renders the retained stream -- which
+         * still holds the size query above. Rendering that again is the
+         * point of keeping the stream; answering it again is not. The
+         * duplicate reply would arrive unasked, and land in the place of the
+         * reply to the query this very report provokes, where a program
+         * reading its console bounds would read a size report instead and
+         * conclude it is not on a console at all.
+         */
+        assert(strncmp(reply, "\23312;", 4) == 0);
+        assert(strstr(reply, " r") == NULL);
+
+        /* One report per character grid. The pixel steps a drag delivers in
+         * between change nothing a program laid out in cells can act on, and
+         * a second report would be read as the answer to the first. */
+        ace_console_device_notify_resize(device);
+        assert(read(input_pipe[0], reply, sizeof(reply) - 1) < 0);
+        assert(errno == EAGAIN || errno == EWOULDBLOCK);
+        assert(ace_console_device_resize(device, width, height) == 0);
+        ace_console_device_notify_resize(device);
+        memset(reply, 0, sizeof(reply));
+        length = read(input_pipe[0], reply, sizeof(reply) - 1);
+        assert(length > 0);
+        reply[length] = '\0';
+        assert(strncmp(reply, "\23312;", 4) == 0);
+        assert(reply[length - 1] == '|');
+
+        ace_console_device_set_input_fd(device, -1);
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+    }
 
     ace_console_device_close(device);
     return 0;

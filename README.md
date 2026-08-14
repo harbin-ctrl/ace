@@ -374,6 +374,27 @@ is hidden while that advertisement is live and returns if it is lost.
 Otherwise the same menu remains below the title bar.
 AROS Workbench and clipboard extensions remain outside this profile.
 
+The shell also supplies the terminal contracts used by unchanged Amiga
+programs: console status replies are returned to the program's input stream,
+and a program that enables AROS raw resize event 12 receives the original
+console-device event format whenever the ACE window is resized -- once per
+character grid, since that is the granularity a console program is laid out
+in and a second report would be read in place of the answer to the bounds
+query the first one provokes. Redrawing the console after a resize replays
+the retained output stream, and a replay is silent: a status query in that
+stream was answered when the program made it, and answering it again would
+put a reply into the program's input that it never asked for. Foreground
+commands update the ACE title bar through an ACE-private shell boundary; the
+private bytes are removed before the remaining output reaches the AROS
+console parser.
+
+The keyboard carries what a full-screen program needs: Escape, every Ctrl
+chord, the arrows and their shifted forms, the 101-key block, and F1-F10, all
+as the console.device sequences an Amiga program's own key table is written
+against. Closing the window hangs up on the shell and everything it is
+running, so a program the shell is waiting on is not left reading a console
+that no longer exists.
+
 ## BOOPSI
 
 The real AROS BOOPSI implementation is now built from unmodified AROS source:

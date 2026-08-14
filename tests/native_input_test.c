@@ -30,6 +30,29 @@ int main(void)
     assert(dup2(descriptors[0], STDIN_FILENO) == STDIN_FILENO);
     close(descriptors[0]);
     setenv("ACE_CONSOLE_INTERACTIVE", "1", 1);
+    /* The shell exports an argument line for every command it runs, empty
+       one included -- AmigaDOS leaves that line in the child's cooked
+       Input() for ReadArgs() to find. */
+    setenv("ACE_COMMAND_ARGUMENTS", "", 1);
+
+    /* A raw reader is not a ReadArgs() caller and never consumes that line,
+       so the line must not be reported as input waiting either. A zero
+       timeout asks whether a character is available at this instant, which
+       is how a full-screen program decides it can stop and redraw; claiming
+       one is there leaves the program's next Read() blocking on a keypress
+       and its screen unpainted until one arrives. */
+    assert(SetMode(Input(), 1) == DOSTRUE);
+    assert(WaitForChar(Input(), 0) == DOSFALSE);
+    write_all(descriptors[1], "x", 1);
+    assert(WaitForChar(Input(), 1000000) != 0);
+    assert(Read(Input(), raw, sizeof(raw)) == 1);
+    assert(raw[0] == 'x');
+    assert(SetMode(Input(), 0) == DOSTRUE);
+
+    /* Cooked input still finds it: a command with no arguments reads the
+       empty argument line, which is what makes ReadArgs() report a missing
+       /A argument rather than eating the next command. */
+    assert(FGetC(Input()) == '\n');
 
     /* Cooked input is edited in the process that owns Input(), and the
        completed line is what FGetC exposes to the shell. */
