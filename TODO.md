@@ -72,5 +72,8 @@ needed only a temporary forward declaration for `devices/conunit.h` because
 the AROS `__AROS__` path does not inspect `struct ConUnit`. The upstream source
 also has a one-line `get_fib()` bare-return warning that was corrected only in
 the temporary checkout. The next step is to link Vim's portable core and let
-the linker enumerate the remaining DOS calls (`DateStamp`, `Rename`, and
-`Info`, among others) rather than guessing at them. `SetProtection` is done.
+The normal-feature core link probe is now done: after ACE's DOS, broker,
+process, and pattern objects are included, the unresolved set is `Delay`,
+`SetWindowTitles`, `mch_get_cmd_output_direct`, `vim_fsync`, and `xdl_diff`.
+`Info`, `DateStamp`, and `Rename` do not appear in this current Vim boundary.
+`SetProtection` is done.

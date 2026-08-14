@@ -327,6 +327,15 @@ current Vim source has one unrelated GCC error in `get_fib()` (a bare return
 from a pointer-returning function); the validation corrected that line only in
 the temporary checkout. No Vim source or executable is in the ACE tree yet.
 
+The follow-up link probe compiled Vim's normal-feature core and linked it with
+ACE's DOS path, broker, process, and pattern-matching objects. The remaining
+undefined symbols are exactly `Delay`, `SetWindowTitles`,
+`mch_get_cmd_output_direct`, `vim_fsync`, and `xdl_diff`. The first two are
+small ACE/Amiga platform seams; the next two are Vim platform helpers; and
+`xdl_diff` is resolved by adding Vim's six xdiff objects, which are otherwise
+independent of ACE. Contrary to the earlier guess, this current Vim source did
+not require `Info`, `DateStamp`, or `Rename` at the link boundary.
+
 One trap worth knowing, since it wasted time twice in a row: the Makefile is
 not a prerequisite of anything it builds, so changing a rule's recipe does not
 rebuild the object. Both times the symptom was a fix that appeared not to
