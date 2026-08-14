@@ -663,6 +663,61 @@ static int normalize_mapped_path(const char *base, const char *path,
     return 0;
 }
 
+/*
+ * An Amiga volume is one filesystem. Linux will happily mount a second
+ * filesystem partway down a first one, but on this side that mount is a
+ * separate volume with a name of its own, so resolution must stop at the
+ * boundary rather than walk through it: "sda2:proc" is procfs reached
+ * through the wrong volume, and PROC: is how procfs is addressed. Nothing
+ * becomes unreachable, because every mount the broker knows about is
+ * published under its own name in the DOS device list.
+ *
+ * The comparison is against the nearest ancestor that exists, because the
+ * caller may be naming an object it is about to create -- MakeDir() and
+ * Open() for write both resolve a path before there is anything there.
+ *
+ * The mount point's own directory is refused along with everything under
+ * it. That directory really does belong to this volume, and its contents as
+ * this volume sees them are whatever the mount obscures, but an unprivileged
+ * process cannot read underneath a mount: the kernel locks that view
+ * deliberately. Refusing is the honest answer until ACE can see through it.
+ */
+static int within_base_filesystem(const char *base, const char *path)
+{
+    struct stat base_info;
+    struct stat probe_info;
+    char probe[PATH_MAX];
+
+    if (stat(base, &base_info) != 0)
+        return -1;
+    if (strlen(path) >= sizeof(probe)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(probe, path);
+    while (stat(probe, &probe_info) != 0) {
+        char *slash;
+
+        if (errno != ENOENT && errno != ENOTDIR)
+            return -1;
+        slash = strrchr(probe, '/');
+        if (!slash || slash == probe)
+            return 0;
+        *slash = '\0';
+        /* Trimmed back to the volume root: same filesystem by definition. */
+        if (strcmp(probe, base) == 0)
+            return 0;
+    }
+    if (probe_info.st_dev != base_info.st_dev) {
+        /* From this volume's point of view the object is simply not here,
+           which is what ERROR_OBJECT_NOT_FOUND says. Reporting a crossing
+           would describe a Linux arrangement AmigaDOS has no word for. */
+        errno = ENOENT;
+        return -1;
+    }
+    return 0;
+}
+
 static int normalize_mapped_path_beneath(const char *base, const char *path,
                                          char *result, size_t result_size)
 {
@@ -679,7 +734,7 @@ static int normalize_mapped_path_beneath(const char *base, const char *path,
             return -1;
         }
     }
-    return 0;
+    return within_base_filesystem(base, result);
 }
 
 static struct assign_entry *find_assign(struct broker_session *session,
