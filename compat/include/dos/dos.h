@@ -30,6 +30,7 @@
 #define ERROR_NO_FREE_STORE     103
 #define ERROR_BAD_TEMPLATE      114
 #define ERROR_REQUIRED_ARG_MISSING 116
+#define ERROR_KEY_NEEDS_ARG    117
 #define ERROR_LINE_TOO_LONG     120
 #define ERROR_TOO_MANY_LEVELS   124
 #define ERROR_TOO_MANY_ARGS      118
@@ -42,6 +43,7 @@
 #define ERROR_OBJECT_EXISTS     203
 #define ERROR_DEVICE_NOT_MOUNTED 218
 #define ERROR_DIR_NOT_FOUND     204
+#define ERROR_RENAME_ACROSS_DEVICES 215
 #define ERROR_DISK_FULL         221
 #define ERROR_NO_MORE_ENTRIES   232
 #define ERROR_NOT_IMPLEMENTED   236
@@ -58,6 +60,10 @@
 #define DOS_EXALLCONTROL 3
 
 #define BNULL ((BPTR)0)
+
+#define LOCK_SAME         0
+#define LOCK_SAME_VOLUME  1
+#define LOCK_DIFFERENT   (-1)
 
 /* Real, from dos/dosextens.h: only the one field the pattern-matching
    engine reads (DOSBase->dl_Root->rn_Flags & RNF_WILDSTAR, whether '*' is
@@ -208,6 +214,8 @@ struct CSource;
 #define ITEM_NOTHING 0
 #define ITEM_UNQUOTED 1
 #define ITEM_QUOTED 2
+#define ITEM_ERROR (-1)
+#define ITEM_EQUAL (-2)
 
 BPTR AllocDosObject(LONG type, APTR tags);
 void FreeDosObject(LONG type, APTR object);
@@ -242,6 +250,8 @@ BPTR Input(void);
 BPTR Open(CONST_STRPTR name, LONG mode);
 LONG Close(BPTR file);
 LONG DeleteFile(CONST_STRPTR name);
+LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name);
+LONG SameLock(BPTR lock1, BPTR lock2);
 BOOL IsInteractive(BPTR file);
 LONG FPutC(BPTR file, LONG character);
 LONG FPuts(BPTR file, CONST_STRPTR string);
@@ -249,6 +259,7 @@ STRPTR FGets(BPTR file, STRPTR buffer, LONG length);
 LONG Flush(BPTR file);
 LONG IoErr(void);
 void SetIoErr(LONG error);
+LONG Write(BPTR file, CONST_APTR buffer, LONG length);
 LONG Fault(LONG error, CONST_STRPTR header, STRPTR buffer, LONG length);
 BOOL PrintFault(LONG error, CONST_STRPTR header);
 LONG Printf(CONST_STRPTR format, ...);
@@ -259,6 +270,7 @@ void CopyMem(CONST_APTR source, APTR destination, ULONG length);
 STRPTR FilePart(CONST_STRPTR path);
 STRPTR PathPart(CONST_STRPTR path);
 BOOL AddPart(STRPTR dirname, CONST_STRPTR filename, ULONG size);
+STRPTR stccpy(STRPTR destination, CONST_STRPTR source, LONG length);
 LONG PutStr(CONST_STRPTR string);
 LONG FGetC(BPTR file);
 LONG Read(BPTR file, APTR buffer, LONG length);

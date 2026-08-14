@@ -51,6 +51,8 @@ AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
 AROS_ASSIGN_SRC := $(AROS_ROOT)/workbench/c/Assign.c
+AROS_TYPE_SRC := $(AROS_ROOT)/workbench/c/Type.c
+AROS_RENAME_SRC := $(AROS_ROOT)/workbench/c/Rename.c
 AROS_DOSPATH_DIR := $(AROS_ROOT)/rom/dos
 AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
@@ -142,10 +144,10 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
 INSTALL_BINS := Echo CD PathPart Dir Fault Ask Get Getenv Set Unset Alias Unalias \
-                FailAt Why Prompt MakeDir EndCLI Assign LNX ace-shell ace-user-shell ace-console NewCLI \
+                FailAt Why Prompt MakeDir EndCLI Assign Type Rename LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -210,9 +212,41 @@ $(BUILD)/aros-dos-freedeviceproc.o: $(AROS_DOSPATH_DIR)/freedeviceproc.c compat/
 	    -DFreeDeviceProc=ace_aros_FreeDeviceProc -include ace_dos_path_intern.h \
 	    -c $< -o $@
 
+$(BUILD)/aros-dos-readargs.o: $(AROS_DOSPATH_DIR)/readargs.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DReadArgs=ace_aros_ReadArgs -DFreeArgs=ace_aros_FreeArgs \
+	    -DFindArg=ace_aros_FindArg -DStrToLong=ace_aros_StrToLong \
+	    -include ace_dos_path_intern.h -c $< -o $@
+
+$(BUILD)/aros-dos-readitem.o: $(AROS_DOSPATH_DIR)/readitem.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
+$(BUILD)/aros-dos-freeargs.o: $(AROS_DOSPATH_DIR)/freeargs.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DFreeArgs=ace_aros_FreeArgs -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
+$(BUILD)/aros-dos-findarg.o: $(AROS_DOSPATH_DIR)/findarg.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DFindArg=ace_aros_FindArg \
+	    -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
+$(BUILD)/aros-dos-strtolong.o: $(AROS_DOSPATH_DIR)/strtolong.c compat/include/ace_dos_path_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPATH_CFLAGS) $(AROS_DOSPATH_INCLUDES) \
+	    -DStrToLong=ace_aros_StrToLong -include ace_dos_path_intern.h \
+	    -c $< -o $@
+
 $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-dos-getdeviceproc.o \
-                    $(BUILD)/aros-dos-freedeviceproc.o | $(BUILD)
+                    $(BUILD)/aros-dos-freedeviceproc.o \
+                    $(BUILD)/aros-dos-readargs.o \
+                    $(BUILD)/aros-dos-readitem.o \
+                    $(BUILD)/aros-dos-freeargs.o \
+                    $(BUILD)/aros-dos-findarg.o \
+                    $(BUILD)/aros-dos-strtolong.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
 
 $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
@@ -354,6 +388,12 @@ $(BUILD)/CD.o: $(AROS_CD_SRC) | $(BUILD)
 $(BUILD)/PathPart.o: $(AROS_PATHPART_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
+$(BUILD)/Type.o: $(AROS_TYPE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/Rename.o: $(AROS_RENAME_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
 $(BUILD)/aros-dos-%.o: $(AROS_DOSPAT_DIR)/%.c compat/include/ace_dos_intern.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
 
@@ -409,6 +449,12 @@ $(BUILD)/CD: $(BUILD)/CD.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/nat
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/PathPart: $(BUILD)/PathPart.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Type: $(BUILD)/Type.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Rename: $(BUILD)/Rename.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o

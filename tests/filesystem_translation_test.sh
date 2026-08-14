@@ -10,8 +10,11 @@ mapping_long_component=$(awk 'BEGIN { for (i = 0; i < 150; i++) printf "l" }')
 mapping_long_dir="$mapping_test_dir/$mapping_long_component"
 mapping_union_first="$mapping_test_dir/union-first"
 mapping_union_second="$mapping_test_dir/union-second"
+rename_source="$mapping_test_dir/rename-source"
+rename_target="$mapping_test_dir/rename-target"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second"
+touch "$rename_source"
 
 cd "$repo_dir"
 
@@ -30,6 +33,8 @@ cleanup()
                 "$socket_path.pid" "$socket_path.start.lock"; do
         [ -e "$file" ] && unlink "$file" 2>/dev/null || true
     done
+    [ -e "$rename_source" ] && unlink "$rename_source" 2>/dev/null || true
+    [ -e "$rename_target" ] && unlink "$rename_target" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
           "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
@@ -101,6 +106,33 @@ union_output=$(printf 'Assign ACE_UNION: %s %s\nCD ACE_UNION:only-second\nCD\nEn
 case "$union_output" in
     *"$union_second/only-second"*) ;;
     *) echo "multi-assign union did not search its later target" >&2; exit 1 ;;
+esac
+
+# Type and Rename are the unmodified AROS commands. Type exercises the
+# existing Open/Read/Write seam; Rename exercises the host Rename/SameLock
+# seam and the ReadArgs /M trailing-required-argument rule.
+readme_name=$(control name "$repo_dir/README.md")
+type_output=$(printf 'Type %s\nEndCLI\n' "$readme_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-type-test "$repo_dir/build/ace-user-shell")
+case "$type_output" in
+    *"ACE"*"AROS"*) ;;
+    *) echo "Type did not print the translated README path" >&2; exit 1 ;;
+esac
+rename_source_name=$(control name "$rename_source")
+rename_parent_name=$(control name "$mapping_test_dir")
+rename_target_name="$rename_parent_name/rename-target"
+rename_output=$(printf 'Rename %s AS=%s QUIET\nEndCLI\n' \
+    "$rename_source_name" "$rename_target_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-rename-test "$repo_dir/build/ace-user-shell")
+[ -e "$rename_target" ]
+[ ! -e "$rename_source" ]
+case "$rename_output" in
+    *"required argument missing"*|*"object not found"*)
+        echo "Rename failed through the AROS command seam" >&2
+        exit 1
+        ;;
 esac
 
 broker_pid=$(sed -n '1p' "$socket_path.lock")

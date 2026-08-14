@@ -1,6 +1,8 @@
 #ifndef DOS_INTERN_H
 #define DOS_INTERN_H
 
+#include <stdio.h>
+
 /*
  * Compatibility boundary for the real AROS DOS path dispatcher.  The
  * imported getdeviceproc.c/freedeviceproc.c sources need the DOS-private
@@ -17,6 +19,13 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/utility.h>
+
+struct DAList {
+    STRPTR *ArgBuf;
+    UBYTE *StrBuf;
+    STRPTR *MultVec;
+    BOOL FreeRDA;
+};
 
 #define ASSERT_VALID_PROCESS(process) do { (void)(process); } while (0)
 

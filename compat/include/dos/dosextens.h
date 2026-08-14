@@ -91,15 +91,23 @@ struct CSource {
    owning object that can be released by FreeDosObject(DOS_RDARGS). */
 struct RDArgs {
     struct CSource RDA_Source;
-    APTR RDA_Buffer;
-    ULONG RDA_BufferSize;
+    IPTR RDA_DAList;
+    UBYTE *RDA_Buffer;
+    LONG RDA_BufSiz;
+    STRPTR RDA_ExtHelp;
+    LONG RDA_Flags;
     IPTR *RDA_Arguments;
     ULONG RDA_ArgumentCount;
     APTR RDA_Values[32];
     UBYTE RDA_Multiple[32];
     UBYTE RDA_Owned;
-    STRPTR RDA_ExtHelp;
+    ULONG RDA_BufferSize;
 };
+
+#define RDAF_STDIN  (1L << 0)
+#define RDAF_NOALLOC (1L << 1)
+#define RDAF_NOPROMPT (1L << 2)
+#define RDAF_ALLOCATED_BY_READARGS (1L << 31)
 
 /* DosList is private inside AROS dos.library, but Assign.c uses the public
  * DosList API to inspect and mutate assignments.  ACE represents the nodes

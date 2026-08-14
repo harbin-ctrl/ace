@@ -17,12 +17,17 @@
 
 #define AROS_LH0(rt, name, bt, bn, lvo, lib) rt name(void)
 #define AROS_LH1(rt, name, a1, bt, bn, lvo, lib) rt name(a1)
+#define AROS_LH1I(rt, name, a1, bt, bn, lvo, lib) rt name(a1)
 #define AROS_LH2(rt, name, a1, a2, bt, bn, lvo, lib) rt name(a1, a2)
+#define AROS_LH2I(rt, name, a1, a2, bt, bn, lvo, lib) rt name(a1, a2)
 #define AROS_LH3(rt, name, a1, a2, a3, bt, bn, lvo, lib) rt name(a1, a2, a3)
 #define AROS_LH4(rt, name, a1, a2, a3, a4, bt, bn, lvo, lib) \
     rt name(a1, a2, a3, a4)
 #define AROS_LH5(rt, name, a1, a2, a3, a4, a5, bt, bn, lvo, lib) \
     rt name(a1, a2, a3, a4, a5)
+
+#define AROS_NTLH0(rt, name, bt, bn, lvo, lib) rt name(void)
+#define AROS_NTLH1(rt, name, a1, bt, bn, lvo, lib) rt name(a1)
 
 #define AROS_LIBFUNC_INIT
 #define AROS_LIBFUNC_EXIT

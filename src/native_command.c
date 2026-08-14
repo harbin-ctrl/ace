@@ -220,6 +220,8 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     if (child == 0) {
         if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
             (void)chdir(cwd);
+        if (setenv("ACE_COMMAND_ARGUMENTS", arguments, 1) != 0)
+            _exit(RETURN_FAIL);
         execv(segment->path, argv);
         _exit(RETURN_FAIL);
     }
