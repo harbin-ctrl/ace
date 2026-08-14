@@ -45,6 +45,18 @@ apart silently, since the older set keeps working perfectly well and only the
 newer one stops being reached. `make install` warns when it has just installed
 a copy that `PATH` will not select.
 
+Vim is an optional external-source build. Build it from an untouched Vim
+checkout, then install it beside ACE's shell and runtime:
+
+```sh
+make CC='ccache cc' vim VIM_SRC=/path/to/untouched/vim
+make install-vim
+```
+
+Use `./build/ace-shell` when testing an uninstalled checkout; use `ace-shell`
+only after `make install` and `make install-vim` have installed the matching
+set of companions.
+
 For testing, the project also provides quiet lifecycle commands:
 
 ```sh
@@ -309,6 +321,10 @@ source ./broker-start
 export ACE_SESSION=main-shell
 ./build/ace-shell
 ```
+
+With a Vim build in the checkout, type `vim` in the ACE Shell window. With an
+installed Vim, `make install-vim` places the executable and its `runtime/`
+directory beside the installed ACE shell.
 
 Running `ace-shell` opens a separate console window and returns to
 the launching terminal. The window runs the original AROS `Shell.c` through

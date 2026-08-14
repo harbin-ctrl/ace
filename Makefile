@@ -658,8 +658,18 @@ install: all
 	        echo "warning: installed $(BINDIR)/ace-shell, but PATH finds $$found first."; \
 	        echo "         Typing ace-shell runs that older install, not this one."; \
 	        echo "         Remove it, or put $(BINDIR) earlier on PATH."; \
-	    fi; \
+		fi; \
 	fi
+
+# Vim is built from an external checkout and is therefore intentionally not
+# part of the ordinary ACE install set. When it has been built, install it
+# beside ace-user-shell so the AROS command loader accepts it as a companion.
+install-vim: vim
+	@test -f "$(BUILD)/runtime/defaults.vim" || \
+		(echo "use: make vim VIM_SRC=/path/to/untouched/vim" >&2; exit 2)
+	$(INSTALL) -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(BINDIR)/runtime
+	$(INSTALL) -m 0755 $(BUILD)/vim $(DESTDIR)$(BINDIR)/vim
+	cp -a $(BUILD)/runtime/. $(DESTDIR)$(BINDIR)/runtime/
 
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
@@ -697,4 +707,4 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install vim test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics

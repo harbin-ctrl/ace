@@ -25,6 +25,12 @@ nothing was reading. Hence the default prefix, the absolute path in the
 launcher, and the warning `make install` prints when `PATH` will not select
 what it just installed.
 
+Vim is an optional companion because it is built from an external checkout.
+After `make CC='ccache cc' vim VIM_SRC=/path/to/untouched/vim`, run
+`make install-vim` to place `vim` and its packaged `runtime/` beside the
+installed ACE shell. Otherwise test the checkout with `./build/ace-shell`,
+not the older `ace-shell` found elsewhere on `PATH`.
+
 ## Current state
 
 ACE is committed on `main` and pushed to `https://github.com/harbin-ctrl/ace`.
