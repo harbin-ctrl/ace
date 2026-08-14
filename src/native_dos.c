@@ -94,6 +94,11 @@ static void native_init_stdio_handles(void)
 {
     if (native_stdio_initialized)
         return;
+    /* RunCommand() injects a command's arguments ahead of the existing
+       Input() stream.  Keep the host stream unbuffered so the shell cannot
+       read ahead into the next command before a child handles ReadArgs('?').
+       The real AROS input handle has the same packet-level property. */
+    (void)setvbuf(stdin, NULL, _IONBF, 0);
     native_stdin_handle.amiga.fh_Pos = 0;
     native_stdin_handle.amiga.fh_End = INT_MAX / 2;
     native_stdin_handle.stream = stdin;
@@ -117,11 +122,12 @@ static void native_load_input_prefix(void)
     if (!arguments || !*arguments)
         return;
     native_input_prefix_length = strlen(arguments);
-    if (native_input_prefix_length + 1 >= sizeof(native_input_prefix)) {
-        native_input_prefix_length = sizeof(native_input_prefix) - 2;
-    }
+    if (native_input_prefix_length >= sizeof(native_input_prefix) - 1)
+        native_input_prefix_length = sizeof(native_input_prefix) - 1;
     memcpy(native_input_prefix, arguments, native_input_prefix_length);
-    native_input_prefix[native_input_prefix_length++] = '\n';
+    if (native_input_prefix_length == 0 ||
+        native_input_prefix[native_input_prefix_length - 1] != '\n')
+        native_input_prefix[native_input_prefix_length++] = '\n';
 }
 
 static int native_input_getc(FILE *file)

@@ -12,9 +12,12 @@ mapping_union_first="$mapping_test_dir/union-first"
 mapping_union_second="$mapping_test_dir/union-second"
 rename_source="$mapping_test_dir/rename-source"
 rename_target="$mapping_test_dir/rename-target"
+rename_question_source="$mapping_test_dir/rename-question-source"
+rename_question_target="$mapping_test_dir/rename-question-target"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second"
 touch "$rename_source"
+touch "$rename_question_source"
 
 cd "$repo_dir"
 
@@ -35,6 +38,8 @@ cleanup()
     done
     [ -e "$rename_source" ] && unlink "$rename_source" 2>/dev/null || true
     [ -e "$rename_target" ] && unlink "$rename_target" 2>/dev/null || true
+    [ -e "$rename_question_source" ] && unlink "$rename_question_source" 2>/dev/null || true
+    [ -e "$rename_question_target" ] && unlink "$rename_question_target" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
           "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
@@ -131,6 +136,19 @@ rename_output=$(printf 'Rename %s AS=%s QUIET\nEndCLI\n' \
 case "$rename_output" in
     *"required argument missing"*|*"object not found"*)
         echo "Rename failed through the AROS command seam" >&2
+        exit 1
+        ;;
+esac
+rename_question_source_name=$(control name "$rename_question_source")
+rename_question_output=$(printf 'Rename ?\nFROM=%s AS=%s QUIET\nEndCLI\n' \
+    "$rename_question_source_name" "$rename_parent_name/rename-question-target" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-rename-question-test "$repo_dir/build/ace-user-shell")
+[ -e "$rename_question_target" ]
+[ ! -e "$rename_question_source" ]
+case "$rename_question_output" in
+    *"required argument missing"*|*"object not found"*)
+        echo "Rename '?' did not read its second argument line" >&2
         exit 1
         ;;
 esac
