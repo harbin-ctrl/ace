@@ -293,7 +293,7 @@ BPTR SelectInput(BPTR file);
 BPTR SelectOutput(BPTR file);
 LONG ReadItem(STRPTR buffer, LONG size, struct CSource *source);
 LONG FindArg(CONST_STRPTR keywords, CONST_STRPTR argument);
-BOOL StrToLong(CONST_STRPTR string, LONG *value);
+LONG StrToLong(CONST_STRPTR string, LONG *value);
 LONG Seek(BPTR file, LONG position, LONG mode);
 void SetProgramName(CONST_STRPTR name);
 LONG GetProgramName(STRPTR buffer, LONG length);

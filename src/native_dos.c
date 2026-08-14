@@ -652,14 +652,14 @@ void CloseLibrary(struct Library *library)
  * outside, and they call them by their real names, which is what these are.
  */
 LONG ace_aros_FindArg(CONST_STRPTR keywords, CONST_STRPTR argument);
-BOOL ace_aros_StrToLong(CONST_STRPTR string, LONG *value);
+LONG ace_aros_StrToLong(CONST_STRPTR string, LONG *value);
 
 LONG FindArg(CONST_STRPTR keywords, CONST_STRPTR argument)
 {
     return ace_aros_FindArg(keywords, argument);
 }
 
-BOOL StrToLong(CONST_STRPTR string, LONG *value)
+LONG StrToLong(CONST_STRPTR string, LONG *value)
 {
     return ace_aros_StrToLong(string, value);
 }
