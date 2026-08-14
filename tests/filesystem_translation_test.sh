@@ -8,6 +8,11 @@ mapping_test_dir=$(mktemp -d "$repo_dir/.ace-filesystem-mapping.XXXXXX")
 mapping_colon_dir="$mapping_test_dir/Hi:This:is:a:long:filename:blahblahblah"
 mapping_long_component=$(awk 'BEGIN { for (i = 0; i < 150; i++) printf "l" }')
 mapping_long_dir="$mapping_test_dir/$mapping_long_component"
+mapping_dot_dir="$mapping_test_dir/:"
+mapping_dotdot_dir="$mapping_test_dir/::"
+mapping_dot_create_parent="$mapping_test_dir/ace-dot-names"
+mapping_dot_create_dir="$mapping_dot_create_parent/:"
+mapping_dotdot_create_dir="$mapping_dot_create_parent/::"
 mapping_union_first="$mapping_test_dir/union-first"
 mapping_union_second="$mapping_test_dir/union-second"
 rename_source="$mapping_test_dir/rename-source"
@@ -19,7 +24,8 @@ delete_dir="$mapping_test_dir/delete-tree"
 delete_protected="$mapping_test_dir/delete-protected"
 note_dir="$mapping_test_dir/filenote"
 note_file="$note_dir/noted.txt"
-mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
+mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_dot_dir" \
+      "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
       "$delete_dir" "$delete_dir/nested" "$note_dir"
 touch "$rename_source"
@@ -60,8 +66,10 @@ cleanup()
     chmod u+w "$delete_protected" 2>/dev/null || true
     rm -rf "$delete_dir" "$delete_protected" "$note_dir" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
-    rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
-          "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
+    rmdir "$mapping_dot_create_dir" "$mapping_dotdot_create_dir" \
+          "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
+          "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
+          "$mapping_long_dir" "$mapping_dot_dir" "$mapping_dotdot_dir" \
           "$mapping_test_dir" \
           2>/dev/null || true
 }
@@ -82,6 +90,32 @@ root_name=$(control name "$repo_dir")
 volume_name=${root_name%%:*}:
 volume_root=$(control resolve "$volume_name")
 [ "$(control resolve :)" = "$volume_root" ]
+
+# A slash is AmigaDOS's parent-directory syntax. Its depth is handled before
+# component mapping, while . and .. are ordinary AmigaDOS names represented
+# by the otherwise-illegal Linux components : and ::.
+control cd "$root_name"
+[ "$(control resolve /)" = "$(dirname "$repo_dir")" ]
+[ "$(control resolve //)" = "$(dirname "$(dirname "$repo_dir")")" ]
+mapped_dot=$(control name "$mapping_dot_dir")
+mapped_dotdot=$(control name "$mapping_dotdot_dir")
+[ "${mapped_dot##*/}" = . ]
+[ "${mapped_dotdot##*/}" = .. ]
+[ "$(control resolve "$mapped_dot")" = "$mapping_dot_dir" ]
+[ "$(control resolve "$mapped_dotdot")" = "$mapping_dotdot_dir" ]
+
+# The reverse direction is equally important: creating the two AmigaDOS
+# names creates their fixed Linux spellings, rather than generic ^ mappings.
+dot_create_parent_name=$(control name "$mapping_dot_create_parent")
+dot_create_output=$(printf 'MakeDir %s/.\nMakeDir %s/..\nEndCLI\n' \
+    "$dot_create_parent_name" "$dot_create_parent_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=filesystem-dot-create-test "$repo_dir/build/ace-user-shell")
+[ -d "$mapping_dot_create_dir" ]
+[ -d "$mapping_dotdot_create_dir" ]
+case "$dot_create_output" in
+    *"Error"*|*"error"*) echo "could not create mapped dot names" >&2; exit 1 ;;
+esac
 
 volume_relative=${root_name#*:}
 volume_first=${volume_relative%%/*}
@@ -393,7 +427,7 @@ if [ -d "$volume_root/$volume_first" ]; then
         env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=shell-relative-test \
         "$repo_dir/build/ace-user-shell")
     case "$relative_output" in
-        *"$volume_first_name"*"$relative_child_name"*"CD: Error 2"*"$relative_child_name"*) ;;
+        *"$volume_first_name"*"$relative_child_name"*"object not found"*"$relative_child_name"*) ;;
         *) echo "current-volume paths or failed CD state are incorrect" >&2; exit 1 ;;
     esac
 fi

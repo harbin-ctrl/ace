@@ -933,22 +933,15 @@ static int native_device_relative(CONST_STRPTR name, char *result,
 {
     const char *colon = strchr(name, ':');
     const char *cursor = colon + 1;
-    size_t used = 0;
 
-    while (*cursor == '/') {
-        if (used + 3 >= result_size) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        memcpy(result + used, "../", 3);
-        used += 3;
-        cursor++;
-    }
-    if (strlen(cursor) >= result_size - used) {
+    /* Keep AmigaDOS's leading slashes intact. ACE once rewrote each slash as
+       "../" before asking the broker to resolve it, which required the
+       resolver to invent Linux-style dot syntax for every caller. */
+    if (strlen(cursor) >= result_size) {
         errno = ENAMETOOLONG;
         return -1;
     }
-    strcpy(result + used, cursor);
+    strcpy(result, cursor);
     return 0;
 }
 
@@ -1015,9 +1008,11 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
          native_union_existing(name, resolved, sizeof(resolved)) :
          native_broker_resolve_path(name, resolved, sizeof(resolved))) != 0 ||
         stat(resolved, &information) != 0) {
-        native_ioerr = native_named_device_path(name) ?
-                       (errno == ENOENT || errno == ENOTDIR ?
-                        ERROR_OBJECT_NOT_FOUND : errno) : errno;
+        if (native_named_device_path(name) &&
+            (errno == ENOENT || errno == ENOTDIR))
+            native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        else
+            set_native_broker_error();
         return NULL;
     }
     lock = calloc(1, sizeof(*lock));

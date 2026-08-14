@@ -563,13 +563,49 @@ static int host_component_exists(const char *parent, const char *name)
     return lstat(path, &(struct stat){0}) == 0;
 }
 
+/*
+ * AmigaDOS treats these as ordinary component names, while Linux reserves
+ * them for its own traversal. Colon cannot occur in an AmigaDOS component,
+ * but is an ordinary Linux filename byte, so the two spellings are a stable,
+ * collision-free bridge. This is deliberately before the broker-lifetime
+ * escape mapping: ':' and '::' have these meanings on every ACE volume, not
+ * a synthetic spelling that varies with the broker session.
+ */
+static const char *amiga_component_for_host(const char *host_name)
+{
+    if (strcmp(host_name, ":") == 0)
+        return ".";
+    if (strcmp(host_name, "::") == 0)
+        return "..";
+    return NULL;
+}
+
+static const char *host_component_for_amiga(const char *amiga_name)
+{
+    if (strcmp(amiga_name, ".") == 0)
+        return ":";
+    if (strcmp(amiga_name, "..") == 0)
+        return "::";
+    return NULL;
+}
+
 static int map_component(const char *parent, const char *host_name,
                          char *result, size_t result_size)
 {
     struct component_mapping *mapping;
+    const char *fixed_name;
     char prefix[AMIGA_COMPONENT_LIMIT + 1];
     size_t prefix_length = 0;
 
+    fixed_name = amiga_component_for_host(host_name);
+    if (fixed_name) {
+        if (strlen(fixed_name) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, fixed_name);
+        return 0;
+    }
     if (!component_needs_mapping(host_name)) {
         if (strlen(host_name) >= result_size) {
             errno = ENAMETOOLONG;
@@ -700,8 +736,18 @@ static void match_existing_case(const char *parent, char *name,
 static int unmap_component(const char *parent, const char *amiga_name,
                            char *result, size_t result_size)
 {
-    struct component_mapping *mapping = find_mapping_by_amiga(parent,
-                                                               amiga_name);
+    struct component_mapping *mapping;
+    const char *fixed_name = host_component_for_amiga(amiga_name);
+
+    if (fixed_name) {
+        if (strlen(fixed_name) >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(result, fixed_name);
+        return 0;
+    }
+    mapping = find_mapping_by_amiga(parent, amiga_name);
 
     if (!mapping) {
         if (strlen(amiga_name) >= result_size) {
@@ -933,22 +979,17 @@ static int normalize_mapped_path(const char *base, const char *path,
 
         if (slash)
             *slash = '\0';
-        if (*cursor && strcmp(cursor, ".") != 0) {
-            if (strcmp(cursor, "..") == 0)
-                pop_host_component(result);
-            else if (unmap_component(result, cursor, decoded,
-                                     sizeof(decoded)) != 0)
+        if (*cursor) {
+            if (unmap_component(result, cursor, decoded,
+                                sizeof(decoded)) != 0)
                 return -1;
-            else {
-                size_t current = strlen(result);
+            size_t current = strlen(result);
 
-                written = snprintf(result + current, result_size - current,
-                                   "%s%s", current > 1 ? "/" : "",
-                                   decoded);
-                if (written < 0 || (size_t)written >= result_size - current) {
-                    errno = ENAMETOOLONG;
-                    return -1;
-                }
+            written = snprintf(result + current, result_size - current,
+                               "%s%s", current > 1 ? "/" : "", decoded);
+            if (written < 0 || (size_t)written >= result_size - current) {
+                errno = ENAMETOOLONG;
+                return -1;
             }
         }
         if (!slash)
@@ -1145,30 +1186,22 @@ static int normalize_amiga_path(struct broker_session *session,
                                  const char *path, char *result,
                                  size_t result_size)
 {
-    char relative[PATH_MAX * 2];
     char floor[PATH_MAX];
     const char *cursor = path;
     size_t parents = 0;
-    size_t used = 0;
 
     while (*cursor == '/') {
         parents++;
         cursor++;
     }
-    for (size_t index = 0; index < parents; index++) {
-        if (used + 3 >= sizeof(relative)) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        memcpy(relative + used, "../", 3);
-        used += 3;
-    }
-    if (strlen(cursor) >= sizeof(relative) - used) {
+    if (strlen(session->cwd) >= result_size) {
         errno = ENAMETOOLONG;
         return -1;
     }
-    strcpy(relative + used, cursor);
-    if (normalize_mapped_path(session->cwd, relative, result, result_size) != 0)
+    strcpy(result, session->cwd);
+    for (size_t index = 0; index < parents; index++)
+        pop_host_component(result);
+    if (normalize_mapped_path(result, cursor, result, result_size) != 0)
         return -1;
     if (ace_dos_devices_volume_root_for_path(session->cwd, floor,
                                               sizeof(floor)) == 0 &&

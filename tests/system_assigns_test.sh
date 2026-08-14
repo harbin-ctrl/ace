@@ -142,7 +142,7 @@ expect_missing "$output" "/C" "typing SYS: should not land in SYS:C"
 # command when what was asked for was a file.
 output=$(run_shell 'Type Echo
 ')
-expect_missing "$output" "found" "Type should not open a command as a file"
+expect_missing "$output" "found-through-c" "Type should not open a command as a file"
 expect_contains "$output" "can't open" "Type should report a missing file"
 
 # --- If, Else and EndIf ----------------------------------------------------
