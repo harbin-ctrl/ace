@@ -71,6 +71,18 @@ static void find_font(struct ace_gfx_font_choice *choice)
     };
     int i;
 
+    /* "monospace" is not a family, it is the name fontconfig resolves to
+       whichever family this system uses for the role. It is offered by every
+       font chooser and is ACE's own last fallback, so it has to be
+       selectable -- it used to be rejected for the sole reason that the
+       family it resolved to was not called "monospace". A host with any
+       usable monospace font at all has this one. */
+    assert(ace_gfx_font_family_complete("monospace") &&
+           "the monospace alias must resolve to a usable family");
+    /* An alias is not a licence to accept anything: a name that names
+       nothing is still refused rather than quietly substituted. */
+    assert(!ace_gfx_font_family_complete("ACE No Such Family At All"));
+
     for (i = 0; candidates[i]; i++) {
         if (ace_gfx_font_family_complete(candidates[i])) {
             choice->family = candidates[i];

@@ -36,6 +36,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <exec/types.h>
 #include <graphics/gfx.h>
@@ -90,6 +91,101 @@ struct ace_gfx_font_private {
     unsigned long glyph[4][ACE_GFX_GLYPH_HI + 1];
     int glyph_cached[4];
 };
+
+/* Is this the name of a family that is actually installed, rather than one of
+   fontconfig's generic aliases? */
+static int family_is_installed(const char *family)
+{
+    FcPattern *pattern = FcPatternCreate();
+    FcObjectSet *properties;
+    FcFontSet *fonts;
+    int installed = 0;
+
+    if (!pattern)
+        return 0;
+    FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family);
+    properties = FcObjectSetBuild(FC_FAMILY, (char *)NULL);
+    if (properties) {
+        fonts = FcFontList(NULL, pattern, properties);
+        if (fonts) {
+            /* FcFontList does not substitute, so a result here means a font
+               really carries this family name. */
+            installed = fonts->nfont > 0;
+            FcFontSetDestroy(fonts);
+        }
+        FcObjectSetDestroy(properties);
+    }
+    FcPatternDestroy(pattern);
+    return installed;
+}
+
+/*
+ * "monospace", "sans-serif" and the rest are not families; they are names
+ * fontconfig resolves to whichever family the system has chosen for that
+ * role, and resolving to a differently named family is them working, not
+ * failing. A font chooser offers them alongside real families -- so does
+ * ACE's own list of fallbacks -- and load_face() below rejects any match
+ * whose family is not the one asked for, which is right for a real family
+ * and wrong for one of these.
+ *
+ * So an alias is turned into the family it names before anything else looks
+ * at it, and everything downstream sees an ordinary family.
+ *
+ * Only these names, and only when nothing is installed under them. Asking
+ * fontconfig to match any unknown name would answer with the default font
+ * just as readily, and accepting that would turn a misspelled family into a
+ * silent substitution -- which is the thing load_face() was written to stop.
+ */
+static int family_is_generic(const char *family)
+{
+    static const char *const generics[] = {
+        "monospace", "mono", "sans-serif", "sans serif", "sans", "serif",
+        "cursive", "fantasy", "system-ui", "math", "emoji",
+    };
+
+    for (size_t i = 0; i < sizeof(generics) / sizeof(generics[0]); i++)
+        if (strcasecmp(family, generics[i]) == 0)
+            return 1;
+    return 0;
+}
+
+static int resolve_family_alias(const char *family, char *result,
+                                size_t result_size)
+{
+    FcPattern *pattern;
+    FcPattern *matched;
+    FcResult status;
+    FcChar8 *resolved = NULL;
+    int copied = -1;
+
+    if (!family || !*family)
+        return -1;
+    if (family_is_installed(family)) {
+        if (strlen(family) >= result_size)
+            return -1;
+        strcpy(result, family);
+        return 0;
+    }
+    if (!family_is_generic(family))
+        return -1;
+    pattern = FcPatternCreate();
+    if (!pattern)
+        return -1;
+    FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family);
+    FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+    matched = FcFontMatch(NULL, pattern, &status);
+    FcPatternDestroy(pattern);
+    if (!matched)
+        return -1;
+    if (FcPatternGetString(matched, FC_FAMILY, 0, &resolved) == FcResultMatch &&
+        resolved && strlen((const char *)resolved) < result_size) {
+        strcpy(result, (const char *)resolved);
+        copied = 0;
+    }
+    FcPatternDestroy(matched);
+    return copied;
+}
 
 static cairo_font_face_t *load_face(const char *family, int bold, int italic)
 {
@@ -148,9 +244,13 @@ static cairo_font_face_t *load_face(const char *family, int bold, int italic)
 int ace_gfx_font_family_complete(const char *family)
 {
     cairo_font_face_t *faces[4];
+    char resolved[128];
     int i;
     int complete = 1;
 
+    if (!family || resolve_family_alias(family, resolved, sizeof(resolved)) != 0)
+        return 0;
+    family = resolved;
     faces[ACE_GFX_STYLE_REGULAR] = load_face(family, 0, 0);
     faces[ACE_GFX_STYLE_BOLD] = load_face(family, 1, 0);
     faces[ACE_GFX_STYLE_ITALIC] = load_face(family, 0, 1);
@@ -240,6 +340,7 @@ struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
     struct ace_gfx_font_private *priv;
     cairo_font_extents_t extents;
     cairo_text_extents_t cell_extents;
+    char resolved[128];
 
     if (!choice || !choice->family || choice->pixel_size <= 0) {
         if (reason_out)
@@ -254,10 +355,20 @@ struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
         return NULL;
     }
 
-    priv->face[ACE_GFX_STYLE_REGULAR] = load_face(choice->family, 0, 0);
-    priv->face[ACE_GFX_STYLE_BOLD] = load_face(choice->family, 1, 0);
-    priv->face[ACE_GFX_STYLE_ITALIC] = load_face(choice->family, 0, 1);
-    priv->face[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(choice->family, 1, 1);
+    /* Resolved for loading, but not recorded: the name the caller chose is
+       what goes back into the config, so "Monospace" keeps meaning whatever
+       this system calls its monospace font rather than freezing into the
+       family it happens to be today. */
+    if (resolve_family_alias(choice->family, resolved, sizeof(resolved)) != 0) {
+        if (reason_out)
+            *reason_out = "no font family of that name is installed";
+        free(priv);
+        return NULL;
+    }
+    priv->face[ACE_GFX_STYLE_REGULAR] = load_face(resolved, 0, 0);
+    priv->face[ACE_GFX_STYLE_BOLD] = load_face(resolved, 1, 0);
+    priv->face[ACE_GFX_STYLE_ITALIC] = load_face(resolved, 0, 1);
+    priv->face[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(resolved, 1, 1);
 
     if (!priv->face[ACE_GFX_STYLE_REGULAR] || !priv->face[ACE_GFX_STYLE_BOLD] ||
         !priv->face[ACE_GFX_STYLE_ITALIC] || !priv->face[ACE_GFX_STYLE_BOLD_ITALIC]) {
