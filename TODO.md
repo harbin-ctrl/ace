@@ -64,6 +64,19 @@ they all resolve to `SYS:` because ACE has nothing to put in them -- which is
 exactly what AROS does for a system missing those drawers, so it is correct
 rather than pending. Worth revisiting the moment ACE has a loadable anything.
 
+**A missing file reports "Error 2" from some commands.** `Type
+rootfs:home/pi/nosuchfile` prints `Error 2` -- the raw Linux `ENOENT` -- and
+`Why` repeats it, where the Shell reports the same class of failure as
+`object not found`. So `PrintFault()` renders 205 correctly and the code
+reaching it is genuinely 2. `Open()` maps `ENOENT` to
+`ERROR_OBJECT_NOT_FOUND` on every path that returns NULL, and capturing errno
+at the point of failure rather than reading it later did not change the
+symptom, so the guess that an intervening call was clobbering it was wrong.
+Whatever sets it is somewhere else. `Type` reads `IoErr()` immediately after
+`Open()` returns (`workbench/c/Type.c:388`), so the value is ACE's, and the
+directory case through the same path reports `object is not of required
+type` correctly -- it is specifically the not-found code that arrives raw.
+
 **`ace-brokerctl assign` always fails.** `ace-brokerctl assign WORK: /tmp` --
 the form README documents -- exits 1 and says nothing, on this checkout and at
 62c485d before it, so it is not a regression from the parser work. The `Assign`

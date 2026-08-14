@@ -123,6 +123,21 @@ Dir T:
 expect_contains "$output" "CaseMade" "a created name did not keep its own case"
 expect_contains "$output" "Deleted" "a path did not resolve without regard to case"
 
+# Typing a directory's name changes to it, which is how an Amiga user reaches
+# C: or SYS:. The Shell does that itself, but only when opening the name as a
+# command fails the way AmigaDOS fails: Open() on a directory has to report
+# ERROR_OBJECT_WRONG_TYPE rather than handing back a readable handle, which
+# is what Linux would do, and a directory must not pass for an executable
+# just because it carries the execute bit.
+output=$(run_shell 'C:
+CD
+')
+expect_contains "$output" "/C" "typing C: did not change directory to it"
+output=$(run_shell 'SYS:
+CD
+')
+expect_missing "$output" "/C" "typing SYS: should not land in SYS:C"
+
 # The command path is the loader's business. Open() must not quietly find a
 # command when what was asked for was a file.
 output=$(run_shell 'Type Echo

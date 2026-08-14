@@ -24,9 +24,14 @@ struct ace_command_segment {
     char path[PATH_MAX];
 };
 
+/* A directory carries the execute bit too, meaning searchable rather than
+   runnable, so being executable is not on its own enough to be a command. */
 static int executable_file(const char *path)
 {
-    return access(path, X_OK) == 0;
+    struct stat information;
+
+    return access(path, X_OK) == 0 && stat(path, &information) == 0 &&
+           S_ISREG(information.st_mode);
 }
 
 static int directory_command(const char *directory, const char *name,

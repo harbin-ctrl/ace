@@ -1272,6 +1272,12 @@ BPTR Open(CONST_STRPTR name, LONG mode)
                          mode == MODE_READWRITE ? "r+b" : "rb";
     char resolved[PATH_MAX];
     FILE *file;
+    /* Why the open failed, kept from the moment it failed. Everything between
+       here and the report -- freeing a DevProc, asking the broker for the
+       next target in a multi-assign -- is entitled to leave errno holding
+       something else, and errno is only meaningful immediately after the call
+       that set it. */
+    int open_errno = 0;
 
     if (name && strncasecmp(name, "CON:", 4) == 0)
         return native_console_open(name);
@@ -1282,10 +1288,14 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         file = NULL;
         while (device) {
             if (native_union_candidate(name, device, resolved,
-                                       sizeof(resolved)) == 0)
+                                       sizeof(resolved)) == 0) {
+                errno = 0;
                 file = fopen(resolved, access);
+                open_errno = errno;
+            }
             if (file || mode == MODE_NEWFILE ||
-                (file == NULL && errno != ENOENT && errno != ENOTDIR))
+                (file == NULL && open_errno != ENOENT &&
+                 open_errno != ENOTDIR))
                 break;
             device = ace_aros_GetDeviceProc(name, device);
         }
@@ -1294,12 +1304,15 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         if (file)
             native_ioerr = 0;
         else
-            native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+            native_ioerr = open_errno == ENOENT ? ERROR_OBJECT_NOT_FOUND :
+                           open_errno;
     } else if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
-        native_ioerr = errno;
+        native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
         return NULL;
     } else {
+        errno = 0;
         file = fopen(resolved, access);
+        open_errno = errno;
     }
     /* A bare name that is not in the current directory used to be looked up
        as a command here, which is where ACE kept its stand-in for C: before
@@ -1308,8 +1321,30 @@ BPTR Open(CONST_STRPTR name, LONG mode)
        list, then the C: multiassign, and doing it here as well meant any
        failed open of a data file quietly found a command of that name
        instead of reporting that the file was missing. */
+    /*
+     * A directory is not a file to be opened. Linux will open one read-only
+     * quite happily, but AmigaDOS answers ERROR_OBJECT_WRONG_TYPE, and
+     * something is listening for that: the Shell tries to open a typed word
+     * as a command, and when the open fails with wrong-type, not-found or
+     * invalid-component it locks the name instead and changes directory to
+     * it if it is one. That is how typing "C:" at an Amiga prompt moves you
+     * there. With the open succeeding, the Shell got a handle on a
+     * directory, believed it had found a command, and tried to run it.
+     */
+    if (file) {
+        struct stat information;
+        int descriptor = fileno(file);
+
+        if (descriptor >= 0 && fstat(descriptor, &information) == 0 &&
+            S_ISDIR(information.st_mode)) {
+            fclose(file);
+            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+            return NULL;
+        }
+    }
     if (!file && !native_named_device_path(name))
-        native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+        native_ioerr = open_errno == ENOENT ? ERROR_OBJECT_NOT_FOUND :
+                       open_errno;
     else if (file)
         native_ioerr = 0;
     return (BPTR)file;
