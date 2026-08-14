@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
@@ -349,6 +350,37 @@ static mode_t native_mode_from_protection(mode_t mode, LONG protection)
     return mode;
 }
 
+/* An AmigaDOS file comment has no Unix permission or timestamp to live in,
+   so it is kept in an extended attribute on the file itself. That puts it on
+   the inode, which is what makes it survive a rename or a move within a
+   filesystem without ACE doing anything.
+
+   The name is deliberately generic rather than ACE's own: a comment on a
+   file is not an ACE concept, and anything else that wants to read or write
+   one should not have to know ACE wrote it. The cost of a shared name is
+   that a foreign writer is not bound by AmigaDOS's 79-character limit, which
+   is why the read path truncates instead of trusting what it finds. */
+#define NATIVE_COMMENT_ATTRIBUTE "user.comment"
+
+/* Reads a file comment into a fib, which was zeroed by the caller: no
+   attribute, an empty one, or a filesystem with no extended attributes at
+   all all leave the fib's empty string in place, since none of those is an
+   error in an object that simply has no comment. */
+static void native_fill_fib_comment(const char *path,
+                                    struct FileInfoBlock *fib)
+{
+    char stored[1024];
+    ssize_t size = getxattr(path, NATIVE_COMMENT_ATTRIBUTE, stored,
+                            sizeof(stored));
+
+    if (size <= 0)
+        return;
+    if ((size_t)size >= sizeof(fib->fib_Comment))
+        size = (ssize_t)sizeof(fib->fib_Comment) - 1;
+    memcpy(fib->fib_Comment, stored, (size_t)size);
+    fib->fib_Comment[size] = '\0';
+}
+
 /* Fills fib for a resolved host path already known to exist, shared by
    Examine() (the locked object itself) and ExNext() (its next directory
    child). name overrides the basename ACE would otherwise take from path,
@@ -388,6 +420,7 @@ static int native_fill_fib(const char *path, const char *name,
     fib->fib_Size = (LONG)information.st_size;
     fib->fib_NumBlocks = (LONG)information.st_blocks;
     native_datestamp_from_unix(information.st_mtime, &fib->fib_Date);
+    native_fill_fib_comment(path, fib);
     /* A successful DOS lookup replaces any error left by an earlier
        operation.  Shell.c uses IoErr() after its failed command lookup when
        it falls back to treating the command text as a directory name. */
@@ -1181,6 +1214,38 @@ LONG DeleteFile(CONST_STRPTR name)
     return DOSFALSE;
 }
 
+LONG SetComment(CONST_STRPTR name, CONST_STRPTR comment)
+{
+    char resolved[PATH_MAX];
+    size_t length = comment ? strlen(comment) : 0;
+
+    if (!name ||
+        native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    /* Refused rather than truncated, as on AmigaDOS: a FileInfoBlock cannot
+       carry more than this back, so a longer comment would be stored and
+       then never readable in full by anything that asked for it. */
+    if (length >= sizeof(((struct FileInfoBlock *)0)->fib_Comment)) {
+        native_ioerr = ERROR_COMMENT_TOO_BIG;
+        return DOSFALSE;
+    }
+    /* An empty comment is how AmigaDOS clears one, so remove the attribute
+       rather than leaving an empty one behind. Nothing to remove is the
+       state the caller asked for, not a failure. */
+    if (length == 0) {
+        if (removexattr(resolved, NATIVE_COMMENT_ATTRIBUTE) == 0 ||
+            errno == ENODATA)
+            return DOSTRUE;
+    } else if (setxattr(resolved, NATIVE_COMMENT_ATTRIBUTE, comment, length,
+                        0) == 0) {
+        return DOSTRUE;
+    }
+    set_native_broker_error();
+    return DOSFALSE;
+}
+
 LONG SetProtection(CONST_STRPTR name, ULONG protection)
 {
     char resolved[PATH_MAX];
@@ -1350,6 +1415,11 @@ static void set_native_broker_error(void)
     case EROFS:       native_ioerr = ERROR_DISK_WRITE_PROTECTED; break;
     case ENOSPC:      native_ioerr = ERROR_DISK_FULL; break;
     case ENAMETOOLONG: native_ioerr = ERROR_INVALID_COMPONENT_NAME; break;
+    /* The filesystem does not implement the operation -- a VFAT volume has
+       no extended attributes to keep a file comment in, and ACE mounts VFAT.
+       ERROR_ACTION_NOT_KNOWN is AmigaDOS's own answer for a handler that
+       does not understand a packet, which is the same statement. */
+    case ENOTSUP:     native_ioerr = ERROR_ACTION_NOT_KNOWN; break;
     default:          native_ioerr = (LONG)errno; break;
     }
 }

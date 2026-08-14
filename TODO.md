@@ -5,21 +5,13 @@ is and how it is built; this file is only for outstanding items, with enough
 evidence attached that whoever picks one up does not have to rediscover why it
 matters.
 
-## Store Filenote's comment in an extended attribute
+## Port List
 
-**Status:** decided, not started. `Filenote` is the obvious next command after
-`Delete` and `Protect` -- it is 326 lines of AROS that needs exactly one thing
-ACE does not have, `SetComment()` -- but an AmigaDOS file comment has no Unix
-equivalent to map onto the way protection bits map onto permissions.
-
-The decision is to keep it in a user extended attribute on the file. That
-settles the storage; what still has to be worked out is the attribute name,
-what happens on a filesystem mounted without user_xattr or without xattr
-support at all (`ENOTSUP` needs an AmigaDOS error rather than a raw errno --
-see `set_native_broker_error()` in `src/native_dos.c`), and the read direction:
-`native_fill_fib()` fills `fib_Comment`, and today it fills it with nothing.
-
-`Copy` also calls `SetComment()`, so this blocks part of that port too.
+`List` is the AmigaDOS command that displays a file's comment, and the first
+consumer of the `fib_Comment` read path `Filenote` added -- until it lands,
+`tests/dos_comment_test.c` is the only thing that reads a comment back. It is
+1223 lines of AROS and wants `DateStamp()`, `DateToStr()` and `StrToDate()`,
+which ACE does not have yet; `Copy` wants the date calls too.
 
 ## Also open
 
@@ -61,6 +53,15 @@ tool's own path into `native_broker_assign()`. Not investigated.
 reports success. Observed from a standalone binary with no `ACE_SESSION` set,
 so this may just be session scoping rather than a real defect -- it has not
 been investigated.
+
+**The Makefile is not a prerequisite of what it builds.** Change a rule's
+recipe and the object is not rebuilt, so the change appears not to work. This
+cost time twice while porting Delete/Protect/Filenote, both times looking like
+a fix that did nothing. It is not a one-line fix: roughly twenty recipes pass
+`$^` straight to the compiler or linker, and adding the Makefile as a
+prerequisite puts it in `$^` too, which fails with "file format not
+recognized". Doing it properly means filtering it back out of every one of
+those recipes. Until then, delete the object by hand after editing its rule.
 
 **Raw console input, and Amiga Vim.** Scoped in conversation but never written
 down beyond this note. The blocker is that line editing happens in the GUI

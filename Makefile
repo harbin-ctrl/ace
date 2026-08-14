@@ -58,6 +58,7 @@ AROS_DOSPATH_DIR := $(AROS_ROOT)/rom/dos
 AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
 AROS_DELETE_SRC := $(AROS_ROOT)/workbench/c/Delete.c
 AROS_PROTECT_SRC := $(AROS_ROOT)/workbench/c/Protect.c
+AROS_FILENOTE_SRC := $(AROS_ROOT)/workbench/c/Filenote.c
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
                      matchpatternnocase parsepatternnocase \
@@ -160,11 +161,11 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/arossupport/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
-INSTALL_BINS := Echo CD PathPart Dir Delete Protect Fault Ask Get Getenv Set Unset Alias Unalias \
+INSTALL_BINS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
                 FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -206,6 +207,13 @@ $(BUILD)/Delete.o: $(AROS_DELETE_SRC) compat/include/ace_dos_intern.h | $(BUILD)
 
 $(BUILD)/Protect.o: $(AROS_PROTECT_SRC) compat/include/ace_dos_intern.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+# -D__AROS__ is what lets Filenote.c call IsDosEntryA(). Without it the file
+# defines the call away to 0 for a non-AROS build, and Filenote would happily
+# try to comment a whole volume.
+$(BUILD)/Filenote.o: $(AROS_FILENOTE_SRC) compat/include/ace_dos_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -D__AROS__ \
 	    -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
@@ -514,6 +522,9 @@ $(BUILD)/Delete: $(BUILD)/Delete.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT
 $(BUILD)/Protect: $(BUILD)/Protect.o $(BUILD)/native_command_entry.o $(BUILD)/aros-arsupport-isdosentrya.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+$(BUILD)/Filenote: $(BUILD)/Filenote.o $(BUILD)/native_command_entry.o $(BUILD)/aros-arsupport-isdosentrya.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 $(BUILD)/Fault: $(BUILD)/Fault.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
@@ -600,7 +611,16 @@ test-graphics: $(BUILD)/graphics-test
 test-console-device-bridge: $(BUILD)/console-device-bridge-test
 	$(BUILD)/console-device-bridge-test
 
-test-filesystem-translation: all
+# The comment harness is a test binary rather than a command: nothing ported
+# yet reads a file comment back (List is the AmigaDOS command that displays
+# one), so the read half of the seam has no other consumer to check it.
+$(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
+                          $(BUILD)/native_dos.o $(BUILD)/native_command.o \
+                          $(BUILD)/native_shcommand.o \
+                          $(BUILD)/broker_client.o | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
+
+test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
 user-install:

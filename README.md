@@ -105,6 +105,23 @@ withdrawn unless `FORCE` is given; `Protect` is what withdraws it:
 ./build/Delete WORK:keep.txt FORCE    # clears protection, then deletes
 ```
 
+`Filenote` attaches an AmigaDOS file comment, which is the one piece of Amiga
+file metadata with no Unix field to hold it. ACE keeps it in the `user.comment`
+extended attribute, so it lives on the inode and survives a rename or a move
+within a filesystem, and `Examine()`/`ExNext()` read it back into
+`fib_Comment`:
+
+```sh
+./build/Filenote WORK:notes.txt "second draft"
+./build/Filenote WORK:notes.txt ""       # an empty comment clears it
+```
+
+A comment longer than the 79 characters a `FileInfoBlock` can carry is
+refused rather than truncated, as on AmigaDOS. A filesystem with no extended
+attributes at all -- VFAT has none, and ACE mounts VFAT -- reports
+`ERROR_ACTION_NOT_KNOWN`, AmigaDOS's own answer for a handler that does not
+implement an action.
+
 AmigaDOS's delete bit has no separate Unix permission -- on Unix it is the
 containing directory that governs removal -- so it shares the owner write bit
 with the write bit, which is the pairing ACE's `Examine()` already used in the

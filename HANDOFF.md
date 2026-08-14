@@ -240,6 +240,59 @@ name is the device, the label is the volume.
 One test had `sda2:` written into it, which is this host's root device; it now
 takes the expected spelling from the broker.
 
+## Filenote, and the two things it found
+
+`Filenote` needed one new call, `SetComment()`. An AmigaDOS file comment is
+the one piece of Amiga file metadata with no Unix field to map onto -- unlike
+protection bits, which are permissions -- so it goes in an extended attribute,
+`user.comment`. That puts it on the inode, which is why it survives a rename
+without ACE doing anything. The name is deliberately generic rather than
+ACE's own; the cost is that a foreign writer is not bound by AmigaDOS's
+79-character limit, so `native_fill_fib_comment()` truncates what it reads
+instead of trusting it. Writing longer than that is refused rather than
+truncated, since a `FileInfoBlock` could not carry it back. A filesystem with
+no extended attributes reports ERROR_ACTION_NOT_KNOWN -- AmigaDOS's answer for
+a handler that does not implement an action, and not hypothetical, since the
+broker registers this Pi's VFAT bootfs as a volume.
+
+`Examine()` and `ExNext()` fill `fib_Comment`, at one `getxattr()` per
+directory entry. Nothing ported yet displays a comment -- `List` is the
+AmigaDOS command that does -- so `tests/dos_comment_test.c` is the reader that
+keeps the read half honest until it lands.
+
+Two things turned up underneath.
+
+**`LockDosList()` returned NULL.** ACE's own `NextDosEntry()` read that as
+"start at the beginning", and every AROS caller that assigns the result and
+then walks it -- `Assign.c`, `Delete.c` -- survived. AROS's own
+`compiler/arossupport/isdosentrya.c` does not: it reads NULL as "the list
+could not be locked" and reports that nothing matched. So `Protect` had been
+silently accepting a whole volume since it was ported an hour earlier, and
+would have chmod'd the volume root. There is now a list header to hand back,
+as real AmigaDOS has.
+
+**ACE has two BSTR conventions and the compat macros only matched one.** The
+CLI's `cli_Prompt`, `cli_SetName` and `cli_CommandFile` are plain C strings
+that AROS's real `Shell.c` and `cliPrompt.c` read through `AROS_BSTR_ADDR`,
+so `<dos/dosextens.h>`'s definitions have to leave them alone. A DosList
+entry's `dol_Name` is a real length-prefixed BSTR, because `Assign.c` reads
+that byte back through a macro of its own that ACE cannot redefine. The
+compat macros are now the guarded default and `src/assign_compat.h` overrides
+them for the DosList world, which is the only place that disagrees.
+
+Both were invisible until an AROS source read a DosList the way AROS writes
+them, which is the same shape as the `IoErr()` storage bug above: an ACE stub
+that is merely *wrong* stays harmless until upstream code that depends on it
+gets compiled in.
+
+One trap worth knowing, since it wasted time twice in a row: the Makefile is
+not a prerequisite of anything it builds, so changing a rule's recipe does not
+rebuild the object. Both times the symptom was a fix that appeared not to
+work. Making it a prerequisite is not a one-line change -- roughly twenty
+recipes pass `$^` straight to the compiler or linker and would need the
+Makefile filtered back out -- so it is still a trap. Delete the object by hand
+after editing its rule.
+
 ## Build on another host
 
 The ACE Makefile uses `AROS_ROOT`, defaulting to `$HOME/aros`, and selects the

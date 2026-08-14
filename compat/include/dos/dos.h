@@ -52,6 +52,7 @@
 #define ERROR_INVALID_RESIDENT_LIBRARY 122
 #define ERROR_DISK_WRITE_PROTECTED 214
 #define ERROR_DIRECTORY_NOT_EMPTY 216
+#define ERROR_COMMENT_TOO_BIG   220
 #define ERROR_DELETE_PROTECTED  222
 #define ERROR_WRITE_PROTECTED   223
 
@@ -258,6 +259,7 @@ BPTR Open(CONST_STRPTR name, LONG mode);
 LONG Close(BPTR file);
 LONG DeleteFile(CONST_STRPTR name);
 LONG SetProtection(CONST_STRPTR name, ULONG protection);
+LONG SetComment(CONST_STRPTR name, CONST_STRPTR comment);
 LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name);
 LONG SameLock(BPTR lock1, BPTR lock2);
 BOOL IsInteractive(BPTR file);

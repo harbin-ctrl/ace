@@ -1,11 +1,25 @@
 #ifndef ACE_ASSIGN_COMPAT_H
 #define ACE_ASSIGN_COMPAT_H
 
-/* Host-side ABI glue for compiling the unmodified AROS Assign.c. */
+/* Host-side ABI glue for compiling the unmodified AROS Assign.c, and the
+   DosList world around it.
+
+   A DosList entry's dol_Name is a real length-prefixed BSTR here, unlike the
+   CLI strings <dos/dosextens.h> defines these macros for by default: Assign.c
+   reads the length byte through a macro of its own, so ACE has to write one.
+   Anything that reads dol_Name through the AROS_BSTR_* macros -- AROS's
+   compiler/arossupport/isdosentrya.c does, to answer whether a name is a
+   volume or a device -- needs the view that matches. Defined before
+   <dos/dosextens.h>, whose own definitions are guarded. */
 #include <stdarg.h>
 #include <string.h>
 #include <exec/types.h>
 #include <aros/asmcall.h>
+
+#define AROS_BSTR_ADDR(value) ((value) + 1)
+#define AROS_BSTR_strlen(value) \
+    ((value) ? (LONG)(*(const unsigned char *)(value)) : 0)
+#define AROS_BSTR_getchar(value, index) ((value)[(index) + 1])
 
 #ifndef AROS_ASMSYMNAME
 #define AROS_ASMSYMNAME(name) name

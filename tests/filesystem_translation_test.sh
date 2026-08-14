@@ -17,13 +17,15 @@ rename_question_target="$mapping_test_dir/rename-question-target"
 run_created_dir="$mapping_test_dir/run-created"
 delete_dir="$mapping_test_dir/delete-tree"
 delete_protected="$mapping_test_dir/delete-protected"
+note_dir="$mapping_test_dir/filenote"
+note_file="$note_dir/noted.txt"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
-      "$delete_dir" "$delete_dir/nested"
+      "$delete_dir" "$delete_dir/nested" "$note_dir"
 touch "$rename_source"
 touch "$rename_question_source"
 touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
-      "$delete_dir/nested/three.txt" "$delete_protected"
+      "$delete_dir/nested/three.txt" "$delete_protected" "$note_file"
 
 cd "$repo_dir"
 
@@ -48,7 +50,7 @@ cleanup()
     [ -e "$rename_question_target" ] && unlink "$rename_question_target" 2>/dev/null || true
     [ -e "$run_created_dir" ] && rmdir "$run_created_dir" 2>/dev/null || true
     chmod u+w "$delete_protected" 2>/dev/null || true
-    rm -rf "$delete_dir" "$delete_protected" 2>/dev/null || true
+    rm -rf "$delete_dir" "$delete_protected" "$note_dir" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
           "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
@@ -242,6 +244,77 @@ case "$force_output" in
         exit 1
         ;;
 esac
+
+# Filenote keeps an AmigaDOS file comment in an extended attribute, which is
+# the one piece of Amiga file metadata with no Unix field to live in. The
+# check is the round trip rather than the xattr, because reading the attribute
+# back directly would prove only that setxattr ran: what has to hold is that
+# Examine() and ExNext() put the comment in a FileInfoBlock, which is where
+# every AmigaDOS caller looks for it. build/dos-comment-test is the reader,
+# since no ported command displays a comment yet.
+note_file_name=$(control name "$note_file")
+note_dir_name=$(control name "$note_dir")
+note_output=$(printf 'Filenote %s "kept on the inode"\nEndCLI\n' \
+    "$note_file_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-filenote-test "$repo_dir/build/ace-user-shell")
+case "$note_output" in
+    *"Error"*|*"error"*)
+        echo "Filenote could not set a comment" >&2
+        exit 1
+        ;;
+esac
+note_examine=$(env ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=shell-filenote-test \
+    "$repo_dir/build/dos-comment-test" examine "$note_file_name")
+case "$note_examine" in
+    *"kept on the inode"*) ;;
+    *) echo "Examine did not read the comment back: $note_examine" >&2; exit 1 ;;
+esac
+note_exnext=$(env ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=shell-filenote-test \
+    "$repo_dir/build/dos-comment-test" exnext "$note_dir_name")
+case "$note_exnext" in
+    *"kept on the inode"*) ;;
+    *) echo "ExNext did not read the comment back: $note_exnext" >&2; exit 1 ;;
+esac
+
+# An empty comment is how AmigaDOS clears one, and a comment past the 79
+# characters a FileInfoBlock can carry is refused rather than truncated.
+note_clear=$(printf 'Filenote %s ""\nEndCLI\n' "$note_file_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-filenote-clear-test "$repo_dir/build/ace-user-shell")
+note_cleared=$(env ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=shell-filenote-test \
+    "$repo_dir/build/dos-comment-test" examine "$note_file_name")
+case "$note_cleared" in
+    *"kept on the inode"*)
+        echo "Filenote did not clear the comment" >&2
+        exit 1
+        ;;
+esac
+note_long=$(awk 'BEGIN { for (i = 0; i < 80; i++) printf "n" }')
+note_toolong=$(printf 'Filenote %s "%s"\nEndCLI\n' "$note_file_name" "$note_long" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-filenote-long-test "$repo_dir/build/ace-user-shell")
+case "$note_toolong" in
+    *"too long"*) ;;
+    *) echo "Filenote accepted a comment longer than a FileInfoBlock: $note_toolong" >&2; exit 1 ;;
+esac
+
+# Protect and Filenote both refuse to work on a whole volume without ALL,
+# through AROS's own IsDosEntryA(). That call reads a DosList entry's name as
+# a length-prefixed BSTR and gives up entirely on a NULL list, so it is the
+# one caller that catches ACE disagreeing with AROS about either.
+volume_refusal=$(printf 'Filenote %s x\nProtect %s w SUB\nEndCLI\n' \
+    "$volume_name" "$volume_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-volume-refusal-test "$repo_dir/build/ace-user-shell")
+refusals=$(printf '%s\n' "$volume_refusal" | grep -c "not of required type" || true)
+[ "$refusals" -eq 2 ] || {
+    echo "Filenote and Protect did not both refuse a volume: $volume_refusal" >&2
+    exit 1
+}
 
 broker_pid=$(sed -n '1p' "$socket_path.lock")
 case "$broker_pid" in

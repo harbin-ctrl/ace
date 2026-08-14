@@ -8,10 +8,32 @@
 #include <dos/dos.h>
 #include <string.h>
 
+/* A real BSTR carries its length in the byte before its characters. ACE has
+   two kinds of field typed BSTR and they do not agree, so these macros are
+   the default rather than the rule.
+
+   The CLI's own strings -- cli_Prompt, cli_SetName, cli_CommandFile -- are
+   plain C strings that src/native_dos.c points straight at its own buffers,
+   and AROS's real Shell.c and cliPrompt.c read them through these macros, so
+   this is the definition those need.
+
+   A DosList entry's dol_Name is the other kind: src/assign_compat.c builds it
+   with a real length byte, because AROS's Assign.c reads that byte back
+   through a length macro of its own that ACE cannot redefine. Anything
+   compiled against dol_Name therefore overrides these first --
+   src/assign_compat.h does it, which is why they are guarded. */
+#ifndef AROS_BSTR_ADDR
 #define AROS_BSTR_ADDR(value) (value)
+#endif
+#ifndef AROS_BSTR_strlen
 #define AROS_BSTR_strlen(value) ((value) ? strlen(value) : 0)
+#endif
+#ifndef AROS_BSTR_getchar
 #define AROS_BSTR_getchar(value, index) ((value)[index])
+#endif
+#ifndef AROS_BSTR_setstrlen
 #define AROS_BSTR_setstrlen(value, length) ((void)(value), (void)(length))
+#endif
 
 struct Task {
     struct Node tc_Node;

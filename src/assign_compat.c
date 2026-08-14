@@ -25,6 +25,15 @@ static struct DosList dos_entries[ASSIGN_LIST_MAX];
 static size_t dos_entry_count;
 static char *dos_entry_names[ASSIGN_LIST_MAX];
 static char *dos_entry_assign_names[ASSIGN_LIST_MAX];
+/* What LockDosList() hands back. Real AmigaDOS returns the list header --
+   not an entry, and not NULL -- and NextDosEntry() walks from it to the
+   first entry. ACE used to return NULL, which its own NextDosEntry() read
+   as "start at the beginning" and which every AROS caller that assigns the
+   result and then walks it survived. AROS's own
+   compiler/arossupport/isdosentrya.c does not: it treats NULL as "the list
+   could not be locked" and silently reports that nothing matches, so
+   Protect and Filenote stopped refusing to change a whole volume. */
+static struct DosList dos_list_header;
 static int dos_list_loaded;
 static int dos_list_locked;
 static int dos_cleanup_registered;
@@ -252,7 +261,7 @@ struct DosList *LockDosList(ULONG flags)
         dos_list_loaded = 1;
     }
     dos_list_locked++;
-    return NULL;
+    return &dos_list_header;
 }
 
 /* On AROS this is the non-blocking form, for a caller that would rather do
@@ -268,7 +277,7 @@ struct DosList *NextDosEntry(struct DosList *entry, ULONG flags)
 {
     size_t index = 0;
 
-    if (entry) {
+    if (entry && entry != &dos_list_header) {
         if (entry < dos_entries || entry >= dos_entries + dos_entry_count)
             return NULL;
         index = (size_t)(entry - dos_entries) + 1;
