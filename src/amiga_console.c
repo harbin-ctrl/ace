@@ -14,7 +14,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "aros_console_editor.h"
 #include "aros_graphics_runtime.h"
 #include "ace_appmenu_wayland.h"
 #include "console_device_bridge.h"
@@ -118,7 +117,6 @@ struct console_window {
     GtkWidget *drawing_area;
     int stream_fd;
     pid_t child_pid;
-    struct ace_aros_console_editor *editor;
     char *font_family;
     int font_size;
     uint32_t palette[ACE_CONSOLE_PEN_COUNT];
@@ -788,20 +786,6 @@ static void queue_console_damage(struct console_window *console)
         gtk_widget_queue_draw_area(console->drawing_area, x, y, width, height);
 }
 
-static void drain_editor_output(struct console_window *console)
-{
-    unsigned char output[4096];
-    size_t length;
-
-    do {
-        length = ace_aros_console_editor_take_output(console->editor,
-                                                     output, sizeof(output));
-        if (length != 0)
-            ace_console_device_write(console->device, output, length);
-    } while (length != 0);
-    queue_console_damage(console);
-}
-
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     struct console_window *console = data;
@@ -887,18 +871,12 @@ static void drawing_area_size_allocate(GtkWidget *widget,
 static int send_input(struct console_window *console, const void *data,
                       size_t length)
 {
-    char line[INPUT_MAX + 2];
-    size_t line_length;
     size_t offset = 0;
 
-    if (ace_aros_console_editor_feed(console->editor, data, length) != 0)
-        return -1;
-    drain_editor_output(console);
-    line_length = ace_aros_console_editor_take_line(console->editor,
-                                                    line, sizeof(line));
-    while (offset < line_length) {
-        ssize_t written = write(console->stream_fd, line + offset,
-                                line_length - offset);
+    while (offset < length) {
+        ssize_t written = write(console->stream_fd,
+                                (const char *)data + offset,
+                                length - offset);
 
         if (written <= 0)
             return -1;
@@ -1115,9 +1093,6 @@ int main(int argc, char **argv)
         ace_console_device_close(console.device);
         return 20;
     }
-    console.editor = ace_aros_console_editor_open();
-    if (!console.editor)
-        return 20;
     if (argc != 3 || strcmp(argv[1], "--session") != 0) {
         fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
         return 20;
@@ -1148,6 +1123,7 @@ int main(int argc, char **argv)
         if (sockets[1] > STDERR_FILENO)
             close(sockets[1]);
         setenv("ACE_SESSION", session, 1);
+        setenv("ACE_CONSOLE_INTERACTIVE", "1", 1);
         execl(shell_path, shell_path, (char *)NULL);
         _exit(20);
     }
@@ -1193,7 +1169,6 @@ int main(int argc, char **argv)
     gtk_main();
     ace_appmenu_wayland_forget();
     unexport_dbus_menu(&console);
-    ace_aros_console_editor_close(console.editor);
     ace_console_device_close(console.device);
     g_free(console.font_family);
     return 0;

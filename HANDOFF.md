@@ -124,10 +124,8 @@ The real ANSI/CSI parser, `rom/devs/console/support.c`'s `writeToConsole()`,
 is compiled the same way and is now what the live `ace-console` window
 actually calls: `src/console_device_bridge.c` builds one real `ConUnit` per
 window (the class pair, a font, an `ace_gfx_create_rastport()`-backed
-`RastPort`, a real `struct Window`) and `src/amiga_console.c`'s output path
-(`apply_output()`, for the shell's own stdout, and `drain_editor_output()`,
-for the console handler's self-echoed line-editing bytes) calls
-`writeToConsole()` on it directly, the same call `console.c`'s real
+`RastPort`, a real `struct Window`) and `src/amiga_console.c`'s socket output
+path calls `writeToConsole()` on it directly, the same call `console.c`'s real
 `beginio()`/`CMD_WRITE` would make. `draw_console()` blits the RastPort's
 cairo surface straight onto the window. `src/console_terminal.c` -- ACE's own
 hand-written ANSI parser and character-cell renderer, the thing this whole
@@ -147,9 +145,9 @@ class construction and plain-text dispatch), and `writeToConsole()` with a
 raw CSI byte sequence (proving the escape-sequence *parser* itself -- the
 part `Console_DoCommand()` alone never exercises, since that macro dispatches
 an already-parsed command). The CSI test drives `CSI n C` (cursor forward),
-confirmed present in `support.c`'s real command table; ANSI SGR color is not
--- this AROS checkout's `stdconclass.c` has no `C_SELECT_GRAPHIC_RENDITION`
-case at all, confirmed by reading its dispatcher, not assumed.
+confirmed present in `support.c`'s real command table. ANSI SGR color and
+text rendition are handled by `consoleclass.c` in this AROS checkout and are
+covered by the live rendering path.
 
 `Delete` and `Protect` are the first commands that change the filesystem
 beyond creating a directory, and every command in the tree now parses its
@@ -297,6 +295,28 @@ them, which is the same shape as the `IoErr()` storage bug above: an ACE stub
 that is merely *wrong* stays harmless until upstream code that depends on it
 gets compiled in.
 
+## Child-side console input and raw mode
+
+The GUI now sends each key sequence directly to the child socket. The AROS
+console editor is no longer owned by `ace-console`: `native_dos.c` enables it
+only for the GUI-launched session, feeds complete CSI sequences to AROS's
+`process_input()`, and writes its echo through the child process's normal
+`Output()` stream. This keeps editing, history, and echo in the process that
+owns `Input()`, and means a child can take over the stream without a second
+IPC path.
+
+`SetMode(Input(), 1)` disables cooked editing and makes `Read()` expose raw
+bytes. `WaitForChar()` is backed by `select()` with AmigaDOS's microsecond
+timeout, which is the input contract Vim's Amiga backend uses. The focused
+`test-native-input` target checks cooked history, complete CSI handling, raw
+reads, and readiness. The editor/runtime objects are part of the DOS runtime;
+`native-list-compat.c` supplies the external Exec list symbols expected by
+the imported handler while ACE's own list callers keep their inline helpers.
+
+The GUI sets `ACE_CONSOLE_INTERACTIVE=1`; ordinary pipes and scripts do not,
+so their output remains byte-for-byte stream behavior rather than acquiring
+interactive echo sequences.
+
 One trap worth knowing, since it wasted time twice in a row: the Makefile is
 not a prerequisite of anything it builds, so changing a rule's recipe does not
 rebuild the object. Both times the symptom was a fix that appeared not to
@@ -407,9 +427,10 @@ table on top would be strictly worse, not more authentic. `key_press()`'s
 translation is the permanent design here, on the same footing as
 `graphics.library` being authored rather than compiled: this is where the
 seam sits, not a stopgap for AROS code to eventually take over. Editing
-itself (cursor movement, backspace, history) already runs on real AROS
-code, via `process_input()` from Phase 1 -- only the *encoding* of GDK key
-events into the bytes it expects is ACE's, and stays that way.
+itself (cursor movement, backspace, history) runs in the child on real AROS
+code, via `process_input()`; only the *encoding* of GDK key events into the
+bytes it expects is ACE's, and stays that way. Raw-mode programs receive those
+same bytes after `SetMode()` disables the child-side editor.
 
 Font and palette selection is host-side: the ACE Shell GTK menu offers a
 monospace typeface chooser and eight color slots, validated through the same

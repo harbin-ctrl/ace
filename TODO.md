@@ -63,14 +63,12 @@ prerequisite puts it in `$^` too, which fails with "file format not
 recognized". Doing it properly means filtering it back out of every one of
 those recipes. Until then, delete the object by hand after editing its rule.
 
-**Raw console input, and Amiga Vim.** Scoped in conversation but never written
-down beyond this note. The blocker is that line editing happens in the GUI
-process: `src/amiga_console.c` `send_input()` feeds keystrokes to the AROS line
-editor and writes to the child socket only once a whole line exists, so a child
-can never see a keystroke. `amiga_con_handler_SetRaw()` in `src/con_handler.c`
-already implements the raw/cooked switch and has no callers anywhere -- that
-file is compiled only into `console-device-test`. The shape of the fix is to
-move the line editor to the child side, which makes `SetMode()` an in-process
-flag and needs no new IPC. Everything else Vim wants -- `SetMode`,
-`WaitForChar`, `Delay`, `DateStamp`, `Rename`, `SetProtection`, `Info` -- is
-small by comparison and useless without it. `SetProtection` is now done.
+**Build Amiga Vim and finish the remaining DOS calls.** The raw-console seam is
+now in place. `src/amiga_console.c` forwards key bytes, `native_dos.c` owns
+cooked editing for the GUI session, and `SetMode()`/`WaitForChar()` expose the
+raw contract. `tests/native_input_test.c` covers the seam. Vim's Amiga backend
+still needs a build rule and the remaining DOS calls it reaches (`Delay` is
+available; `DateStamp`, `Rename`, and `Info` are not yet a complete port
+surface). `SetProtection` is done. The next useful step is to compile Vim's
+`os_amiga.c` plus its portable core against ACE and let the linker enumerate
+the remaining calls rather than guessing at them.

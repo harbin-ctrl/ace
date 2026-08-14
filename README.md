@@ -285,15 +285,18 @@ will consume this state in the next shell layer.
 The first classic-console shell slice is now available. It uses a GTK drawing
 surface as the Linux console, a full-duplex Unix stream for the
 child CLI, and a cloned broker session. The surface starts with the classic
-eight-pen palette and renders a first classic terminal subset: Amiga/ANSI CSI cursor movement,
-colors, text attributes, erasing, tabs, scrolling, and local line editing.
+eight-pen palette and renders a first classic terminal subset: Amiga/ANSI CSI
+cursor movement, colors, text attributes, erasing, tabs, scrolling, and local
+line editing.
 
-The live window now feeds keyboard bytes into the real AROS console-handler
-editing path from `rom/filesys/console_handler/support.c`. A small ACE bridge
-opens the host-backed `console.device`, calls the original `process_input()` and
-`history_walk()` code, and renders the original handler's `do_write()` output.
-The GTK surface no longer owns the current line, cursor movement, deletion, or
-history. It is only the host window and character-cell renderer.
+The live window forwards keyboard bytes directly to the child. The child-side
+DOS seam feeds those bytes into AROS's real console-handler editing path from
+`rom/filesys/console_handler/support.c`, and writes the handler's `do_write()`
+echo back through the same output stream. That placement is essential: when a
+program such as Vim takes raw mode, it receives the keystrokes itself instead
+of waiting for the shell's editor to produce a complete line. Piped/scripted
+sessions retain their direct stream behavior; only the GUI-launched session
+enables cooked editing.
 
 `src/console_device.[ch]` remains the smaller standalone console-device test
 seam. The real-handler bridge is in `src/aros_console_editor.[ch]`; it is the

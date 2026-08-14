@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
 #include <string.h>
@@ -26,6 +27,7 @@
 #include "native_host.h"
 #include "broker_protocol.h"
 #include "aros_dos_path.h"
+#include "aros_console_editor.h"
 
 static struct Process native_process;
 /* IoErr() is the process's pr_Result2, not a variable beside it. The AROS
@@ -97,6 +99,12 @@ static char native_input_prefix[4096];
 static size_t native_input_prefix_length;
 static size_t native_input_prefix_position;
 static int native_input_prefix_loaded;
+static struct ace_aros_console_editor *native_console_editor;
+static int native_console_editor_attempted;
+static int native_input_raw;
+static unsigned char native_editor_line[8194];
+static size_t native_editor_line_length;
+static size_t native_editor_line_position;
 static BPTR native_program_dir;
 static char native_program_name[PATH_MAX];
 
@@ -111,6 +119,7 @@ static struct native_stdio_handle native_stderr_handle;
 static int native_stdio_initialized;
 
 static void set_native_broker_error(void);
+static FILE *selected_output(void);
 
 static void native_init_stdio_handles(void)
 {
@@ -158,6 +167,95 @@ static void native_load_input_prefix(void)
         native_input_prefix[native_input_prefix_length++] = '\n';
 }
 
+static int native_console_session_enabled(void)
+{
+    const char *enabled = getenv("ACE_CONSOLE_INTERACTIVE");
+
+    return enabled && strcmp(enabled, "1") == 0;
+}
+
+static void native_console_editor_output(void)
+{
+    unsigned char output[4096];
+    size_t length;
+    FILE *file = selected_output();
+
+    if (!native_console_editor)
+        return;
+    do {
+        length = ace_aros_console_editor_take_output(
+            native_console_editor, output, sizeof(output));
+        if (length != 0) {
+            if (fwrite(output, 1, length, file) != length) {
+                native_ioerr = errno;
+                return;
+            }
+            /* Keystroke echo has to reach the GUI before the next byte is
+               read. The normal shell output path may remain buffered. */
+            fflush(file);
+        }
+    } while (length != 0);
+}
+
+static int native_console_editor_start(void)
+{
+    if (native_console_editor_attempted)
+        return native_console_editor != NULL;
+    native_console_editor_attempted = 1;
+    if (!native_console_session_enabled())
+        return 0;
+    native_console_editor = ace_aros_console_editor_open();
+    return native_console_editor != NULL;
+}
+
+static int native_editor_next_char(FILE *file)
+{
+    unsigned char input[32];
+    size_t input_length;
+    int character;
+
+    if (native_editor_line_position < native_editor_line_length)
+        return native_editor_line[native_editor_line_position++];
+    native_editor_line_position = 0;
+    native_editor_line_length = 0;
+    if (!native_console_editor_start())
+        return fgetc(file);
+
+    for (;;) {
+        character = fgetc(file);
+        if (character == EOF)
+            return EOF;
+        input[0] = (unsigned char)character;
+        input_length = 1;
+        /* support.c's CSI matcher receives a buffer, not a stream: give it
+           the complete key sequence so an arrow is interpreted as history
+           navigation rather than as an unknown CSI followed by a literal
+           'A'. The AROS console sequences all terminate in a final letter or
+           '~'; the bound keeps malformed input from consuming indefinitely. */
+        if (input[0] == 0x9b) {
+            while (input_length < sizeof(input)) {
+                character = fgetc(file);
+                if (character == EOF)
+                    break;
+                input[input_length++] = (unsigned char)character;
+                if ((character >= 'A' && character <= 'Z') ||
+                    (character >= 'a' && character <= 'z') ||
+                    character == '~' || character == '@')
+                    break;
+            }
+        }
+        if (ace_aros_console_editor_feed(native_console_editor, input,
+                                          input_length) != 0)
+            return input[0];
+        native_console_editor_output();
+        native_editor_line_length = ace_aros_console_editor_take_line(
+            native_console_editor, native_editor_line,
+            sizeof(native_editor_line));
+        if (native_editor_line_length != 0)
+            return native_editor_line[native_editor_line_position++];
+    }
+}
+
 static int native_input_getc(FILE *file)
 {
     native_load_input_prefix();
@@ -165,6 +263,8 @@ static int native_input_getc(FILE *file)
         native_input_prefix_length)
         return (unsigned char)native_input_prefix[
             native_input_prefix_position++];
+    if (file == stdin && !native_input_raw)
+        return native_editor_next_char(file);
     return fgetc(file);
 }
 
@@ -1327,6 +1427,54 @@ BOOL IsInteractive(BPTR handle)
            handle == (BPTR)stderr;
 }
 
+LONG SetMode(BPTR handle, LONG mode)
+{
+    native_init_stdio_handles();
+    if (handle != (BPTR)&native_stdin_handle.amiga && handle != (BPTR)stdin) {
+        native_ioerr = ERROR_ACTION_NOT_KNOWN;
+        return DOSFALSE;
+    }
+    native_input_raw = mode != 0;
+    return DOSTRUE;
+}
+
+LONG WaitForChar(BPTR handle, LONG timeout)
+{
+    FILE *file;
+    fd_set readable;
+    struct timeval interval;
+    struct timeval *interval_pointer = NULL;
+    int descriptor;
+    int result;
+
+    native_init_stdio_handles();
+    if (!handle || (handle != (BPTR)&native_stdin_handle.amiga &&
+                    handle != (BPTR)stdin))
+        return DOSFALSE;
+    native_load_input_prefix();
+    if (native_input_prefix_position < native_input_prefix_length ||
+        native_editor_line_position < native_editor_line_length)
+        return DOSTRUE;
+    file = stdin;
+    descriptor = fileno(file);
+    if (descriptor < 0)
+        return DOSFALSE;
+    if (timeout >= 0) {
+        interval_pointer = &interval;
+    }
+    do {
+        if (interval_pointer) {
+            interval.tv_sec = timeout / 1000000L;
+            interval.tv_usec = timeout % 1000000L;
+        }
+        FD_ZERO(&readable);
+        FD_SET(descriptor, &readable);
+        result = select(descriptor + 1, &readable, NULL, NULL,
+                        interval_pointer);
+    } while (result < 0 && errno == EINTR);
+    return result > 0 ? DOSTRUE : DOSFALSE;
+}
+
 LONG FPutC(BPTR handle, LONG character)
 {
     if (fputc((unsigned char)character, as_file(handle)) == EOF) {
@@ -1552,6 +1700,18 @@ ULONG SetSignal(ULONG set_mask, ULONG clear_mask)
     (void)clear_mask;
     return 0;
 }
+
+void Signal(struct Task *task, ULONG signal_set)
+{
+    (void)task;
+    (void)signal_set;
+}
+
+void SetMem(APTR destination, ULONG length, UBYTE value)
+{
+    memset(destination, value, length);
+}
+
 
 ULONG CheckSignal(ULONG mask)
 {
@@ -1906,6 +2066,12 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
         size_t index;
 
         for (index = 0; index < (size_t)length; index++) {
+            /* A raw console read is commonly preceded by WaitForChar(),
+               and must return the bytes available at that instant rather
+               than block trying to fill Vim's larger scratch buffer. */
+            if (native_input_raw && index != 0 &&
+                !WaitForChar(handle, 0))
+                break;
             int character = native_input_getc(file);
 
             if (character == EOF)

@@ -181,8 +181,8 @@ all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
@@ -300,8 +300,15 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-dos-readitem.o \
                     $(BUILD)/aros-dos-freeargs.o \
                     $(BUILD)/aros-dos-findarg.o \
-                    $(BUILD)/aros-dos-strtolong.o | $(BUILD)
+                    $(BUILD)/aros-dos-strtolong.o \
+                    $(BUILD)/aros-console-editor.o \
+                    $(BUILD)/aros-con-support.o \
+                    $(BUILD)/aros-exec-runtime.o \
+                    $(BUILD)/native-list-compat.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
+
+$(BUILD)/native-list-compat.o: src/native_list_compat.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
@@ -398,6 +405,9 @@ $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | 
 $(BUILD)/aros-console-editor.o: src/aros_console_editor.c src/aros_console_editor.h $(AROS_CON_SUPPORT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
+$(BUILD)/aros-console-editor-stubs.o: src/aros_console_editor_stubs.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
 $(BUILD)/exec_compat.o: src/exec_compat.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
 
@@ -410,7 +420,12 @@ $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_devic
 $(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c $(BUILD)/aros-exec-runtime.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
 
-$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+$(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
+                            $(BUILD)/native_dos.o $(BUILD)/native_command.o \
+                            $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
+
+$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
                                    $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                                    $(BUILD)/aros-graphics-runtime.o $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ $(GFX_LIBS) -o $@
@@ -576,7 +591,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
@@ -630,6 +645,9 @@ test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 test-aros-console-editor: $(BUILD)/aros-console-editor-test
 	$(BUILD)/aros-console-editor-test
 
+test-native-input: $(BUILD)/native-input-test
+	$(BUILD)/native-input-test
+
 test-exec-compat: $(BUILD)/exec-compat-test
 	$(BUILD)/exec-compat-test
 
@@ -654,4 +672,4 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
