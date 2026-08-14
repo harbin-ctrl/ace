@@ -105,6 +105,24 @@ output=$(run_shell 'Echo found-through-c
 ')
 expect_contains "$output" "found-through-c" "a bare command did not resolve"
 
+# An Amiga filesystem does not distinguish case, so a command answers to any
+# spelling of its name. This is the whole reason anyone can type "dir".
+output=$(run_shell 'echo lower-case-name
+ECHO UPPER-CASE-NAME
+')
+expect_contains "$output" "lower-case-name" "a lower-case command name did not resolve"
+expect_contains "$output" "UPPER-CASE-NAME" "an upper-case command name did not resolve"
+
+# The same for a path, and a name being created keeps the spelling it was
+# given rather than one borrowed from something that is not there.
+output=$(run_shell 'MakeDir T:CaseMade
+Dir T:
+Delete T:casemade
+Dir T:
+')
+expect_contains "$output" "CaseMade" "a created name did not keep its own case"
+expect_contains "$output" "Deleted" "a path did not resolve without regard to case"
+
 # The command path is the loader's business. Open() must not quietly find a
 # command when what was asked for was a file.
 output=$(run_shell 'Type Echo
