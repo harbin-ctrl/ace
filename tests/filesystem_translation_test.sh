@@ -14,6 +14,7 @@ rename_source="$mapping_test_dir/rename-source"
 rename_target="$mapping_test_dir/rename-target"
 rename_question_source="$mapping_test_dir/rename-question-source"
 rename_question_target="$mapping_test_dir/rename-question-target"
+run_created_dir="$mapping_test_dir/run-created"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second"
 touch "$rename_source"
@@ -40,6 +41,7 @@ cleanup()
     [ -e "$rename_target" ] && unlink "$rename_target" 2>/dev/null || true
     [ -e "$rename_question_source" ] && unlink "$rename_question_source" 2>/dev/null || true
     [ -e "$rename_question_target" ] && unlink "$rename_question_target" 2>/dev/null || true
+    [ -e "$run_created_dir" ] && rmdir "$run_created_dir" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
           "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
@@ -149,6 +151,42 @@ rename_question_output=$(printf 'Rename ?\nFROM=%s AS=%s QUIET\nEndCLI\n' \
 case "$rename_question_output" in
     *"required argument missing"*|*"object not found"*)
         echo "Rename '?' did not read its second argument line" >&2
+        exit 1
+        ;;
+esac
+
+# Stack is present as the AROS command and accepts a normal stack setting.
+# Linux command processes do not inherit an Amiga stack-size contract, so the
+# launcher deliberately ignores that setting rather than inventing one.
+stack_output=$(printf 'Stack 4096\nEndCLI\n' |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-stack-test "$repo_dir/build/ace-user-shell")
+case "$stack_output" in
+    *"Requested size is too small"*)
+        echo "Stack rejected a setting that should be accepted by the host seam" >&2
+        exit 1
+        ;;
+esac
+
+# Run starts an ACE command as a detached background process. Use a filesystem
+# effect instead of output timing to prove the child really ran.
+run_parent_name=$(control name "$mapping_test_dir")
+run_created_name="$run_parent_name/run-created"
+run_output=$(printf 'Run MakeDir %s\nEndCLI\n' "$run_created_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-run-test "$repo_dir/build/ace-user-shell")
+run_completed=0
+for attempt in $(seq 1 100); do
+    if [ -d "$run_created_dir" ]; then
+        run_completed=1
+        break
+    fi
+    sleep 0.01
+done
+[ "$run_completed" -eq 1 ]
+case "$run_output" in
+    *"Run:"*"object not found"*)
+        echo "Run could not launch the ACE command" >&2
         exit 1
         ;;
 esac

@@ -13,6 +13,7 @@ const char *native_console_specification(BPTR handle);
 void native_console_close(BPTR handle);
 BPTR native_lock_host_path(const char *path);
 int native_command_path(const char *name, char *result, size_t result_size);
+int native_run_background(const char *command);
 void native_request_endcli(void);
 
 #endif

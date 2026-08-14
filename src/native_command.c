@@ -3,6 +3,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -192,6 +193,105 @@ static int split_arguments(const char *input, size_t length, char *storage,
     }
     argv[argument_count + 1] = NULL;
     return (int)argument_count;
+}
+
+/* Keep the original spelling for the child command. Its AROS ReadArgs()
+   parser remains the authority for quotes, switches, and /F arguments. */
+static const char *command_tail(const char *input)
+{
+    const char *read = input;
+    int quoted = 0;
+
+    while (*read == ' ' || *read == '\t' || *read == '\r' || *read == '\n')
+        read++;
+    while (*read) {
+        if (*read == '"') {
+            quoted = !quoted;
+        } else if (!quoted && (*read == ' ' || *read == '\t' ||
+                               *read == '\r' || *read == '\n')) {
+            break;
+        } else if ((*read == '*' || *read == '\\') && read[1]) {
+            read++;
+        }
+        read++;
+    }
+    while (*read == ' ' || *read == '\t' || *read == '\r' || *read == '\n')
+        read++;
+    return read;
+}
+
+int native_run_background(const char *command)
+{
+    char storage[4096];
+    char *argv[128] = {0};
+    char command_path[PATH_MAX];
+    char cwd[PATH_MAX] = {0};
+    const char *tail;
+    int argument_count;
+    pid_t child;
+    int status;
+
+    if (!command || !*command) {
+        SetIoErr(ERROR_BAD_TEMPLATE);
+        return -1;
+    }
+    argument_count = split_arguments(command, strlen(command), storage,
+                                     sizeof(storage), argv,
+                                     sizeof(argv) / sizeof(argv[0]));
+    if (argument_count < 1 ||
+        native_command_path(argv[1], command_path, sizeof(command_path)) != 0 ||
+        native_broker_getcwd(cwd, sizeof(cwd)) != 0) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return -1;
+    }
+
+    /* Reap the first child here. Its child is detached from the shell's wait
+       relationship, which is the Unix equivalent of AROS's background CLI. */
+    child = fork();
+    if (child < 0) {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return -1;
+    }
+    if (child == 0) {
+        pid_t background = fork();
+
+        if (background < 0)
+            _exit(RETURN_FAIL);
+        if (background > 0)
+            _exit(RETURN_OK);
+
+        (void)setsid();
+        if (cwd[0] != '\0')
+            (void)chdir(cwd);
+        {
+            int null_input = open("/dev/null", O_RDONLY);
+
+            if (null_input >= 0) {
+                (void)dup2(null_input, STDIN_FILENO);
+                if (null_input != STDIN_FILENO)
+                    close(null_input);
+            }
+        }
+        tail = command_tail(command);
+        if (setenv("ACE_COMMAND_ARGUMENTS", tail, 1) != 0)
+            _exit(RETURN_FAIL);
+
+        /* split_arguments indexes the command at argv[1], while execv wants
+           argv[0] to be the executable and the remaining words as arguments.
+           Remove the command token in place. */
+        argv[0] = command_path;
+        for (int index = 1; index < argument_count; index++)
+            argv[index] = argv[index + 1];
+        argv[argument_count] = NULL;
+        execv(command_path, argv);
+        _exit(RETURN_FAIL);
+    }
+    if (waitpid(child, &status, 0) < 0 ||
+        !WIFEXITED(status) || WEXITSTATUS(status) != RETURN_OK) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return -1;
+    }
+    return 0;
 }
 
 LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
