@@ -473,8 +473,21 @@ BOOL ErrorReport(LONG error, ULONG type, IPTR object, APTR requester)
     (void)object;
     (void)requester;
     SetIoErr(error);
-    /* ACE has no requester UI at this DOS layer. */
-    return DOSFALSE;
+    /*
+     * The return value is which button the user chose, not whether anything
+     * was reported: DOSFALSE is "Retry", DOSTRUE is "Cancel". AmigaDOS also
+     * specifies DOSTRUE for an error that could not be reported at all,
+     * which is permanently ACE's case -- there is no requester at this
+     * layer.
+     *
+     * Every caller of this in rom/dos is a retry loop that only exits on
+     * DOSTRUE, so answering "Retry" to an error nothing will ever fix spins
+     * forever. getdeviceproc.c's `do { ... } while (dl == NULL)` is the one
+     * a bad device name reaches -- "CD A:" burned a core there -- and
+     * internalseek.c, startnotify.c and getdeviceproc.c's volume path hang
+     * the same way.
+     */
+    return DOSTRUE;
 }
 
 UBYTE ToUpper(ULONG character)
@@ -732,7 +745,16 @@ static int native_union_existing(CONST_STRPTR name, char *result,
                                  size_t result_size)
 {
     struct DevProc *device = ace_aros_GetDeviceProc(name, NULL);
-    int saved_error = ERROR_OBJECT_NOT_FOUND;
+    /*
+     * A NULL on the very first call means no handler claims this name at
+     * all -- an unmounted device, or an assign that was never made -- and
+     * GetDeviceProc() has already recorded the specific reason, normally
+     * ERROR_DEVICE_NOT_MOUNTED. Keep it. The generic not-found below is
+     * only right once a handler does exist and it is the object within it
+     * that is missing, which is the distinction "CD A:" and "CD DH0:junk"
+     * turn on.
+     */
+    int saved_error = device ? ERROR_OBJECT_NOT_FOUND : (int)IoErr();
 
     while (device) {
         struct stat information;
