@@ -355,11 +355,19 @@ static mode_t native_mode_from_protection(mode_t mode, LONG protection)
    the inode, which is what makes it survive a rename or a move within a
    filesystem without ACE doing anything.
 
-   The name is deliberately generic rather than ACE's own: a comment on a
-   file is not an ACE concept, and anything else that wants to read or write
-   one should not have to know ACE wrote it. The cost of a shared name is
-   that a foreign writer is not bound by AmigaDOS's 79-character limit, which
-   is why the read path truncates instead of trusting what it finds. */
+   The name is deliberately generic, and neither half of that is an
+   oversight. It is not ACE's, because a comment on a file is not an ACE
+   concept -- ACE is only what happens to be writing this one, and anything
+   else that wants to read or write one should not have to know that. It
+   does not carry a vendor's name either, because unlike a source filename
+   an extended attribute propagates: onto the user's own files, and through
+   every backup and copy that preserves xattrs. Everything ACE puts on disk
+   is named for ACE or for nothing -- ace.conf, ace-broker.sock -- and this
+   is the "for nothing" case.
+
+   The cost of a shared name is that a foreign writer is not bound by
+   AmigaDOS's 79-character limit, which is why the read path truncates
+   instead of trusting what it finds. */
 #define NATIVE_COMMENT_ATTRIBUTE "user.comment"
 
 /* Reads a file comment into a fib, which was zeroed by the caller: no
