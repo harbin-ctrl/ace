@@ -197,6 +197,252 @@ static void release_session(struct broker_session *session)
  * opened from then on died on the spot. What has changed is that this can no
  * longer take a live shell's session away from underneath it.
  */
+/*
+ * SYS: -- the boot volume. On a real machine dos.library locks the volume it
+ * was booted from; here the equivalent question is which installation of ACE
+ * this broker belongs to. The compiled-in answer is the install prefix, the
+ * environment can override it for a test run, and a broker that finds
+ * neither falls back to its own directory, which in a build tree is where
+ * the commands are.
+ */
+#ifndef ACE_SYS_DIR
+#define ACE_SYS_DIR ""
+#endif
+
+static char system_root[PATH_MAX];
+
+static struct assign_entry *allocate_assign(struct broker_session *session,
+                                            const char *name);
+
+static bool is_directory(const char *path)
+{
+    struct stat information;
+
+    return path && *path && stat(path, &information) == 0 &&
+           S_ISDIR(information.st_mode);
+}
+
+static bool is_regular_file(const char *path)
+{
+    struct stat information;
+
+    return path && *path && stat(path, &information) == 0 &&
+           S_ISREG(information.st_mode);
+}
+
+/* mkdir -p for a path ACE owns. */
+static bool make_directory_path(const char *path)
+{
+    char work[PATH_MAX];
+    size_t length = strlen(path);
+
+    if (length >= sizeof(work))
+        return false;
+    strcpy(work, path);
+    for (char *cursor = work + 1; *cursor; cursor++) {
+        if (*cursor != '/')
+            continue;
+        *cursor = '\0';
+        if (mkdir(work, 0700) != 0 && errno != EEXIST)
+            return false;
+        *cursor = '/';
+    }
+    return (mkdir(work, 0700) == 0 || errno == EEXIST) && is_directory(work);
+}
+
+static void resolve_system_root(void)
+{
+    const char *override = getenv("ACE_SYS_DIR");
+    char executable[PATH_MAX];
+    ssize_t length;
+    char *slash;
+
+    if (override && *override && strlen(override) < sizeof(system_root)) {
+        strcpy(system_root, override);
+        return;
+    }
+    if (is_directory(ACE_SYS_DIR) &&
+        strlen(ACE_SYS_DIR) < sizeof(system_root)) {
+        strcpy(system_root, ACE_SYS_DIR);
+        return;
+    }
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length > 0 && (size_t)length < sizeof(executable) - 1) {
+        executable[length] = '\0';
+        slash = strrchr(executable, '/');
+        if (slash && slash != executable) {
+            *slash = '\0';
+            if (strlen(executable) < sizeof(system_root)) {
+                strcpy(system_root, executable);
+                return;
+            }
+        }
+    }
+    strcpy(system_root, "/");
+}
+
+/*
+ * The volatile half of the boot assigns. AROS puts ENV: and T: in RAM:,
+ * which it can name because the RAM disk is a fixed part of the system. ACE
+ * names its tmpfs mounts RAM:, RAM1: ... in host mount order, so which one
+ * is "the" RAM disk is an accident of how this machine happens to be
+ * mounted, and no script could portably name it. The host's own per-user
+ * runtime directory is the same thing said properly: tmpfs, private, and
+ * emptied between boots.
+ */
+static void volatile_root(char *result, size_t result_size)
+{
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+
+    if (runtime && *runtime &&
+        (size_t)snprintf(result, result_size, "%s/ace", runtime) < result_size)
+        return;
+    snprintf(result, result_size, "/tmp/ace-%lu", (unsigned long)getuid());
+}
+
+static void set_directory_assign(struct broker_session *session,
+                                 const char *name, const char *path)
+{
+    struct assign_entry *assign;
+
+    if (!is_directory(path))
+        return;
+    assign = allocate_assign(session, name);
+    if (!assign || strlen(path) >= sizeof(assign->root))
+        return;
+    memset(assign->targets, 0, sizeof(assign->targets));
+    strcpy(assign->targets[0], path);
+    assign->target_count = 1;
+    strcpy(assign->root, path);
+    assign->type = ASSIGN_DIRECTORY;
+}
+
+/*
+ * AddBootAssign() in rom/dos/cliinit.c: the drawer if it is there, and SYS:
+ * itself if it is not. A system with nothing to put in L: still answers for
+ * L:, which is why an unmodified program can open "LIBS:foo" on any Amiga
+ * and get a missing file rather than a missing device.
+ */
+static void add_boot_assign(struct broker_session *session, const char *name,
+                            const char *drawer)
+{
+    char path[PATH_MAX];
+
+    if ((size_t)snprintf(path, sizeof(path), "%s/%s", system_root, drawer) <
+        sizeof(path) && is_directory(path))
+        set_directory_assign(session, name, path);
+    else
+        set_directory_assign(session, name, system_root);
+}
+
+/*
+ * What dos.library establishes before the first shell runs. It has to happen
+ * here rather than in a script, for the same reason it is C code in AROS:
+ * the shell cannot find the script that would make these assigns, or the
+ * Assign command that would make them, until they exist.
+ */
+static void seed_boot_assigns(struct broker_session *session)
+{
+    char volatile_path[PATH_MAX];
+    char path[PATH_MAX];
+
+    set_directory_assign(session, "SYS", system_root);
+    add_boot_assign(session, "C", "C");
+    add_boot_assign(session, "LIBS", "Libs");
+    add_boot_assign(session, "DEVS", "Devs");
+    add_boot_assign(session, "L", "L");
+    add_boot_assign(session, "S", "S");
+    add_boot_assign(session, "FONTS", "Fonts");
+
+    /* ENVARC: is the saved half of the environment and lives with the
+       installation; ENV: is the live half and does not survive a reboot. */
+    if ((size_t)snprintf(path, sizeof(path), "%s/Prefs/Env-Archive",
+                         system_root) < sizeof(path)) {
+        (void)make_directory_path(path);
+        set_directory_assign(session, "ENVARC", path);
+    }
+    volatile_root(volatile_path, sizeof(volatile_path));
+    if ((size_t)snprintf(path, sizeof(path), "%s/env", volatile_path) <
+        sizeof(path)) {
+        (void)make_directory_path(path);
+        set_directory_assign(session, "ENV", path);
+    }
+    if ((size_t)snprintf(path, sizeof(path), "%s/t", volatile_path) <
+        sizeof(path)) {
+        (void)make_directory_path(path);
+        set_directory_assign(session, "T", path);
+    }
+}
+
+/*
+ * The Startup-Sequence's `Copy ENVARC: ENV: ALL`, done here because ACE has
+ * no Copy command to do it with yet, and because a broker is the closest
+ * thing ACE has to a boot: this runs once, when the broker starts, and the
+ * live environment it produces is then shared by every session.
+ */
+static void restore_environment_archive(void)
+{
+    char archive[PATH_MAX];
+    char live[PATH_MAX];
+    char volatile_path[PATH_MAX];
+    struct dirent *entry;
+    DIR *stream;
+
+    if ((size_t)snprintf(archive, sizeof(archive), "%s/Prefs/Env-Archive",
+                         system_root) >= sizeof(archive))
+        return;
+    volatile_root(volatile_path, sizeof(volatile_path));
+    if ((size_t)snprintf(live, sizeof(live), "%s/env", volatile_path) >=
+        sizeof(live) || !make_directory_path(live))
+        return;
+    stream = opendir(archive);
+    if (!stream)
+        return;
+    while ((entry = readdir(stream))) {
+        char from[PATH_MAX];
+        char to[PATH_MAX];
+        char buffer[4096];
+        ssize_t count;
+        int source;
+        int target;
+
+        if (entry->d_name[0] == '.')
+            continue;
+        if ((size_t)snprintf(from, sizeof(from), "%s/%s", archive,
+                             entry->d_name) >= sizeof(from) ||
+            (size_t)snprintf(to, sizeof(to), "%s/%s", live, entry->d_name) >=
+            sizeof(to))
+            continue;
+        if (!is_regular_file(from))
+            continue;
+        source = open(from, O_RDONLY);
+        if (source < 0)
+            continue;
+        target = open(to, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (target < 0) {
+            close(source);
+            continue;
+        }
+        while ((count = read(source, buffer, sizeof(buffer))) > 0) {
+            ssize_t written = 0;
+
+            while (written < count) {
+                ssize_t step = write(target, buffer + written,
+                                     (size_t)(count - written));
+
+                if (step <= 0)
+                    break;
+                written += step;
+            }
+            if (written < count)
+                break;
+        }
+        close(source);
+        close(target);
+    }
+    closedir(stream);
+}
+
 static struct broker_session *get_session(const char *id)
 {
     struct broker_session *free_slot = NULL;
@@ -230,6 +476,7 @@ static struct broker_session *get_session(const char *id)
         strcpy(free_slot->cwd, "/");
     free_slot->fail_level = DEFAULT_FAIL_LEVEL;
     strcpy(free_slot->prompt, DEFAULT_PROMPT);
+    seed_boot_assigns(free_slot);
     return touch_session(free_slot);
 }
 
@@ -1571,6 +1818,8 @@ int main(int argc, char **argv)
         return already_running ? 0 : 1;
 
     ace_dos_devices_discover();
+    resolve_system_root();
+    restore_environment_archive();
 
     signal(SIGINT, stop_server);
     signal(SIGTERM, stop_server);

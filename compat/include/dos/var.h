@@ -15,9 +15,13 @@ struct LocalVar {
 #define LV_ALIAS         1
 #define GVB_GLOBAL_ONLY  8
 #define GVB_LOCAL_ONLY   9
+#define GVB_BINARY_VAR   10
+#define GVB_DONT_NULL_TERM 11
 #define GVB_SAVE_VAR     12
 #define GVF_GLOBAL_ONLY  (1L << GVB_GLOBAL_ONLY)
 #define GVF_LOCAL_ONLY   (1L << GVB_LOCAL_ONLY)
+#define GVF_BINARY_VAR   (1L << GVB_BINARY_VAR)
+#define GVF_DONT_NULL_TERM (1L << GVB_DONT_NULL_TERM)
 #define GVF_SAVE_VAR     (1L << GVB_SAVE_VAR)
 
 LONG GetVar(CONST_STRPTR name, STRPTR buffer, LONG size, LONG flags);

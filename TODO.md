@@ -43,17 +43,26 @@ all. It was invisible for as long as only five commands used the real parser.
 reintroduction. `tests/filesystem_translation_test.sh` is the natural home: a
 `CD A:` case asserting a prompt non-zero exit under a timeout.
 
-**No standard assigns, so `T:` becomes a filename.** ACE seeds no `SYS:`,
-`C:`, `S:` or `T:`, and an unresolved name is used verbatim, so unmodified Vim
--- whose Amiga backend defaults `'directory'` and `'backupdir'` to `T:`
-(`os_amiga.h`, `DFLT_DIR`/`DFLT_BDIR`) -- leaves files literally named
-`T:.swp` and `T:.swo` in whatever directory it was started from. Every
-AmigaOS/AROS system has these assigns; any ported program that writes to a
-temporary file will hit the same thing. The work is deciding what each one
-points at under ACE's translated filesystem and whether the broker seeds them
-per session or once, not the assign mechanism itself, which works. Found while
-running Vim on the live console; the rendering and input fixes there did not
-touch it.
+**Port `Path`, and give the CLI a command directory list.** `loadCommand()`
+searches `cli_CommandDir` between the current directory and `C:`, and ACE
+leaves that list empty, so `C:` is doing the whole job alone. `Path` is on the
+wrong side of the line for an unmodified port -- it writes the shell's own
+CLI, which an ACE command cannot do from its own process, the same wall
+`Execute` hit -- so it wants the list kept in the broker and rebuilt into
+`cli_CommandDir` by `Cli()`, plus an ACE-written `Path` that edits it there.
+Until then `Path` is missing from the Startup-Sequence, which is the one line
+of AROS's own that ACE cannot yet run.
+
+**Port `Copy`.** The Startup-Sequence's `Copy ENVARC: ENV: ALL` is done by the
+broker instead, which is the right effect at the wrong layer -- it is a script
+step, and ACE's script layer cannot express it. `Copy` is 2673 lines of AROS
+and wants `DateStamp()`, `DateToStr()` and `StrToDate()`, the same three
+`List` is waiting on.
+
+**Nothing owns `LIBS:`, `DEVS:`, `L:` or `FONTS:`.** They are established, and
+they all resolve to `SYS:` because ACE has nothing to put in them -- which is
+exactly what AROS does for a system missing those drawers, so it is correct
+rather than pending. Worth revisiting the moment ACE has a loadable anything.
 
 **`ace-brokerctl assign` always fails.** `ace-brokerctl assign WORK: /tmp` --
 the form README documents -- exits 1 and says nothing, on this checkout and at

@@ -3,6 +3,7 @@
 
 #include <exec/types.h>
 
+LONG Stricmp(CONST_STRPTR left, CONST_STRPTR right);
 LONG Strnicmp(CONST_STRPTR left, CONST_STRPTR right, LONG length);
 UBYTE ToUpper(ULONG character);
 

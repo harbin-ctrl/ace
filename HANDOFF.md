@@ -606,6 +606,68 @@ waiting on was left reading a console that could never produce another byte,
 spinning at full CPU forever. The shell and everything it runs are now one
 process group, and the console hangs up on the group.
 
+### Which layer owns an assign, and what that costs ACE
+
+The standard assigns are the clearest case of AmigaOS drawing a line that ACE
+has to draw somewhere too. `rom/dos/cliinit.c` makes `SYS:` and six drawers
+under it in C, before any shell exists, and `AddBootAssign()` falls back to
+`SYS:` for a drawer that is missing so `LIBS:foo` always fails as a missing
+file rather than a missing device. Everything else -- `T:`, `ENV:`, `CLIPS:`,
+`FONTS:` ADD -- is `workbench/s/Startup-Sequence`, an editable script of
+ordinary `Assign` commands run by the first CLI. The dividing line is
+bootstrapping: the script layer is everything a shell can already do.
+
+ACE keeps that line, with the broker as the boot layer, and moves exactly two
+things across it. `T:` and `ENV:` are boot assigns here because AROS names
+them `RAM:T` and `RAM:ENV` and ACE has no dependable `RAM:` to name -- tmpfs
+mounts become `RAM:`, `RAM1:` ... in host mount order, so which one is the RAM
+disk is a fact about the machine, not about ACE. They point into the host's
+per-user runtime directory instead. And the Startup-Sequence's
+`Copy ENVARC: ENV: ALL` is done by the broker, because ACE has no `Copy`.
+
+Three commands were added to make a real Startup-Sequence possible, and the
+interesting thing is which of them could be taken unmodified.
+
+**`If`, `Else`, `EndIf` are AROS's own.** They looked like the hard case --
+they change what the shell reads next -- but they do it by *consuming* the
+script rather than by redirecting it: `SelectInput(cli_CurrentInput)`, then
+`ReadItem()` and `FGetC()` until the matching `Else` or `EndIf`. A consumer
+works across ACE's process boundary, because `fork()` shares the file
+description and therefore the offset. So `RunCommand()` passes the script
+descriptor to the child, `Cli()` presents it as `cli_CurrentInput`, and lines
+the child eats are lines the shell will not see. The stream has to be
+unbuffered on both sides or a child's read-ahead takes the shell's next
+command into a buffer that dies with the child.
+
+Two ACE bugs surfaced under that. `UnGetC(handle, -1)` -- AmigaDOS for "put
+back the character just read", which `readitem.c` uses on the delimiter that
+ended an item -- was casting `-1` to the byte `0xff` and pushing that back
+instead, so the newline stayed consumed and a junk byte took its place. `If`'s
+skip loop reads to the end of the line after finding its `EndIf`, so it ran on
+and swallowed the line after the block: the symptom was a conditional that
+worked and a command after it that silently vanished. And `IsInteractive()`
+answered from the handle alone, which is right until a shell is started to run
+one script and stop.
+
+**`Execute` could not be.** AROS's works by assigning the opened script to
+`cli_CurrentInput`, or by splicing the script and the unread remainder into a
+temporary file and pointing `cli_CurrentInput` at that. Both are a command
+redirecting the shell that started it, which is precisely what a separate
+process cannot do -- and running it unmodified would be worse than doing
+nothing, because copying the remainder consumes the shell's script to EOF and
+the shell returns to an empty stream. ACE's writes the script into the
+caller's own input file, ahead of the part not yet read: the same splice, made
+in the file rather than in the CLI. With no script to splice into it runs a
+nested shell in the same broker session, so what the script changes is still
+changed afterwards.
+
+The general shape: a command that *reads* shared state can be taken
+unmodified, because ACE can hand it the same descriptor. A command that
+*writes* the shell's own state cannot, because the write dies with the
+process. `Path` is the next one on that side of the line -- it fills
+`cli_CommandDir` -- which is why ACE has no `Path` yet and `C:` is doing the
+whole job.
+
 ### Two ways ACE could take unmodified AROS code somewhere it cannot go
 
 Both of these are the same shape: AROS source that is correct on the system

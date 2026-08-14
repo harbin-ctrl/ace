@@ -24,6 +24,12 @@ BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 APPLICATIONSDIR ?= $(DATADIR)/applications
 ICONDIR ?= $(DATADIR)/icons/hicolor/512x512/apps
+# What SYS: means on this host: the boot volume's root, laid out the Amiga way
+# so C: really is SYS:C and S: really is SYS:S. The binaries themselves stay in
+# BINDIR, where a Linux user's PATH can reach them and where every "look for
+# the console beside me" lookup already resolves; SYS:C holds symlinks to them,
+# so both views are true at once and neither is a copy of the other.
+SYSDIR ?= $(DATADIR)/ace
 INSTALL ?= install
 
 COMPAT := $(CURDIR)/compat/include
@@ -49,8 +55,13 @@ AROS_CD_SRC := $(AROS_ROOT)/workbench/c/shellcommands/CD.c
 AROS_PATHPART_SRC := $(AROS_ROOT)/workbench/c/shellcommands/PathPart.c
 AROS_FAULT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Fault.c
 AROS_ASK_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Ask.c
+AROS_IF_SRC := $(AROS_ROOT)/workbench/c/shellcommands/If.c
+AROS_ELSE_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Else.c
+AROS_ENDIF_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndIf.c
 AROS_GET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Get.c
 AROS_GETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Getenv.c
+AROS_SETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Setenv.c
+AROS_UNSETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Unsetenv.c
 AROS_SET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Set.c
 AROS_UNSET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Unset.c
 AROS_ALIAS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Alias.c
@@ -105,6 +116,7 @@ AROS_DOSPAT_CFLAGS := -funsigned-char \
 # supplies the host process entry point the macro expansion assumes.
 AROS_SHCOMMAND_CFLAGS := -I$(AROS_ROOT)/compiler/include \
                          -include ace_shcommand_host.h
+AROS_SHCOMMAND_INCLUDES := -I$(AROS_ROOT)/workbench/c/shellcommands
 
 AROS_BOOPSI_DIR := $(AROS_ROOT)/rom/intuition
 AROS_ALIB_DIR := $(AROS_ROOT)/compiler/alib
@@ -173,11 +185,19 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/arossupport/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
-INSTALL_BINS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
-                FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX ace-shell ace-user-shell ace-console NewCLI \
-                ace-broker ace-brokerctl
+# The AmigaDOS commands: what a user types at the shell, and what SYS:C is a
+# drawer of. C: is the loader's last resort, so a command reachable by name
+# and nothing else has to be in here.
+AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
+                  FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX NewCLI \
+                  If Else EndIf Execute Setenv Unsetenv
+# The host side: a launcher, the console, the shell the console starts, and
+# the broker with its control tool. These are entry points into ACE rather
+# than commands within it, and they are not in SYS:C.
+HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
+INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -327,8 +347,12 @@ $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
+# The broker is where SYS: is established, so it is the one object that has to
+# be told where this build was installed. An uninstalled broker finds neither
+# this path nor an ACE_SYS_DIR in its environment and falls back to its own
+# directory, which for a build tree is where the commands are.
 $(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h | $(BUILD)
-	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -DACE_SYS_DIR='"$(SYSDIR)"' -Isrc -c $< -o $@
 
 $(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
@@ -447,8 +471,8 @@ $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
 $(BUILD)/aros-real-shell.o: $(AROS_ROOT)/workbench/c/Shell/Shell.c | $(BUILD)
 	$(CC) $(CFLAGS) -Dmain=ace_aros_shell_main -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
-$(BUILD)/ace-user-shell.o: src/ace_user_shell.c src/broker_client.h | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+$(BUILD)/ace-user-shell.o: src/ace_user_shell.c src/broker_client.h src/native_host.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-%.o: $(AROS_ROOT)/workbench/c/Shell/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
@@ -487,10 +511,27 @@ $(BUILD)/Fault.o: $(AROS_FAULT_SRC) | $(BUILD)
 $(BUILD)/Ask.o: $(AROS_ASK_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
+# The conditionals need dos_commanderrors.h, which lives beside them and
+# holds nothing but the two error codes they report.
+$(BUILD)/If.o: $(AROS_IF_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) $(AROS_SHCOMMAND_INCLUDES) -c $< -o $@
+
+$(BUILD)/Else.o: $(AROS_ELSE_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) $(AROS_SHCOMMAND_INCLUDES) -c $< -o $@
+
+$(BUILD)/EndIf.o: $(AROS_ENDIF_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) $(AROS_SHCOMMAND_INCLUDES) -c $< -o $@
+
 $(BUILD)/Get.o: $(AROS_GET_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Getenv.o: $(AROS_GETENV_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
+
+$(BUILD)/Setenv.o: $(AROS_SETENV_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
+
+$(BUILD)/Unsetenv.o: $(AROS_UNSETENV_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Set.o: $(AROS_SET_SRC) | $(BUILD)
@@ -562,10 +603,33 @@ $(BUILD)/Fault: $(BUILD)/Fault.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUIL
 $(BUILD)/Ask: $(BUILD)/Ask.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+# If and Else skip a block by reading the script themselves, through AROS's
+# own ReadItem() and FindArg(), which the DOS runtime already carries.
+$(BUILD)/If: $(BUILD)/If.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Else: $(BUILD)/Else.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/EndIf: $(BUILD)/EndIf.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/execute_entry.o: src/execute_entry.c src/native_host.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/Execute: $(BUILD)/execute_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 $(BUILD)/Get: $(BUILD)/Get.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Getenv: $(BUILD)/Getenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Setenv: $(BUILD)/Setenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Unsetenv: $(BUILD)/Unsetenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Set: $(BUILD)/Set.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
@@ -647,6 +711,17 @@ install: all
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
+	# SYS: -- the boot volume, in the shape dos.library's boot assigns expect.
+	# Only the drawers ACE actually fills are created: AddBootAssign() in
+	# rom/dos/cliinit.c falls back to SYS: itself for a drawer that is not
+	# there, so L:, LIBS:, DEVS: and FONTS: resolve to SYS: on a system with
+	# nothing to put in them, which is what ACE is.
+	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C $(DESTDIR)$(SYSDIR)/S \
+	              $(DESTDIR)$(SYSDIR)/Prefs/Env-Archive
+	for command in $(AMIGA_COMMANDS); do \
+	    ln -sf $(BINDIR)/$$command $(DESTDIR)$(SYSDIR)/C/$$command; \
+	done
+	$(INSTALL) -m 0644 data/Startup-Sequence $(DESTDIR)$(SYSDIR)/S/Startup-Sequence
 	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR)
 	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
 	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
@@ -670,6 +745,9 @@ install-vim: vim
 	$(INSTALL) -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(BINDIR)/runtime
 	$(INSTALL) -m 0755 $(BUILD)/vim $(DESTDIR)$(BINDIR)/vim
 	cp -a $(BUILD)/runtime/. $(DESTDIR)$(BINDIR)/runtime/
+	# In SYS:C like any other command, so typing "vim" finds it through C:.
+	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
+	ln -sf $(BINDIR)/vim $(DESTDIR)$(SYSDIR)/C/vim
 
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
@@ -704,7 +782,10 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
                           $(BUILD)/broker_client.o | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
 
+test-system-assigns: all
+	sh tests/system_assigns_test.sh
+
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics

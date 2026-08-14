@@ -292,8 +292,14 @@ LONG UnGetC(BPTR file, LONG character);
 BPTR SelectInput(BPTR file);
 BPTR SelectOutput(BPTR file);
 LONG ReadItem(STRPTR buffer, LONG size, struct CSource *source);
+LONG FindArg(CONST_STRPTR keywords, CONST_STRPTR argument);
+BOOL StrToLong(CONST_STRPTR string, LONG *value);
 LONG Seek(BPTR file, LONG position, LONG mode);
 void SetProgramName(CONST_STRPTR name);
+LONG GetProgramName(STRPTR buffer, LONG length);
+/* Longest fault message Fault() will produce, which is how much room a
+   command has to allocate for one. */
+#define FAULT_MAX 82
 BPTR SetProgramDir(BPTR lock);
 struct Segment;
 struct Segment *FindSegment(CONST_STRPTR name, struct Segment *last,

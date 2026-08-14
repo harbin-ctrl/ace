@@ -102,6 +102,14 @@ static int native_input_prefix_loaded;
 static struct ace_aros_console_editor *native_console_editor;
 static int native_console_editor_attempted;
 static int native_input_raw;
+/*
+ * A shell started to run one script and then stop is not interactive, even
+ * though its standard input is the same kind of handle an interactive one
+ * has. Shell.c recomputes cli_Background from IsInteractive() when a script
+ * ends, and without this it would decide the nested shell should now start
+ * prompting -- on a standard input that belongs to somebody else.
+ */
+static int native_interactive = 1;
 static unsigned char native_editor_line[8194];
 static size_t native_editor_line_length;
 static size_t native_editor_line_position;
@@ -635,6 +643,30 @@ struct LocalVar *FindVar(CONST_STRPTR name, LONG type)
 void CloseLibrary(struct Library *library)
 {
     (void)library;
+}
+
+/*
+ * AROS's own findarg.c and strtolong.c are already compiled into the DOS
+ * runtime, under renamed symbols so that readargs.c reaches them without
+ * ACE having to publish them. If and Else are the first callers from
+ * outside, and they call them by their real names, which is what these are.
+ */
+LONG ace_aros_FindArg(CONST_STRPTR keywords, CONST_STRPTR argument);
+BOOL ace_aros_StrToLong(CONST_STRPTR string, LONG *value);
+
+LONG FindArg(CONST_STRPTR keywords, CONST_STRPTR argument)
+{
+    return ace_aros_FindArg(keywords, argument);
+}
+
+BOOL StrToLong(CONST_STRPTR string, LONG *value)
+{
+    return ace_aros_StrToLong(string, value);
+}
+
+LONG Stricmp(CONST_STRPTR left, CONST_STRPTR right)
+{
+    return strcasecmp(left, right);
 }
 
 LONG Strnicmp(CONST_STRPTR left, CONST_STRPTR right, LONG length)
@@ -1269,12 +1301,13 @@ BPTR Open(CONST_STRPTR name, LONG mode)
     } else {
         file = fopen(resolved, access);
     }
-    if (!file && mode == MODE_OLDFILE && !native_named_device_path(name) &&
-        name && !strchr(name, '/') &&
-        !strchr(name, ':')) {
-        if (native_command_path(name, resolved, sizeof(resolved)) == 0)
-            file = fopen(resolved, access);
-    }
+    /* A bare name that is not in the current directory used to be looked up
+       as a command here, which is where ACE kept its stand-in for C: before
+       it had one. That belongs in the loader, not in Open(): AROS's
+       loadCommand() already searches the current directory, then the path
+       list, then the C: multiassign, and doing it here as well meant any
+       failed open of a data file quietly found a command of that name
+       instead of reporting that the file was missing. */
     if (!file && !native_named_device_path(name))
         native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
     else if (file)
@@ -1429,11 +1462,18 @@ LONG SameLock(BPTR lock1, BPTR lock2)
 BOOL IsInteractive(BPTR handle)
 {
     native_init_stdio_handles();
-    return handle == (BPTR)stdin || handle == (BPTR)stdout ||
-           handle == (BPTR)stderr ||
-           handle == (BPTR)&native_stdin_handle.amiga ||
-           handle == (BPTR)&native_stdout_handle.amiga ||
-           handle == (BPTR)&native_stderr_handle.amiga;
+    if (handle != (BPTR)stdin && handle != (BPTR)stdout &&
+        handle != (BPTR)stderr &&
+        handle != (BPTR)&native_stdin_handle.amiga &&
+        handle != (BPTR)&native_stdout_handle.amiga &&
+        handle != (BPTR)&native_stderr_handle.amiga)
+        return DOSFALSE;
+    return native_interactive ? DOSTRUE : DOSFALSE;
+}
+
+void native_set_interactive(int interactive)
+{
+    native_interactive = interactive;
 }
 
 LONG SetMode(BPTR handle, LONG mode)
@@ -1598,11 +1638,80 @@ static void set_native_broker_error(void)
     }
 }
 
+/*
+ * The script a shell is reading commands from, when it is reading from one.
+ * AmigaDOS calls this cli_CurrentInput, and every command that has to know
+ * whether it is running inside a script -- If, Else, EndIf -- asks by
+ * comparing it against cli_StandardInput.
+ *
+ * On a real Amiga the shell and its commands share one CLI, so a command can
+ * simply read it. An ACE command is its own Linux process, so the shell
+ * passes the open descriptor across the fork and names it here. What comes
+ * back is a stream over the same file description, which means the same file
+ * offset: a command that consumes lines -- If skipping to its EndIf --
+ * advances the shell's own position by doing so, exactly as it would on the
+ * machine this code was written for.
+ *
+ * Unbuffered for the same reason. Any read-ahead would consume the shell's
+ * next command into a buffer that dies with the command's process.
+ */
+static FILE *native_script_input;
+
+/* The last character FGetC() handed out, for UnGetC()'s AmigaDOS -1. */
+static FILE *native_last_read_file;
+static int native_last_read_char = EOF;
+
+static void native_attach_script_input(void)
+{
+    const char *descriptor = getenv(ACE_SCRIPT_INPUT_VARIABLE);
+    char *end;
+    long value;
+
+    if (native_script_input || !descriptor || !*descriptor)
+        return;
+    value = strtol(descriptor, &end, 10);
+    if (*end || value < 0 || value > INT_MAX)
+        return;
+    native_script_input = fdopen((int)value, "r");
+    if (native_script_input)
+        (void)setvbuf(native_script_input, NULL, _IONBF, 0);
+}
+
+void native_cli_set_script_input(FILE *file)
+{
+    native_script_input = file;
+    if (file)
+        (void)setvbuf(file, NULL, _IONBF, 0);
+    if (native_cli_loaded)
+        native_cli.cli_CurrentInput = file ? handle_for_file(file) :
+                                      native_cli.cli_StandardInput;
+}
+
+FILE *native_cli_script_input(void)
+{
+    native_attach_script_input();
+    return native_script_input;
+}
+
+
 /* Streams and process links, which do not depend on the broker at all. */
 static void cli_attach_streams(void)
 {
-    native_cli.cli_StandardInput = Input();
-    native_cli.cli_CurrentInput = native_cli.cli_StandardInput;
+    native_attach_script_input();
+    if (native_script_input) {
+        /* The two have to stay distinguishable now: If does SelectInput() on
+           the script, so Input() is no longer the standard input, and
+           Shell.c assigns cli_CurrentInput itself when the script ends.
+           Take the script only on the first pass and leave it alone after,
+           or the shell could never get back to reading the keyboard. */
+        native_cli.cli_StandardInput = handle_for_file(stdin);
+        if (!native_cli_loaded)
+            native_cli.cli_CurrentInput =
+                handle_for_file(native_script_input);
+    } else {
+        native_cli.cli_StandardInput = Input();
+        native_cli.cli_CurrentInput = native_cli.cli_StandardInput;
+    }
     native_cli.cli_StandardOutput = Output();
     native_cli.cli_CurrentOutput = native_cli.cli_StandardOutput;
     native_cli.cli_StandardError = handle_for_file(stderr);
@@ -1965,29 +2074,130 @@ void native_publish_result(int result_code)
         _exit(NATIVE_ENDCLI_STATUS);
 }
 
+/*
+ * Global variables are files, one per variable, in ENV: -- and in ENVARC:
+ * too when they are meant to outlive the boot. That is not an implementation
+ * detail of AmigaDOS, it is the interface: a program reads ENV:SYS/theme.var
+ * by opening it, `Type ENV:Editor` prints one, and Delete removes one, all
+ * without going near GetVar(). rom/dos/{getvar,setvar,deletevar}.c are the
+ * description this follows.
+ *
+ * Local variables stay in the broker. On AmigaOS they live on the process's
+ * own pr_LocalVars list, which every command in that shell shares because
+ * every command in that shell is that process. An ACE command is a separate
+ * Linux process, so the list has to live somewhere both can reach, and that
+ * is what the broker is.
+ */
+static int global_var_name(const char *volume, CONST_STRPTR name,
+                           char *result, size_t result_size)
+{
+    int written;
+
+    if (!name || !*name)
+        return -1;
+    /* The volume ends in ':', so this is AddPart() for the only shape that
+       reaches here -- and it keeps any subdirectory in the name, which is
+       how ENV:SYS/theme.var works. */
+    written = snprintf(result, result_size, "%s%s", volume, (const char *)name);
+    return written > 0 && (size_t)written < result_size ? 0 : -1;
+}
+
+static LONG global_var_read(const char *volume, CONST_STRPTR name,
+                            STRPTR buffer, LONG size, LONG flags)
+{
+    char path[PATH_MAX];
+    BPTR file;
+    LONG count;
+
+    if (!buffer || size <= 0 ||
+        global_var_name(volume, name, path, sizeof(path)) != 0)
+        return -1;
+    file = Open(path, MODE_OLDFILE);
+    if (!file)
+        return -1;
+    count = Read(file, buffer, size);
+    Close(file);
+    if (count < 0)
+        return -1;
+    if (!(flags & GVF_BINARY_VAR)) {
+        LONG index = 0;
+
+        /* A variable is the first line of its file unless the caller says
+           it wants the bytes. */
+        while (index < count && buffer[index] != '\n')
+            index++;
+        if (index >= size)
+            index = size - 1;
+        buffer[index] = '\0';
+        return index;
+    }
+    if (!(flags & GVF_DONT_NULL_TERM)) {
+        if (count >= size)
+            count = size - 1;
+        buffer[count] = '\0';
+    }
+    return count;
+}
+
+static BOOL global_var_write(const char *volume, CONST_STRPTR name,
+                             CONST_STRPTR value, LONG size)
+{
+    char path[PATH_MAX];
+    BPTR file;
+    LONG written;
+
+    if (global_var_name(volume, name, path, sizeof(path)) != 0)
+        return DOSFALSE;
+    file = Open(path, MODE_NEWFILE);
+    if (!file)
+        return DOSFALSE;
+    written = size > 0 ? Write(file, (APTR)value, size) : 0;
+    Close(file);
+    return written == size ? DOSTRUE : DOSFALSE;
+}
+
+static BOOL global_var_delete(const char *volume, CONST_STRPTR name)
+{
+    char path[PATH_MAX];
+
+    if (global_var_name(volume, name, path, sizeof(path)) != 0)
+        return DOSFALSE;
+    return DeleteFile(path);
+}
+
 LONG GetVar(CONST_STRPTR name, STRPTR buffer, LONG size, LONG flags)
 {
     char value[PATH_MAX];
     uint32_t broker_flags = 0;
     size_t length;
 
-    if (flags & GVF_LOCAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_LOCAL;
-    if (flags & GVF_GLOBAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_GLOBAL;
     if ((flags & 0xff) == LV_ALIAS)
         broker_flags |= AMIGA_BROKER_VAR_ALIAS;
-    if (native_broker_getvar(name, broker_flags, value, sizeof(value)) != 0) {
-        set_native_broker_error();
-        return -1;
+    if (!(flags & GVF_GLOBAL_ONLY)) {
+        if (native_broker_getvar(name, broker_flags | AMIGA_BROKER_VAR_LOCAL,
+                                 value, sizeof(value)) == 0) {
+            length = strlen(value);
+            if (!buffer || size <= 0 || length >= (size_t)size) {
+                native_ioerr = ERROR_LINE_TOO_LONG;
+                return -1;
+            }
+            memcpy(buffer, value, length + 1);
+            return (LONG)length;
+        }
     }
-    length = strlen(value);
-    if (!buffer || size <= 0 || length >= (size_t)size) {
-        native_ioerr = ERROR_LINE_TOO_LONG;
-        return -1;
+    /* ENV: first and ENVARC: after: a variable that has been changed this
+       boot shadows the saved one, which is the point of having both. */
+    if ((flags & 0xff) == LV_VAR && !(flags & GVF_LOCAL_ONLY)) {
+        LONG result = global_var_read("ENV:", name, buffer, size, flags);
+
+        if (result >= 0)
+            return result;
+        result = global_var_read("ENVARC:", name, buffer, size, flags);
+        if (result >= 0)
+            return result;
     }
-    memcpy(buffer, value, length + 1);
-    return (LONG)length;
+    native_ioerr = ERROR_OBJECT_NOT_FOUND;
+    return -1;
 }
 
 BOOL SetVar(CONST_STRPTR name, CONST_STRPTR value, LONG size, LONG flags)
@@ -1997,14 +2207,6 @@ BOOL SetVar(CONST_STRPTR name, CONST_STRPTR value, LONG size, LONG flags)
     uint32_t broker_flags = 0;
     size_t length;
 
-    if (flags & GVF_LOCAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_LOCAL;
-    if (flags & GVF_GLOBAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_GLOBAL;
-    if (flags & GVF_SAVE_VAR)
-        broker_flags |= AMIGA_BROKER_VAR_SAVE;
-    if ((flags & 0xff) == LV_ALIAS)
-        broker_flags |= AMIGA_BROKER_VAR_ALIAS;
     if (size >= 0) {
         length = (size_t)size;
         if (length >= sizeof(truncated)) {
@@ -2014,7 +2216,23 @@ BOOL SetVar(CONST_STRPTR name, CONST_STRPTR value, LONG size, LONG flags)
         memcpy(truncated, value, length);
         truncated[length] = '\0';
         stored = truncated;
+    } else {
+        length = strlen(value);
+        size = (LONG)length;
     }
+    if ((flags & 0xff) == LV_VAR && (flags & GVF_GLOBAL_ONLY)) {
+        if (!global_var_write("ENV:", name, stored, size))
+            return DOSFALSE;
+        /* GVF_SAVE_VAR is what makes a variable survive the next boot: it
+           goes to the archive as well as to the live copy. */
+        if ((flags & GVF_SAVE_VAR) &&
+            !global_var_write("ENVARC:", name, stored, size))
+            return DOSFALSE;
+        return DOSTRUE;
+    }
+    if ((flags & 0xff) == LV_ALIAS)
+        broker_flags |= AMIGA_BROKER_VAR_ALIAS;
+    broker_flags |= AMIGA_BROKER_VAR_LOCAL;
     if (native_broker_setvar(name, stored, broker_flags) != 0) {
         set_native_broker_error();
         return DOSFALSE;
@@ -2026,12 +2244,19 @@ BOOL DeleteVar(CONST_STRPTR name, LONG flags)
 {
     uint32_t broker_flags = 0;
 
-    if (flags & GVF_LOCAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_LOCAL;
-    if (flags & GVF_GLOBAL_ONLY)
-        broker_flags |= AMIGA_BROKER_VAR_GLOBAL;
+    if ((flags & 0xff) == LV_VAR && (flags & GVF_GLOBAL_ONLY)) {
+        BOOL removed = global_var_delete("ENV:", name);
+
+        /* Without GVF_SAVE_VAR the archived copy stays, so the variable
+           comes back at the next boot -- which is the documented way to undo
+           a change made only for this one. */
+        if (flags & GVF_SAVE_VAR)
+            removed = global_var_delete("ENVARC:", name) || removed;
+        return removed;
+    }
     if ((flags & 0xff) == LV_ALIAS)
         broker_flags |= AMIGA_BROKER_VAR_ALIAS;
+    broker_flags |= AMIGA_BROKER_VAR_LOCAL;
     if (native_broker_deletevar(name, broker_flags) != 0) {
         set_native_broker_error();
         return DOSFALSE;
@@ -2070,6 +2295,8 @@ LONG FGetC(BPTR handle)
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
         return ENDSTREAMCH;
     }
+    native_last_read_file = file;
+    native_last_read_char = character;
     return (UBYTE)character;
 }
 
@@ -2158,12 +2385,28 @@ LONG FRead(BPTR handle, APTR buffer, LONG block_size, LONG block_count)
 
 LONG UnGetC(BPTR handle, LONG character)
 {
-    int result = ungetc((unsigned char)character,
-                        handle ? as_file(handle) : selected_input());
+    FILE *file = handle ? as_file(handle) : selected_input();
+    int result;
+
+    /* -1 is AmigaDOS for "the character just read", which is how readitem.c
+       puts back the delimiter that ended an item -- a newline, most of the
+       time. Pushing back the byte 0xff instead, which is what casting -1
+       produces, left that newline consumed and a spurious byte in its place:
+       enough for If's skip loop, which reads to the end of the line after
+       finding its EndIf, to run on and swallow the line after it. */
+    if (character == -1) {
+        if (file != native_last_read_file || native_last_read_char == EOF) {
+            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+            return ENDSTREAMCH;
+        }
+        character = native_last_read_char;
+    }
+    result = ungetc((unsigned char)character, file);
     if (result == EOF) {
         native_ioerr = errno;
         return ENDSTREAMCH;
     }
+    native_last_read_char = EOF;
     return result;
 }
 
@@ -2201,6 +2444,24 @@ void SetProgramName(CONST_STRPTR name)
         name = "";
     strncpy(native_program_name, name, sizeof(native_program_name) - 1);
     native_program_name[sizeof(native_program_name) - 1] = '\0';
+}
+
+/* The name the shell entered this command under, which a command reports
+   its own errors against. ACE has no CLI-owned command name to read it back
+   out of, so the program name is whatever SetProgramName() was last told --
+   for a command started by RunCommand(), argv[0]. */
+LONG GetProgramName(STRPTR buffer, LONG length)
+{
+    size_t used = strlen(native_program_name);
+
+    if (!buffer || length <= 0)
+        return DOSFALSE;
+    if (used >= (size_t)length) {
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return DOSFALSE;
+    }
+    memcpy(buffer, native_program_name, used + 1);
+    return DOSTRUE;
 }
 
 BPTR SetProgramDir(BPTR lock)

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -79,6 +80,14 @@ static int companion_command(const char *path)
     }
 }
 
+/* Named through the command drawer, which is where commands are: what
+   loadCommand() falls back to when the current directory and the path list
+   have nothing, and what it hands to LoadSeg() spelled exactly like this. */
+static int named_through_command_drawer(const char *name)
+{
+    return strncasecmp(name, "C:", 2) == 0;
+}
+
 int native_command_path(const char *name, char *result, size_t result_size)
 {
     char resolved[PATH_MAX];
@@ -89,9 +98,19 @@ int native_command_path(const char *name, char *result, size_t result_size)
     if (!name || !*name || !result || result_size == 0)
         return -1;
     if (strchr(name, '/') || strchr(name, ':')) {
+        /*
+         * Two ways to be a command. Through C:, which is the Amiga answer --
+         * the assign says where commands are, and the broker resolves the
+         * name within it, so nothing outside it can be reached this way. Or
+         * beside the running binary, which is how ACE recognised its own
+         * before it had a C: to ask, and which still covers an uninstalled
+         * build tree. Anything else is an arbitrary path on the host, and
+         * arbitrary host programs go through LNX, deliberately.
+         */
         if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0 &&
-            companion_command(resolved) && executable_file(resolved) &&
-            strlen(resolved) < result_size) {
+            (named_through_command_drawer(name) ||
+             companion_command(resolved)) &&
+            executable_file(resolved) && strlen(resolved) < result_size) {
             strcpy(result, resolved);
             return 0;
         }
@@ -245,6 +264,159 @@ static void native_command_title(const char *path)
     native_console_title(slash ? slash + 1 : path);
 }
 
+/*
+ * Execute.
+ *
+ * AROS's own Execute.c does this by handing the opened script to
+ * cli_CurrentInput, or, when the shell is already reading a script, by
+ * writing the new script and the unread remainder of the old one into a
+ * temporary file and pointing cli_CurrentInput at that. Both work because
+ * the command and the shell are one process sharing one CLI. An ACE command
+ * is its own Linux process and cannot redirect the shell that started it, so
+ * running AROS's Execute unchanged would be worse than useless: copying the
+ * remainder would consume the shell's script to the end, and the shell would
+ * come back to a stream with nothing left in it.
+ *
+ * What ACE has instead of a shared CLI is a shared file description. When
+ * the caller is running a script, the script is a private temporary file and
+ * the command holds a descriptor onto it at the shell's own read position --
+ * so writing the new script in at that position, ahead of what has not been
+ * read yet, puts the commands where the shell is about to read. That is the
+ * same splice AROS makes, made in the file rather than in the CLI.
+ */
+static int splice_into_script(FILE *script, BPTR source)
+{
+    off_t position;
+    char *remainder = NULL;
+    size_t remainder_length = 0;
+    struct stat information;
+    int descriptor = fileno(script);
+    int result = RETURN_FAIL;
+    LONG count;
+    char buffer[4096];
+
+    if (descriptor < 0)
+        return RETURN_FAIL;
+    position = lseek(descriptor, 0, SEEK_CUR);
+    if (position < 0 || fstat(descriptor, &information) != 0)
+        return RETURN_FAIL;
+
+    /* Everything the shell has not read yet, held aside while the script
+       goes in front of it. */
+    if (information.st_size > position) {
+        remainder_length = (size_t)(information.st_size - position);
+        remainder = malloc(remainder_length);
+        if (!remainder)
+            return RETURN_FAIL;
+        if (pread(descriptor, remainder, remainder_length, position) !=
+            (ssize_t)remainder_length) {
+            free(remainder);
+            return RETURN_FAIL;
+        }
+    }
+
+    if (lseek(descriptor, position, SEEK_SET) < 0)
+        goto done;
+    while ((count = Read(source, buffer, (LONG)sizeof(buffer))) > 0) {
+        if (write(descriptor, buffer, (size_t)count) != (ssize_t)count)
+            goto done;
+    }
+    if (count < 0)
+        goto done;
+    /* A script that does not end in a newline would otherwise run its last
+       line into the caller's next one. */
+    if (write(descriptor, "\n", 1) != 1)
+        goto done;
+    if (remainder_length &&
+        write(descriptor, remainder, remainder_length) !=
+        (ssize_t)remainder_length)
+        goto done;
+    if (ftruncate(descriptor, lseek(descriptor, 0, SEEK_CUR)) != 0)
+        goto done;
+    /* Back to where the shell was: the next thing it reads is the script. */
+    if (lseek(descriptor, position, SEEK_SET) < 0)
+        goto done;
+    result = RETURN_OK;
+
+done:
+    free(remainder);
+    return result;
+}
+
+/* No script to splice into, so the script gets a shell of its own. It shares
+   this session, so the directory it changes and the variables it sets are
+   still there afterwards, which is the part of AmigaOS's behaviour a caller
+   can actually observe. */
+static int execute_in_nested_shell(const char *name)
+{
+    char shell_path[PATH_MAX];
+    char executable[PATH_MAX];
+    char *slash;
+    ssize_t length;
+    pid_t child;
+    int status;
+
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length < 0 || (size_t)length >= sizeof(executable) - 1)
+        return RETURN_FAIL;
+    executable[length] = '\0';
+    slash = strrchr(executable, '/');
+    if (!slash)
+        return RETURN_FAIL;
+    *slash = '\0';
+    if (snprintf(shell_path, sizeof(shell_path), "%s/ace-user-shell",
+                 executable) >= (int)sizeof(shell_path))
+        return RETURN_FAIL;
+
+    child = fork();
+    if (child < 0)
+        return RETURN_FAIL;
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_RDONLY);
+
+        /* The script's own commands read from the script, and the shell
+           stops when it ends rather than turning to a standard input that
+           belongs to whoever called Execute. */
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDIN_FILENO);
+            if (null_fd > STDERR_FILENO)
+                close(null_fd);
+        }
+        (void)unsetenv(ACE_SCRIPT_INPUT_VARIABLE);
+        (void)unsetenv("ACE_COMMAND_ARGUMENTS");
+        if (setenv(ACE_STARTUP_SCRIPT_VARIABLE, name, 1) != 0)
+            _exit(RETURN_FAIL);
+        execl(shell_path, shell_path, (char *)NULL);
+        _exit(RETURN_FAIL);
+    }
+    if (waitpid(child, &status, 0) < 0)
+        return RETURN_FAIL;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : RETURN_FAIL;
+}
+
+int native_execute_script(const char *name)
+{
+    FILE *script;
+    BPTR source;
+    int result;
+
+    if (!name || !*name) {
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return RETURN_FAIL;
+    }
+    script = native_cli_script_input();
+    if (!script)
+        return execute_in_nested_shell(name);
+    source = Open(name, MODE_OLDFILE);
+    if (!source)
+        return RETURN_FAIL;
+    result = splice_into_script(script, source);
+    Close(source);
+    if (result != RETURN_OK)
+        SetIoErr(ERROR_OBJECT_IN_USE);
+    return result;
+}
+
 int native_run_background(const char *command)
 {
     char storage[4096];
@@ -325,6 +497,9 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     char storage[4096];
     char *argv[128] = {0};
     char cwd[PATH_MAX];
+    char script_name[16];
+    FILE *script;
+    int script_fd = -1;
     pid_t child;
     int status;
 
@@ -338,6 +513,21 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     }
     argv[0] = segment->path;
     native_command_title(segment->path);
+    script = native_cli_script_input();
+    if (script) {
+        script_fd = fileno(script);
+        if (script_fd >= 0) {
+            /* Not the file, the file description: the child gets the same
+               offset, so a command that reads the script -- If skipping
+               forward to its EndIf -- moves the shell's own position with
+               it, which is how the block ends up skipped. */
+            (void)fcntl(script_fd, F_SETFD,
+                        fcntl(script_fd, F_GETFD) & ~FD_CLOEXEC);
+            snprintf(script_name, sizeof(script_name), "%d", script_fd);
+        } else {
+            script = NULL;
+        }
+    }
     child = fork();
     if (child < 0) {
         native_console_title("ACE Shell");
@@ -349,6 +539,10 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
             (void)chdir(cwd);
         if (setenv("ACE_COMMAND_ARGUMENTS", arguments, 1) != 0)
             _exit(RETURN_FAIL);
+        if (script && setenv(ACE_SCRIPT_INPUT_VARIABLE, script_name, 1) != 0)
+            _exit(RETURN_FAIL);
+        if (!script)
+            (void)unsetenv(ACE_SCRIPT_INPUT_VARIABLE);
         execv(segment->path, argv);
         _exit(RETURN_FAIL);
     }
@@ -356,6 +550,14 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
         native_console_title("ACE Shell");
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return RETURN_FAIL;
+    }
+    if (script) {
+        /* Whatever the command read is gone from the script for good. The
+           descriptor knows that; this stream does not until it is told. */
+        off_t position = lseek(script_fd, 0, SEEK_CUR);
+
+        if (position >= 0)
+            (void)fseeko(script, position, SEEK_SET);
     }
     native_console_title("ACE Shell");
     if (WIFEXITED(status) && WEXITSTATUS(status) == NATIVE_ENDCLI_STATUS) {

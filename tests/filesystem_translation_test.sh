@@ -29,6 +29,14 @@ touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
 
 cd "$repo_dir"
 
+# This test is about path translation, not about the system layout, so point
+# SYS: at the build tree rather than letting the broker find whatever is
+# installed on the machine running the test. C: then falls back to SYS:
+# itself, which is where these binaries are, and S: holds no startup script
+# to put output into what the assertions below read.
+ACE_SYS_DIR="$repo_dir/build"
+export ACE_SYS_DIR
+
 cleanup()
 {
     if [ "${broker_pid:-}" ]; then

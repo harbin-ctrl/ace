@@ -1,0 +1,35 @@
+; ACE Startup-Sequence
+;
+; The second half of an Amiga boot, and the half that is not privileged.
+; dos.library establishes SYS: and the drawers under it -- C:, S:, L:, LIBS:,
+; DEVS:, FONTS: -- before any shell exists, because a shell cannot find this
+; script, or the Assign that would make an assign, until they are there. ACE's
+; broker does that same job, in rom/dos/cliinit.c's order and with its
+; fallbacks. Everything from this point on is ordinary commands, run by the
+; ordinary shell, and this file is meant to be read and changed.
+;
+; Two of AROS's own assigns are made by the broker here rather than by this
+; script. AROS says
+;
+;     Assign "T:"   "RAM:T"
+;     Assign "ENV:" "RAM:ENV"
+;
+; because on an Amiga the RAM disk is a fixed part of the system and a script
+; can name it. ACE names the host's tmpfs mounts RAM:, RAM1: ... in the order
+; the host happens to have mounted them, so which one is "the" RAM disk is an
+; accident of the machine rather than something a script could rely on. They
+; point at the host's own per-user runtime directory instead: tmpfs, private,
+; and emptied between boots, which is what RAM: was being asked for.
+;
+; Not here, because ACE has not ported the commands yet: Path (the search list
+; before C:), Copy (ENVARC: to ENV:, which the broker does instead), and the
+; Mount/Automount/SetPatch/IPrefs half of a real boot, none of which ACE has
+; anything to mount, patch or prefer.
+
+FailAt 21
+
+; Where a user's own startup belongs. Anything in here is overwritten by the
+; next install; S:User-Startup is not, which is the whole point of it.
+If EXISTS S:User-Startup
+Execute S:User-Startup
+EndIf

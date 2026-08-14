@@ -395,6 +395,57 @@ against. Closing the window hangs up on the shell and everything it is
 running, so a program the shell is waiting on is not left reading a console
 that no longer exists.
 
+## The standard assigns, and who makes them
+
+An Amiga makes its standard assigns in two layers, and ACE keeps the split.
+
+The first layer is not a script and cannot be, because a shell cannot find a
+script, or the `Assign` that would make an assign, until it exists.
+`internalBootCliHandler()` in AROS's `rom/dos/cliinit.c` locks the boot volume
+as `SYS:` and then makes `C:`, `LIBS:`, `DEVS:`, `L:`, `S:` and `FONTS:` as
+drawers under it, each falling back to `SYS:` itself when the drawer is not
+there. ACE's broker does the same job in the same order, and adds `ENVARC:`,
+`ENV:` and `T:`. `SYS:` is the install's own `share/ace`, laid out the Amiga
+way: `SYS:C` is a drawer of links to the commands, which live in `bin` where a
+Linux user's PATH can also reach them, so both views are true and neither is a
+copy. `ENV:` and `T:` are in the host's per-user runtime directory rather than
+in `RAM:`, because ACE names tmpfs mounts `RAM:`, `RAM1:` ... in host mount
+order and no script could portably name the one it meant.
+
+The second layer is `S:Startup-Sequence`, an ordinary script of ordinary
+commands, and it is meant to be edited. A starting shell runs
+`S:Startup-Sequence`, then `S:Shell-Startup`, then `S:ACE-Startup`, skipping
+whichever are absent; the supplied Startup-Sequence ends by running
+`S:User-Startup` if it exists, which is the file an install does not
+overwrite. The shell reads them as `cli_CurrentInput`, which is the same
+mechanism `rom/dos/boot.c` uses to hand the boot script to the first CLI: at
+the end of the script the Shell closes it, falls back to the keyboard and
+carries on.
+
+`C:` is not a search path. AROS's `loadCommand()` looks in the current
+directory, then the list the `Path` command sets, and only then in the `C:`
+multiassign, which is why `C:` finds everything without being consulted first.
+ACE runs that unmodified, so a command is found the way an Amiga finds one --
+and a failed `Open()` of a data file now reports a missing file rather than
+quietly finding a command with that name.
+
+`If`, `Else` and `EndIf` are AROS's own, unmodified. They skip a block by
+reading the script and consuming the lines themselves, and an ACE command is a
+separate process holding the same descriptor as the shell, so consuming those
+lines moves the shell's position exactly as it does on the machine they were
+written for. `Execute` is ACE's, because AROS's works by redirecting the
+shell's input from inside the command, which no separate process can do:
+running inside a script it writes the new script into the caller's own input
+ahead of the unread part, and typed at a prompt it runs the script in a nested
+shell in the same session, so directory changes and variables still persist.
+
+Global variables are files, as they are on an Amiga: one per variable in
+`ENV:`, and in `ENVARC:` too when `Setenv` is given `SAVE`. `Type ENV:Editor`
+prints one, `Dir ENV:` lists them, and the broker copies `ENVARC:` into `ENV:`
+when it starts, which is that system's boot-time `Copy`. Local variables stay
+in the broker: on AmigaOS they live on the shell process's own list, which
+every command shares by being that process, and ACE's commands are not.
+
 ## BOOPSI
 
 The real AROS BOOPSI implementation is now built from unmodified AROS source:
