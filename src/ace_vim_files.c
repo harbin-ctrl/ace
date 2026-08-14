@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -16,9 +17,52 @@
    path translation as DOS Open(), without changing a Vim source line. */
 static int vim_host_path(const char *name, char *result, size_t result_size)
 {
+    char executable[PATH_MAX];
+    ssize_t executable_length;
+    const char *relative;
+    size_t prefix_length;
+    int use_runtime;
+
     if (!name) {
         errno = EINVAL;
         return -1;
+    }
+    if (strncasecmp(name, "PROGDIR:", 8) == 0) {
+        prefix_length = 8;
+        use_runtime = 0;
+    } else if (strncasecmp(name, "VIM:", 4) == 0) {
+        prefix_length = 4;
+        use_runtime = 1;
+    } else if (strncasecmp(name, "VIMRUNTIME:", 11) == 0) {
+        prefix_length = 11;
+        use_runtime = 1;
+    } else {
+        prefix_length = 0;
+        use_runtime = 0;
+    }
+    if (prefix_length != 0) {
+        executable_length = readlink("/proc/self/exe", executable,
+                                    sizeof(executable) - 1);
+        if (executable_length < 0 ||
+            (size_t)executable_length >= sizeof(executable) - 1) {
+            errno = ENOENT;
+            return -1;
+        }
+        executable[executable_length] = '\0';
+        {
+            char *slash = strrchr(executable, '/');
+            relative = name + prefix_length;
+
+            if (!slash || snprintf(result, result_size,
+                                   use_runtime ? "%.*s/runtime/%s" :
+                                                 "%.*s/%s",
+                                   (int)(slash - executable), executable,
+                                   relative) >= (int)result_size) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+        }
+        return 0;
     }
     /* A path passed to the ACE executable by the host launcher is already a
        host path. AmigaDOS paths (assigns, PROGDIR:, and relative names) still
@@ -84,6 +128,31 @@ int ace_vim_access(const char *name, int mode)
     if (vim_host_path(name, resolved, sizeof(resolved)) != 0)
         return -1;
     return access(resolved, mode);
+}
+
+/* os_amiga.c uses DOS locks for these probes. Keep that untouched backend
+   intact and redirect only the Vim build's filesystem queries through the
+   same ACE path adapter used by fopen/stat. */
+int ace_vim_isdir(char *name)
+{
+    char resolved[PATH_MAX];
+    struct stat information;
+
+    if (vim_host_path(name, resolved, sizeof(resolved)) != 0 ||
+        stat(resolved, &information) != 0)
+        return 0;
+    return S_ISDIR(information.st_mode);
+}
+
+long ace_vim_getperm(char *name)
+{
+    char resolved[PATH_MAX];
+    struct stat information;
+
+    if (vim_host_path(name, resolved, sizeof(resolved)) != 0 ||
+        stat(resolved, &information) != 0)
+        return -1;
+    return (long)information.st_mode;
 }
 
 int ace_vim_remove(const char *name)

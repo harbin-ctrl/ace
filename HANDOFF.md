@@ -334,7 +334,11 @@ unconditionally while its `__AROS__` shell-size path does not access
 
 The five platform link seams are now ACE-owned: `Delay`, `SetWindowTitles`,
 `mch_get_cmd_output_direct`, `vim_fsync`, and the file/path wrappers used by
-Vim's Amiga POSIX mappings. `xdl_diff` comes from Vim's own six xdiff objects.
+Vim's Amiga POSIX mappings. The ACE build also packages the untouched
+checkout's `runtime/` beside `build/vim`, translates the Amiga `PROGDIR:`,
+`VIM:`, and `VIMRUNTIME:` runtime aliases, and supplies the directory probes
+needed by Vim's runtime search. `xdl_diff` comes from Vim's own six xdiff
+objects.
 The current source did not require `Info`, `DateStamp`, or `Rename` at this
 boundary. `IsInteractive()` also recognizes ACE's wrapped standard handles,
 which lets the untouched backend take the raw terminal path instead of trying
@@ -342,10 +346,12 @@ to open `NIL:`.
 
 Validated with the external checkout: Vim launched in a pseudo-terminal,
 accepted raw input, created and saved a file, reloaded it, and quit cleanly.
-The source checkout remained clean. The first smoke run with a host absolute
-path exposed Amiga leading-slash semantics; ACE's Vim-only file wrappers now
-preserve explicit host absolute paths while routing Amiga-relative paths and
-assigns through the broker.
+The same untouched binary now starts in the live `ace-console`, loads
+`defaults.vim` and syntax support, creates a new buffer, inserts text, writes
+25 bytes, and exits cleanly. The source checkout remained clean. The first
+smoke run with a host absolute path exposed Amiga leading-slash semantics;
+ACE's Vim-only file wrappers now preserve explicit host absolute paths while
+routing Amiga-relative paths and assigns through the broker.
 
 One trap worth knowing, since it wasted time twice in a row: the Makefile is
 not a prerequisite of anything it builds, so changing a rule's recipe does not

@@ -68,10 +68,9 @@ now in place. `src/amiga_console.c` forwards key bytes, `native_dos.c` owns
 cooked editing for the GUI session, and `SetMode()`/`WaitForChar()` expose the
 raw contract. `tests/native_input_test.c` covers the seam. Vim's untouched
 normal-feature core now builds through `make vim VIM_SRC=...`; ACE supplies the
-Amiga/runtime seams, path translation wrappers, and xdiff linkage in
-`tools/build-vim-ace.sh`. A pseudo-terminal smoke test has launched Vim,
-edited and saved a file, reloaded it, and exited cleanly. The external Vim
-checkout stays unmodified. Remaining work is broader Vim integration: runtime
-files, shell-command behavior, diff mode, and testing through the live
-`ace-console` GUI rather than the direct pseudo-terminal. `SetProtection` is
-done.
+Amiga/runtime seams, path translation wrappers, runtime packaging, and xdiff
+linkage in `tools/build-vim-ace.sh`. Both pseudo-terminal and live
+`ace-console` smoke tests have launched Vim, edited and saved a file, and
+exited cleanly. The external Vim checkout stays unmodified. Remaining work is
+broader Vim integration: shell-command behavior, diff mode, and expanding the
+live regression coverage. `SetProtection` is done.

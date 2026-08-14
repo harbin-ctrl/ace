@@ -474,5 +474,10 @@ LONG Write(BPTR file, CONST_APTR buffer, LONG length)
     for (LONG index = 0; index < length; index++)
         if (FPutC(file, bytes[index]) < 0)
             return index;
+    /* AmigaDOS Write() delivers device output immediately. Vim's Amiga
+       terminal backend relies on that for each screen update; ACE's host
+       FILE stream otherwise keeps the bytes buffered behind the GUI socket. */
+    if (Flush(file) == DOSFALSE)
+        return 0;
     return length;
 }

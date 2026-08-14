@@ -12,6 +12,12 @@ ace_build=${ACE_BUILD:?}
 vim_src=$VIM_SRC/src
 object_dir=$ace_build/vim-objects
 mkdir -p "$object_dir"
+if [[ ! -d "$VIM_SRC/runtime" ]]; then
+    echo "build-vim-ace.sh: Vim checkout lacks runtime/" >&2
+    exit 2
+fi
+mkdir -p "$ace_build/runtime"
+cp -a "$VIM_SRC/runtime/." "$ace_build/runtime/"
 
 read -r -a compiler <<< "${CC:-cc}"
 common_flags=(
@@ -33,12 +39,17 @@ vim_path_flags=(
     -Dstat=ace_vim_stat -Dlstat=ace_vim_lstat -Daccess=ace_vim_access
     -Dremove=ace_vim_remove -Drename=ace_vim_rename
 )
+vim_probe_flags=(-Dmch_isdir=ace_vim_isdir -Dmch_getperm=ace_vim_getperm)
 
 compile_vim() {
     local source=$1
     local name=${source##*/}
+    local path_flags=("${vim_path_flags[@]}" "${vim_probe_flags[@]}")
     name=${name%.c}
-    "${compiler[@]}" "${common_flags[@]}" "${vim_path_flags[@]}" \
+    if [[ "$source" == os_amiga.c ]]; then
+        path_flags=("${vim_path_flags[@]}")
+    fi
+    "${compiler[@]}" "${common_flags[@]}" "${path_flags[@]}" \
         "$vim_src/$source" \
         -c -o "$object_dir/$name.o"
 }
