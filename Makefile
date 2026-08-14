@@ -734,6 +734,12 @@ install: all
 	        echo "         Typing ace-shell runs that older install, not this one."; \
 	        echo "         Remove it, or put $(BINDIR) earlier on PATH."; \
 		fi; \
+	    if command -v gtk-update-icon-cache >/dev/null 2>&1; then \
+	        gtk-update-icon-cache -f -t $(DATADIR)/icons/hicolor || true; \
+	    fi; \
+	    if command -v update-desktop-database >/dev/null 2>&1; then \
+	        update-desktop-database $(APPLICATIONSDIR) || true; \
+	    fi; \
 	fi
 
 # Vim is built from an external checkout and is therefore intentionally not
