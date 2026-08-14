@@ -66,9 +66,11 @@ those recipes. Until then, delete the object by hand after editing its rule.
 **Build Amiga Vim and finish the remaining DOS calls.** The raw-console seam is
 now in place. `src/amiga_console.c` forwards key bytes, `native_dos.c` owns
 cooked editing for the GUI session, and `SetMode()`/`WaitForChar()` expose the
-raw contract. `tests/native_input_test.c` covers the seam. Vim's Amiga backend
-still needs a build rule and the remaining DOS calls it reaches (`Delay` is
-available; `DateStamp`, `Rename`, and `Info` are not yet a complete port
-surface). `SetProtection` is done. The next useful step is to compile Vim's
-`os_amiga.c` plus its portable core against ACE and let the linker enumerate
-the remaining calls rather than guessing at them.
+raw contract. `tests/native_input_test.c` covers the seam. Vim's current
+`os_amiga.c` now compiles against ACE's compatibility headers; the compile
+needed only a temporary forward declaration for `devices/conunit.h` because
+the AROS `__AROS__` path does not inspect `struct ConUnit`. The upstream source
+also has a one-line `get_fib()` bare-return warning that was corrected only in
+the temporary checkout. The next step is to link Vim's portable core and let
+the linker enumerate the remaining DOS calls (`DateStamp`, `Rename`, and
+`Info`, among others) rather than guessing at them. `SetProtection` is done.

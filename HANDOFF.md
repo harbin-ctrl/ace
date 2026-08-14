@@ -317,6 +317,16 @@ The GUI sets `ACE_CONSOLE_INTERACTIVE=1`; ordinary pipes and scripts do not,
 so their output remains byte-for-byte stream behavior rather than acquiring
 interactive echo sequences.
 
+The first Vim milestone is also complete: a fresh Vim checkout's
+`src/os_amiga.c` compiles against ACE's compatibility headers with `ccache`
+under `-DAMIGA -D__AROS__`. The compile uses a temporary `devices/conunit.h`
+forward declaration because Vim includes that header unconditionally while its
+AROS shell-size path does not access `struct ConUnit`; this should become part
+of the eventual Vim build wrapper rather than the core ACE runtime. The
+current Vim source has one unrelated GCC error in `get_fib()` (a bare return
+from a pointer-returning function); the validation corrected that line only in
+the temporary checkout. No Vim source or executable is in the ACE tree yet.
+
 One trap worth knowing, since it wasted time twice in a row: the Makefile is
 not a prerequisite of anything it builds, so changing a rule's recipe does not
 rebuild the object. Both times the symptom was a fix that appeared not to
