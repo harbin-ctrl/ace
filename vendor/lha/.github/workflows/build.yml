@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [ amiga ]
+  pull_request:
+    branches: [ amiga ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.platform.name }}
+    runs-on: ubuntu-latest
+    environment: ftp
+
+    strategy:
+      matrix:
+        platform:
+          - name: AmigaOS4
+            short: ppc-amigaos
+            image: rolfkopman/os4env
+            mount: /opt/code
+            script: amigaos4.sh
+          - name: AROS i386 ABI V0
+            short: i386-aros
+            image: rolfkopman/arosi386v0env
+            mount: /opt/code
+            script: aros_i386.sh
+          - name: AROS x86_64 ABI V1
+            short: x86_64-aros
+            image: rolfkopman/arosx64v1env
+            mount: /opt/code
+            script: aros_x86_64.sh
+          - name: MorphOS
+            short: ppc-morphos
+            image: rolfkopman/mosenv
+            mount: /gg/code
+            script: morphos.sh
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+          fetch-depth: 0
+          fetch-tags: true
+
+    - name: Compile
+      run: |
+        docker run --rm \
+          -v ${{ github.workspace }}:${{ matrix.platform.mount }} \
+          -w ${{ matrix.platform.mount }} \
+          ${{ matrix.platform.image }} \
+          cicd/${{ matrix.platform.script }}
+
+    - name: Save artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LHa_4U4A-${{ github.sha }}-${{ matrix.platform.short }}
+        path: |
+          dist/tmp/*
+        retention-days: 30
+        overwrite: true

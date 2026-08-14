@@ -1,0 +1,4 @@
+*.swp
+*.lha
+lha
+!Makefile
