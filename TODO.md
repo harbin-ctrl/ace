@@ -66,14 +66,12 @@ those recipes. Until then, delete the object by hand after editing its rule.
 **Build Amiga Vim and finish the remaining DOS calls.** The raw-console seam is
 now in place. `src/amiga_console.c` forwards key bytes, `native_dos.c` owns
 cooked editing for the GUI session, and `SetMode()`/`WaitForChar()` expose the
-raw contract. `tests/native_input_test.c` covers the seam. Vim's current
-`os_amiga.c` now compiles against ACE's compatibility headers; the compile
-needed only a temporary forward declaration for `devices/conunit.h` because
-the AROS `__AROS__` path does not inspect `struct ConUnit`. The upstream source
-also has a one-line `get_fib()` bare-return warning that was corrected only in
-the temporary checkout. The next step is to link Vim's portable core and let
-The normal-feature core link probe is now done: after ACE's DOS, broker,
-process, and pattern objects are included, the unresolved set is `Delay`,
-`SetWindowTitles`, `mch_get_cmd_output_direct`, `vim_fsync`, and `xdl_diff`.
-`Info`, `DateStamp`, and `Rename` do not appear in this current Vim boundary.
-`SetProtection` is done.
+raw contract. `tests/native_input_test.c` covers the seam. Vim's untouched
+normal-feature core now builds through `make vim VIM_SRC=...`; ACE supplies the
+Amiga/runtime seams, path translation wrappers, and xdiff linkage in
+`tools/build-vim-ace.sh`. A pseudo-terminal smoke test has launched Vim,
+edited and saved a file, reloaded it, and exited cleanly. The external Vim
+checkout stays unmodified. Remaining work is broader Vim integration: runtime
+files, shell-command behavior, diff mode, and testing through the live
+`ace-console` GUI rather than the direct pseudo-terminal. `SetProtection` is
+done.

@@ -1423,8 +1423,12 @@ LONG SameLock(BPTR lock1, BPTR lock2)
 
 BOOL IsInteractive(BPTR handle)
 {
+    native_init_stdio_handles();
     return handle == (BPTR)stdin || handle == (BPTR)stdout ||
-           handle == (BPTR)stderr;
+           handle == (BPTR)stderr ||
+           handle == (BPTR)&native_stdin_handle.amiga ||
+           handle == (BPTR)&native_stdout_handle.amiga ||
+           handle == (BPTR)&native_stderr_handle.amiga;
 }
 
 LONG SetMode(BPTR handle, LONG mode)

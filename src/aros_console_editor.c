@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <time.h>
 
 #include "aros_exec_runtime.h"
 #include "con_handler_intern.h"
@@ -41,16 +40,6 @@ void CloseWindow(struct Window *window)
  * ace-console binary as this one from Phase 3 onward, so a second
  * definition here would collide at link time. See proto/exec.h.
  */
-
-void Delay(ULONG ticks)
-{
-    struct timespec request = {
-        .tv_sec = ticks / 50,
-        .tv_nsec = (long)(ticks % 50) * 20000000L,
-    };
-
-    nanosleep(&request, NULL);
-}
 
 UWORD PeekQualifier(void)
 {

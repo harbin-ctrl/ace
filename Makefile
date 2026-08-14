@@ -29,6 +29,7 @@ INSTALL ?= install
 COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
 AROS_ROOT ?= $(HOME)/aros
+VIM_SRC ?=
 HOST_ARCH ?= $(shell uname -m)
 ifeq ($(HOST_ARCH),aarch64)
 AROS_CPU_ARCH ?= aarch64-all
@@ -184,6 +185,9 @@ $(BUILD):
 $(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
+$(BUILD)/ace-vim-runtime.o: src/ace_vim_runtime.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
 $(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
@@ -304,7 +308,8 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-console-editor.o \
                     $(BUILD)/aros-con-support.o \
                     $(BUILD)/aros-exec-runtime.o \
-                    $(BUILD)/native-list-compat.o | $(BUILD)
+                    $(BUILD)/native-list-compat.o \
+                    $(BUILD)/ace-vim-runtime.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
 
 $(BUILD)/native-list-compat.o: src/native_list_compat.c | $(BUILD)
@@ -425,7 +430,7 @@ $(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
                             $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
 
-$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
                                    $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                                    $(BUILD)/aros-graphics-runtime.o $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ $(GFX_LIBS) -o $@
@@ -591,10 +596,30 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
+
+# Vim remains an untouched external checkout. ACE supplies the Amiga backend
+# build objects and runtime seams, while the target makes the exact source
+# tree explicit and reproducible. The full DOS runtime is intentionally not a
+# dependency: its cooked editor exports names that collide with Vim's editor.
+$(BUILD)/vim: tools/build-vim-ace.sh \
+              src/ace_vim_compat.c src/ace_vim_files.c \
+              src/ace_vim_editor_stubs.c \
+              src/ace_vim_pathdef.c src/native_dos.c \
+              compat/vim/include/devices/conunit.h \
+              $(BUILD)/ace-vim-runtime.o $(BUILD)/broker_client.o \
+              $(BUILD)/native_process.o $(BUILD)/native_command.o \
+              $(BUILD)/assign_compat.o \
+              $(BUILD)/aros-dos-getdeviceproc.o \
+              $(BUILD)/aros-dos-freedeviceproc.o \
+              $(AROS_DOSPAT_OBJS) | $(BUILD)
+	@test -n "$(VIM_SRC)" || (echo "use: make vim VIM_SRC=/path/to/untouched/vim" >&2; exit 2)
+	VIM_SRC="$(VIM_SRC)" ACE_ROOT="$(CURDIR)" ACE_BUILD="$(BUILD)" CC="$(CC)" "$<"
+
+vim: $(BUILD)/vim
 
 $(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
@@ -672,4 +697,4 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install vim test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics

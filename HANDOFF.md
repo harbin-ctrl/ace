@@ -317,24 +317,35 @@ The GUI sets `ACE_CONSOLE_INTERACTIVE=1`; ordinary pipes and scripts do not,
 so their output remains byte-for-byte stream behavior rather than acquiring
 interactive echo sequences.
 
-The first Vim milestone is also complete: a fresh Vim checkout's
-`src/os_amiga.c` compiles against ACE's compatibility headers with `ccache`
-under `-DAMIGA -D__AROS__`. The compile uses a temporary `devices/conunit.h`
-forward declaration because Vim includes that header unconditionally while its
-AROS shell-size path does not access `struct ConUnit`; this should become part
-of the eventual Vim build wrapper rather than the core ACE runtime. The
-current Vim source has one unrelated GCC error in `get_fib()` (a bare return
-from a pointer-returning function); the validation corrected that line only in
-the temporary checkout. No Vim source or executable is in the ACE tree yet.
+The first Vim slice is now reproducibly buildable without changing Vim. Point
+the external-source target at a fresh checkout:
 
-The follow-up link probe compiled Vim's normal-feature core and linked it with
-ACE's DOS path, broker, process, and pattern-matching objects. The remaining
-undefined symbols are exactly `Delay`, `SetWindowTitles`,
-`mch_get_cmd_output_direct`, `vim_fsync`, and `xdl_diff`. The first two are
-small ACE/Amiga platform seams; the next two are Vim platform helpers; and
-`xdl_diff` is resolved by adding Vim's six xdiff objects, which are otherwise
-independent of ACE. Contrary to the earlier guess, this current Vim source did
-not require `Info`, `DateStamp`, or `Rename` at the link boundary.
+```sh
+make CC='ccache cc' vim VIM_SRC=/path/to/untouched/vim
+```
+
+`tools/build-vim-ace.sh` compiles Vim's normal-feature core, Amiga backend,
+and six xdiff objects into `build/vim-objects`, then links `build/vim` with
+ACE's raw-input, broker, process, DOS-path, and pattern seams. It refuses to
+generate files in the Vim tree. The `compat/vim/include/devices/conunit.h`
+forward declaration is kept in ACE because Vim includes that header
+unconditionally while its `__AROS__` shell-size path does not access
+`struct ConUnit`.
+
+The five platform link seams are now ACE-owned: `Delay`, `SetWindowTitles`,
+`mch_get_cmd_output_direct`, `vim_fsync`, and the file/path wrappers used by
+Vim's Amiga POSIX mappings. `xdl_diff` comes from Vim's own six xdiff objects.
+The current source did not require `Info`, `DateStamp`, or `Rename` at this
+boundary. `IsInteractive()` also recognizes ACE's wrapped standard handles,
+which lets the untouched backend take the raw terminal path instead of trying
+to open `NIL:`.
+
+Validated with the external checkout: Vim launched in a pseudo-terminal,
+accepted raw input, created and saved a file, reloaded it, and quit cleanly.
+The source checkout remained clean. The first smoke run with a host absolute
+path exposed Amiga leading-slash semantics; ACE's Vim-only file wrappers now
+preserve explicit host absolute paths while routing Amiga-relative paths and
+assigns through the broker.
 
 One trap worth knowing, since it wasted time twice in a row: the Makefile is
 not a prerequisite of anything it builds, so changing a rule's recipe does not
