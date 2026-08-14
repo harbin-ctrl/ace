@@ -26,7 +26,15 @@
 #include "broker_protocol.h"
 #include "aros_dos_path.h"
 
-static LONG native_ioerr;
+static struct Process native_process;
+/* IoErr() is the process's pr_Result2, not a variable beside it. The AROS
+   DOS sources ACE compiles set it that way -- rom/dos/readargs.c ends with
+   "me->pr_Result2 = error;" and never calls SetIoErr() -- so a separate
+   store would leave every ReadArgs() failure reporting no reason at all:
+   the command's PrintFault(IoErr(), name) printed nothing and the shell saw
+   a bare failure. Keeping one storage location is what makes ACE's stubs and
+   upstream's own code agree about the error. */
+#define native_ioerr (native_process.pr_Result2)
 
 static int native_name_needs_mapping(const char *name)
 {
@@ -54,8 +62,22 @@ static struct UtilityBase native_utility_base;
    compiles unmodified. */
 static struct RootNode native_root_node;
 static struct DosLibrary native_dos_base = { &native_root_node };
-struct ExecBase *SysBase = &native_exec_base;
-struct DosLibrary *DOSBase = &native_dos_base;
+/* Weak, because an AROS command may define these itself. A command that
+   sets SH_GLOBAL_SYSBASE/SH_GLOBAL_DOSBASE before including
+   <aros/shcommands.h> -- Dir.c does both -- gets a file-scope definition
+   from the macro expansion, which on a real AROS build is the whole
+   program's only copy. Here ACE's runtime is linked in beside it, so
+   without weak linkage the two collide. Yielding keeps the command's own
+   copy authoritative, exactly as AROS intends; ace_shcommand_start() hands
+   the entry point the real base to put in it, rather than reading it back
+   out of a symbol the command may not have filled in yet. */
+struct ExecBase *SysBase __attribute__((weak)) = &native_exec_base;
+struct DosLibrary *DOSBase __attribute__((weak)) = &native_dos_base;
+
+struct ExecBase *native_exec_base_pointer(void)
+{
+    return &native_exec_base;
+}
 static struct CommandLineInterface native_cli;
 static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
@@ -65,7 +87,6 @@ static int native_endcli_requested;
 #define NATIVE_LOCAL_VAR_LIMIT 128
 #define NATIVE_LOCAL_VAR_NAME 64
 
-static struct Process native_process;
 static struct LocalVar native_local_vars[NATIVE_LOCAL_VAR_LIMIT];
 static char native_local_var_names[NATIVE_LOCAL_VAR_LIMIT][NATIVE_LOCAL_VAR_NAME];
 static char native_local_var_values[NATIVE_LOCAL_VAR_LIMIT][AMIGA_BROKER_MAX_PAYLOAD];
@@ -119,8 +140,14 @@ static void native_load_input_prefix(void)
         return;
     native_input_prefix_loaded = 1;
     arguments = getenv("ACE_COMMAND_ARGUMENTS");
-    if (!arguments || !*arguments)
+    if (!arguments)
         return;
+    /* Set but empty is a command invoked with no arguments at all, and it is
+       not the same as unset. AmigaDOS leaves the argument line in the input
+       stream for ReadArgs() to read, so a command with no arguments finds an
+       empty line there and reports a missing /A argument. Returning here
+       instead would leave ReadArgs() reading whatever the process's real
+       standard input holds -- in a shell, the next command. */
     native_input_prefix_length = strlen(arguments);
     if (native_input_prefix_length >= sizeof(native_input_prefix) - 1)
         native_input_prefix_length = sizeof(native_input_prefix) - 1;
@@ -294,11 +321,32 @@ static LONG native_protection_from_stat(const struct stat *information)
 {
     LONG protection = 0;
 
+    if (!(information->st_mode & S_IRUSR))
+        protection |= FIBF_READ;
     if (!(information->st_mode & S_IWUSR))
         protection |= FIBF_WRITE | FIBF_DELETE;
     if (!(information->st_mode & S_IXUSR))
         protection |= FIBF_EXECUTE;
     return protection;
+}
+
+/* The inverse, for SetProtection(). AmigaDOS's delete bit has no separate
+   Unix permission -- on Unix it is the containing directory that governs
+   removal -- so it shares the owner write bit with FIBF_WRITE, which is the
+   pairing the read direction above already fixed. Either bit therefore
+   withdraws write permission, and Delete FORCE (which clears the whole
+   protection mask before unlinking) restores it. Bits ACE does not model,
+   including the archive/pure/script trio, are left alone rather than
+   guessed at. */
+static mode_t native_mode_from_protection(mode_t mode, LONG protection)
+{
+    mode = (protection & FIBF_READ) ? (mode & ~(mode_t)S_IRUSR) :
+                                      (mode | S_IRUSR);
+    mode = (protection & (FIBF_WRITE | FIBF_DELETE)) ?
+           (mode & ~(mode_t)S_IWUSR) : (mode | S_IWUSR);
+    mode = (protection & FIBF_EXECUTE) ? (mode & ~(mode_t)S_IXUSR) :
+                                         (mode | S_IXUSR);
+    return mode;
 }
 
 /* Fills fib for a resolved host path already known to exist, shared by
@@ -1110,8 +1158,39 @@ LONG DeleteFile(CONST_STRPTR name)
 {
     char resolved[PATH_MAX];
 
-    if (!name || native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
-        unlink(resolved) != 0) {
+    if (!name ||
+        native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    /* One AmigaDOS call removes either kind of object, where Unix splits
+       them. A directory reaches unlink() as EISDIR on Linux (POSIX also
+       allows EPERM), and an empty one is then rmdir()'s job; a directory
+       that still has children stays refused, which is what makes Delete
+       recurse into it before trying again. */
+    if (unlink(resolved) == 0)
+        return DOSTRUE;
+    if ((errno == EISDIR || errno == EPERM) && rmdir(resolved) == 0)
+        return DOSTRUE;
+    set_native_broker_error();
+    /* Refused for want of permission, which for a removal is what AmigaDOS
+       calls delete protection -- the state Delete FORCE exists to clear.
+       Only this operation can read those two errnos that way. */
+    if (errno == EACCES || errno == EPERM)
+        native_ioerr = ERROR_DELETE_PROTECTED;
+    return DOSFALSE;
+}
+
+LONG SetProtection(CONST_STRPTR name, ULONG protection)
+{
+    char resolved[PATH_MAX];
+    struct stat information;
+
+    if (!name ||
+        native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
+        stat(resolved, &information) != 0 ||
+        chmod(resolved, native_mode_from_protection(information.st_mode,
+                                                    (LONG)protection)) != 0) {
         set_native_broker_error();
         return DOSFALSE;
     }
@@ -1257,12 +1336,22 @@ void native_request_endcli(void)
 
 static void set_native_broker_error(void)
 {
-    if (errno == ENOENT)
-        native_ioerr = ERROR_OBJECT_NOT_FOUND;
-    else if (errno == ENOMEM)
-        native_ioerr = ERROR_NO_FREE_STORE;
-    else
-        native_ioerr = (LONG)errno;
+    /* Anything left unmapped reaches the user as a raw Linux errno through
+       an AmigaDOS command's PrintFault(), which prints "Error 39" where
+       AmigaDOS would say the directory is not empty. Only errnos with an
+       unambiguous AmigaDOS counterpart are translated here; the ones whose
+       meaning depends on the operation are mapped by their caller. */
+    switch (errno) {
+    case ENOENT:      native_ioerr = ERROR_OBJECT_NOT_FOUND; break;
+    case ENOMEM:      native_ioerr = ERROR_NO_FREE_STORE; break;
+    case ENOTEMPTY:   native_ioerr = ERROR_DIRECTORY_NOT_EMPTY; break;
+    case EEXIST:      native_ioerr = ERROR_OBJECT_EXISTS; break;
+    case ENOTDIR:     native_ioerr = ERROR_OBJECT_WRONG_TYPE; break;
+    case EROFS:       native_ioerr = ERROR_DISK_WRITE_PROTECTED; break;
+    case ENOSPC:      native_ioerr = ERROR_DISK_FULL; break;
+    case ENAMETOOLONG: native_ioerr = ERROR_INVALID_COMPONENT_NAME; break;
+    default:          native_ioerr = (LONG)errno; break;
+    }
 }
 
 /* Streams and process links, which do not depend on the broker at all. */

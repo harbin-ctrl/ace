@@ -104,6 +104,62 @@ static struct DosList *append_dos_entry(const char *name, LONG type)
     return entry;
 }
 
+/* Registers one spelling of a host filesystem in the DOS list AROS's
+   GetDeviceProc() searches. */
+static void register_device_name(const char *name, ULONG flags)
+{
+    if (!name || !*name)
+        return;
+    if (flags & LDF_VOLUMES) {
+        struct DosList *volume = append_dos_entry(name, DLT_VOLUME);
+
+        if (volume) {
+            char volume_name[PATH_MAX];
+            char volume_root[PATH_MAX];
+
+            if (snprintf(volume_name, sizeof(volume_name), "%s:", name) <
+                (int)sizeof(volume_name) &&
+                native_broker_resolve_path(volume_name, volume_root,
+                                           sizeof(volume_root)) == 0)
+                volume->dol_Lock = native_lock_host_path(volume_root);
+            /* GetDeviceProc() needs a non-NULL handler marker for an
+               online host-backed volume. The host bridge never sends a
+               packet through this value. */
+            volume->dol_Task = (APTR)volume;
+        }
+    }
+    if (flags & LDF_DEVICES) {
+        struct DosList *device = append_dos_entry(name, DLT_DEVICE);
+
+        if (device)
+            device->dol_Task = (APTR)device;
+    }
+}
+
+/* The broker gives a filesystem-bearing block device up to three
+   interchangeable names -- kernel name, filesystem UUID, and filesystem
+   label -- and resolves a path spelled with any of them. Each has to be in
+   this list too, or the two disagree about what exists: every path handed
+   back by the broker's host-to-AmigaDOS translation is spelled with the
+   label when the filesystem has one, and locking that name failed with
+   ERROR_DEVICE_NOT_MOUNTED while the same path spelled with the kernel name
+   worked. */
+static void register_device_aliases(char **fields, int field_count,
+                                    ULONG flags)
+{
+    static const int alias_fields[] = { 3, 2 };
+
+    for (size_t index = 0;
+         index < sizeof(alias_fields) / sizeof(alias_fields[0]); index++) {
+        const char *alias = alias_fields[index] < field_count ?
+                            fields[alias_fields[index]] : NULL;
+
+        if (!alias || !*alias || strcasecmp(alias, fields[0]) == 0)
+            continue;
+        register_device_name(alias, flags);
+    }
+}
+
 static void load_devices(ULONG flags)
 {
     char serialized[AMIGA_BROKER_MAX_PAYLOAD];
@@ -127,28 +183,8 @@ static void load_devices(ULONG flags)
         }
         if (field_count < 1)
             continue;
-        if (flags & LDF_VOLUMES) {
-            struct DosList *volume = append_dos_entry(fields[0], DLT_VOLUME);
-            if (volume) {
-                char volume_name[PATH_MAX];
-                char volume_root[PATH_MAX];
-
-                if (snprintf(volume_name, sizeof(volume_name), "%s:",
-                             fields[0]) < (int)sizeof(volume_name) &&
-                    native_broker_resolve_path(volume_name, volume_root,
-                                               sizeof(volume_root)) == 0)
-                    volume->dol_Lock = native_lock_host_path(volume_root);
-                /* GetDeviceProc() needs a non-NULL handler marker for an
-                   online host-backed volume. The host bridge never sends a
-                   packet through this value. */
-                volume->dol_Task = (APTR)volume;
-            }
-        }
-        if (flags & LDF_DEVICES) {
-            struct DosList *device = append_dos_entry(fields[0], DLT_DEVICE);
-            if (device)
-                device->dol_Task = (APTR)device;
-        }
+        register_device_name(fields[0], flags);
+        register_device_aliases(fields, field_count, flags);
     }
 }
 
@@ -217,6 +253,15 @@ struct DosList *LockDosList(ULONG flags)
     }
     dos_list_locked++;
     return NULL;
+}
+
+/* On AROS this is the non-blocking form, for a caller that would rather do
+   nothing than wait for another task to release the list. ACE's list is
+   built in-process from the broker's reply and nothing else can hold it, so
+   the attempt always succeeds and the two calls are the same. */
+struct DosList *AttemptLockDosList(ULONG flags)
+{
+    return LockDosList(flags);
 }
 
 struct DosList *NextDosEntry(struct DosList *entry, ULONG flags)

@@ -139,6 +139,11 @@ confirmed present in `support.c`'s real command table; ANSI SGR color is not
 -- this AROS checkout's `stdconclass.c` has no `C_SELECT_GRAPHIC_RENDITION`
 case at all, confirmed by reading its dispatcher, not assumed.
 
+`Delete` and `Protect` are the first commands that change the filesystem
+beyond creating a directory, and every command in the tree now parses its
+arguments with AROS's own `ReadArgs()`; both are described in their own
+sections below.
+
 The first read-only filesystem-facing command is now real AROS `Dir.c`, built
 with the original DOS `patternmatching`, `MatchFirst`/`MatchNext`/`MatchEnd`,
 and `ExAll` implementations. `src/native_dos.c` supplies the host-backed
@@ -148,6 +153,92 @@ columns. The command has been exercised against regular and nested host
 directories, `#?` patterns, `ALL`, `DIRS`, `FILES`, and missing paths. The
 compatibility layer intentionally leaves the DOS root's optional `*` wildcard
 flag disabled, matching the configured AmigaDOS pattern behavior.
+
+## Both argument parsers are now AROS's
+
+ACE used to have two. `compat/include/aros/shcommands.h` was a 170-line
+restatement of AROS's macro header whose `AROS_SHn` expansion called
+`native_parse_args()` -- 357 lines of hand-rolled template parsing in
+`src/native_args.c` -- while five commands that call `ReadArgs()` themselves
+went to the real thing. Nineteen commands against five, decided by nothing but
+how each command's author happened to declare its arguments.
+
+Both files are gone. AROS's own `compiler/include/aros/shcommands.h` is
+compiled instead, and what it needs from the host is small: `AROS_PROCH` in
+`compat/include/aros/asmcall.h` (built from the `AROS_UFH3` already there), a
+three-macro `compat/include/aros/symbolsets.h` -- ACE has no link-time library
+sets to walk, so opening them vacuously succeeds -- and
+`compat/include/ace_shcommand_host.h`, which supplies the `main()` that stands
+where `CreateProc()` stands on a real AROS.
+
+Three things had to be true underneath, and only one of them was.
+
+**A command's argument line reaches `ReadArgs()` through the input stream.**
+That is AmigaDOS's own mechanism -- the shell leaves the line in the stream and
+`ReadArgs()` reads it -- and ACE already had it, as `ACE_COMMAND_ARGUMENTS`
+carried across `execv()` by `src/native_command.c` and injected by
+`native_load_input_prefix()`. What it did not have was the case with no shell:
+a command run straight from a Linux shell never saw its own `argv`, so
+`./build/MakeDir WORK:x ALL` -- an invocation README documents -- answered
+`required argument missing`. `src/native_shcommand.c` puts `argv` back together
+into one AmigaDOS line, quoted the way `readitem.c` will take it apart, and
+sets it only if the shell has not already set one, so the shell's own parse
+stays authoritative. An invocation with no arguments at all sets an *empty*
+line rather than nothing, which is the difference between `ReadArgs()`
+reporting a missing `/A` argument and `ReadArgs()` reading on into the next
+command in the shell's own input.
+
+**`IoErr()` has to be the process's `pr_Result2`.** ACE kept it in a variable
+beside the process. `rom/dos/readargs.c` ends with `me->pr_Result2 = error;`
+and never calls `SetIoErr()`, so with two stores every `ReadArgs()` failure
+reported no reason at all: the command's `PrintFault(IoErr(), name)` printed
+nothing and exited 20. `IoErr()` is now that field. This had been true since
+`readargs.c` was first compiled in and was invisible while only five commands
+used it; it is the same hazard as the `ErrorReport()` polarity bug in TODO.md,
+and worth remembering as the shape rather than the instance.
+
+**A command may own `SysBase` and `DOSBase`.** `Dir.c` sets
+`SH_GLOBAL_SYSBASE` and `SH_GLOBAL_DOSBASE` before including the header, which
+makes the macro expansion define both at file scope -- on a real AROS build
+they are the whole program's only copy. ACE's runtime is linked in beside the
+command, so the two collided at link time. ACE's definitions are now weak and
+yield to the command's, and `ace_shcommand_start()` passes the entry point a
+base from `native_exec_base_pointer()` rather than reading back a symbol the
+command has not filled in yet.
+
+Verified by exercising each command with a real template case -- `/S`, `/K`,
+`/M`, `/N`, `/A` missing, and the `?` help convention including a repeated `?`
+-- and by checking that `nm build/<command>` no longer resolves
+`native_parse_args` anywhere.
+
+## Delete and Protect, and the volume aliases they turned up
+
+`Delete` and `Protect` are the first destructive commands. Both were already
+on the real parser by construction, and both needed one new seam call,
+`SetProtection()` -- the `chmod()` inverse of the `native_protection_from_stat()`
+mapping `Examine()` already used, so the bits `Protect` writes are the bits
+`Delete` reads back to decide whether it may remove something. `DeleteFile()`
+also had to learn that one AmigaDOS call removes either kind of object where
+Unix splits `unlink()` from `rmdir()`.
+
+`Protect` additionally wanted `IsDosEntryA()`, so AROS's own
+`compiler/arossupport/isdosentrya.c` is compiled too, on an
+`AttemptLockDosList()` that is ACE's `LockDosList()` -- nothing else can hold
+a list this process builds for itself.
+
+Adding those tests turned up a bug that had nothing to do with them: on this
+Raspberry Pi the whole filesystem suite was already failing at HEAD, because
+`src/assign_compat.c` registered only a block device's *kernel* name in the
+DOS list AROS's `GetDeviceProc()` searches. The broker treats the kernel name,
+the filesystem UUID and the filesystem label as interchangeable, and its
+host-to-AmigaDOS translation hands back the label when there is one -- so
+`rootfs:home/...` failed to lock with ERROR_DEVICE_NOT_MOUNTED while
+`sda2:home/...`, the same filesystem, worked. All three spellings are now
+registered. This is exactly the Amiga distinction it looks like: the kernel
+name is the device, the label is the volume.
+
+One test had `sda2:` written into it, which is this host's root device; it now
+takes the expected spelling from the broker.
 
 ## Build on another host
 
@@ -461,8 +552,12 @@ have built its view when ACE first offers one -- and then left alone, since a
 compositor restart replaces GDK's whole display (caught by `ensure_manager()`)
 and a manager coming or going is reported on the registry listener.
 
-The next work is expanding the DOS filesystem/device seam beyond this first
-read-only command and porting more AROS commands while keeping the AROS source
-behavior intact. `Dir` is a useful baseline for those ports: it already proves
-the real AROS pattern engine and directory enumeration can run on the broker's
-host-path model.
+The next work is porting more AROS commands while keeping the AROS source
+behavior intact. Every command in the tree now parses its arguments with
+AROS's own `ReadArgs()`, so a new port needs no argument work at all: `Dir`
+proves the real pattern engine and directory enumeration run on the broker's
+host-path model, and `Delete`/`Protect` prove the same for removal and for
+protection bits in both directions. What a port costs now is whatever DOS
+calls it makes that ACE has not implemented yet -- `Filenote` needs
+`SetComment()` and `Copy` needs that plus `Write()` and `SetFileDate()`. See
+TODO.md.

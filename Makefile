@@ -56,6 +56,8 @@ AROS_RENAME_SRC := $(AROS_ROOT)/workbench/c/Rename.c
 AROS_STACK_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Stack.c
 AROS_DOSPATH_DIR := $(AROS_ROOT)/rom/dos
 AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
+AROS_DELETE_SRC := $(AROS_ROOT)/workbench/c/Delete.c
+AROS_PROTECT_SRC := $(AROS_ROOT)/workbench/c/Protect.c
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
                      matchpatternnocase parsepatternnocase \
@@ -77,6 +79,20 @@ AROS_DOSPAT_CFLAGS := -funsigned-char \
                       -Wno-unused-but-set-variable -Wno-strict-aliasing \
                       -Wno-maybe-uninitialized \
                       -include ace_dos_intern.h
+# AROS declares a command's arguments with the AROS_SHn macros, and AROS's own
+# compiler/include/aros/shcommands.h is what expands them -- into the
+# AllocDosObject(DOS_RDARGS)/ReadArgs()/FreeArgs() sequence in
+# shcommands_notembedded.h. Compiling that header is what puts these commands
+# on the real argument parser; ACE used to restate it, and the restatement
+# parsed the templates itself.
+#
+# -I$(COMPAT) stays ahead of the AROS include directory in every rule below,
+# so ACE's compat headers win wherever both trees have one and AROS's are
+# reached only for what compat does not provide. ace_shcommand_host.h
+# supplies the host process entry point the macro expansion assumes.
+AROS_SHCOMMAND_CFLAGS := -I$(AROS_ROOT)/compiler/include \
+                         -include ace_shcommand_host.h
+
 AROS_BOOPSI_DIR := $(AROS_ROOT)/rom/intuition
 AROS_ALIB_DIR := $(AROS_ROOT)/compiler/alib
 AROS_BOOPSI_NAMES := rootclass makeclass freeclass addclass removeclass \
@@ -144,11 +160,11 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ROOT)/compiler/arossupport/include \
                         -I$(AROS_ROOT)/compiler/include \
                         -I$(AROS_ALIB_DIR)
-INSTALL_BINS := Echo CD PathPart Dir Fault Ask Get Getenv Set Unset Alias Unalias \
+INSTALL_BINS := Echo CD PathPart Dir Delete Protect Fault Ask Get Getenv Set Unset Alias Unalias \
                 FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX ace-shell ace-user-shell ace-console NewCLI \
                 ace-broker ace-brokerctl
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -162,20 +178,38 @@ $(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
 $(BUILD)/ace-launcher.o: src/ace_launcher.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/native_args.o: src/native_args.c | $(BUILD)
+$(BUILD)/native_shcommand.o: src/native_shcommand.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/native_process.o: src/native_process.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_makedir_main -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
-$(BUILD)/makedir_entry.o: src/makedir_entry.c | $(BUILD)
+$(BUILD)/native_command_entry.o: src/native_command_entry.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+# Protect refuses to change a whole volume or device rather than an object
+# inside one, and asks AROS's own arossupport routine which it is.
+$(BUILD)/aros-arsupport-isdosentrya.o: $(AROS_ARSUPPORT_DIR)/isdosentrya.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -include proto/exec.h -include src/assign_compat.h \
+	    -Wno-implicit-function-declaration -c $< -o $@
+
+# Delete and Protect declare their arguments by calling ReadArgs() directly
+# rather than through the AROS_SHn macros, so they take the generic host entry
+# point in src/native_command_entry.c. Both drive the real AROS pattern
+# matcher Dir already uses.
+$(BUILD)/Delete.o: $(AROS_DELETE_SRC) compat/include/ace_dos_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Protect.o: $(AROS_PROTECT_SRC) compat/include/ace_dos_intern.h | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) \
+	    -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/endcli.o: $(AROS_ENDCLI_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 AROS_ASSIGN_CFLAGS := -Wno-implicit-function-declaration \
                       -Wno-int-conversion -Wno-int-to-pointer-cast \
@@ -252,7 +286,7 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
 
 $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
-                 $(BUILD)/native_command.o $(BUILD)/native_args.o \
+                 $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
                  $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
@@ -366,7 +400,7 @@ $(BUILD)/exec-compat-test: tests/exec_compat_test.c $(BUILD)/exec_compat.o $(BUI
 	$(CC) $(CFLAGS) -pthread -DAMIGA_EXEC_COMPAT_ENABLED -I$(COMPAT) -Isrc $^ -o $@
 
 $(BUILD)/aros-newcli.o: $(AROS_NEWCLI_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
@@ -381,22 +415,23 @@ $(BUILD)/aros-shell-%.o: $(AROS_ROOT)/workbench/c/Shell/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
 $(BUILD)/Echo.o: $(AROS_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/CD.o: $(AROS_CD_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/PathPart.o: $(AROS_PATHPART_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Type.o: $(AROS_TYPE_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) \
+	    -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/Rename.o: $(AROS_RENAME_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/Stack.o: $(AROS_STACK_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/run_entry.o: src/run_entry.c src/native_host.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
@@ -405,105 +440,111 @@ $(BUILD)/aros-dos-%.o: $(AROS_DOSPAT_DIR)/%.c compat/include/ace_dos_intern.h | 
 	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
 
 $(BUILD)/Dir.o: $(AROS_DIR_SRC) compat/include/ace_dos_intern.h | $(BUILD)
-	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Fault.o: $(AROS_FAULT_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Ask.o: $(AROS_ASK_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Get.o: $(AROS_GET_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Getenv.o: $(AROS_GETENV_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Set.o: $(AROS_SET_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Unset.o: $(AROS_UNSET_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Alias.o: $(AROS_ALIAS_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Unalias.o: $(AROS_UNALIAS_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/FailAt.o: $(AROS_FAILAT_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Why.o: $(AROS_WHY_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Prompt.o: $(AROS_PROMPT_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
-$(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/makedir_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/native_command_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/EndCLI: $(BUILD)/endcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+$(BUILD)/EndCLI: $(BUILD)/endcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/LNX: $(BUILD)/LNX.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Echo: $(BUILD)/Echo.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Echo: $(BUILD)/Echo.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/CD: $(BUILD)/CD.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/CD: $(BUILD)/CD.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/PathPart: $(BUILD)/PathPart.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/PathPart: $(BUILD)/PathPart.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Type: $(BUILD)/Type.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Type: $(BUILD)/Type.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Rename: $(BUILD)/Rename.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Rename: $(BUILD)/Rename.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Stack: $(BUILD)/Stack.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Stack: $(BUILD)/Stack.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Run: $(BUILD)/run_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Dir: $(BUILD)/Dir.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Fault: $(BUILD)/Fault.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Delete: $(BUILD)/Delete.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Ask: $(BUILD)/Ask.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Protect: $(BUILD)/Protect.o $(BUILD)/native_command_entry.o $(BUILD)/aros-arsupport-isdosentrya.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Get: $(BUILD)/Get.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Fault: $(BUILD)/Fault.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Getenv: $(BUILD)/Getenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Ask: $(BUILD)/Ask.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Set: $(BUILD)/Set.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Get: $(BUILD)/Get.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Unset: $(BUILD)/Unset.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Getenv: $(BUILD)/Getenv.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Alias: $(BUILD)/Alias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Set: $(BUILD)/Set.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Unalias: $(BUILD)/Unalias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Unset: $(BUILD)/Unset.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/FailAt: $(BUILD)/FailAt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Alias: $(BUILD)/Alias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/Unalias: $(BUILD)/Unalias.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/broker_client.o
+$(BUILD)/FailAt: $(BUILD)/FailAt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o
@@ -518,7 +559,7 @@ $(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
 
-$(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_args.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
+$(BUILD)/NewCLI: $(BUILD)/aros-newcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/native_process.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-shell: $(BUILD)/ace-launcher.o
@@ -562,4 +603,7 @@ test-console-device-bridge: $(BUILD)/console-device-bridge-test
 test-filesystem-translation: all
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
+user-install:
+	$(MAKE) install PREFIX=$$HOME/.local
+
+.PHONY: all clean install user-install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics

@@ -15,10 +15,15 @@ rename_target="$mapping_test_dir/rename-target"
 rename_question_source="$mapping_test_dir/rename-question-source"
 rename_question_target="$mapping_test_dir/rename-question-target"
 run_created_dir="$mapping_test_dir/run-created"
+delete_dir="$mapping_test_dir/delete-tree"
+delete_protected="$mapping_test_dir/delete-protected"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_union_first" \
-      "$mapping_union_second" "$mapping_union_second/only-second"
+      "$mapping_union_second" "$mapping_union_second/only-second" \
+      "$delete_dir" "$delete_dir/nested"
 touch "$rename_source"
 touch "$rename_question_source"
+touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
+      "$delete_dir/nested/three.txt" "$delete_protected"
 
 cd "$repo_dir"
 
@@ -42,6 +47,8 @@ cleanup()
     [ -e "$rename_question_source" ] && unlink "$rename_question_source" 2>/dev/null || true
     [ -e "$rename_question_target" ] && unlink "$rename_question_target" 2>/dev/null || true
     [ -e "$run_created_dir" ] && rmdir "$run_created_dir" 2>/dev/null || true
+    chmod u+w "$delete_protected" 2>/dev/null || true
+    rm -rf "$delete_dir" "$delete_protected" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_union_second/only-second" "$mapping_union_first" \
           "$mapping_union_second" "$mapping_colon_dir" "$mapping_long_dir" \
@@ -191,6 +198,51 @@ case "$run_output" in
         ;;
 esac
 
+# Delete and Protect are the unmodified AROS commands, and the first
+# destructive use of the filesystem seam. Between them they exercise the real
+# pattern matcher, the recursive ALL walk, and the protection bits in both
+# directions: Protect writes them through SetProtection(), and Delete reads
+# them back through Examine() to decide whether an object may be removed.
+delete_dir_name=$(control name "$delete_dir")
+delete_output=$(printf 'Delete %s/#?.txt\nDelete %s ALL\nEndCLI\n' \
+    "$delete_dir_name" "$delete_dir_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-delete-test "$repo_dir/build/ace-user-shell")
+[ ! -e "$delete_dir" ]
+case "$delete_output" in
+    *"Not Deleted"*)
+        echo "Delete could not remove a pattern match or a directory tree" >&2
+        exit 1
+        ;;
+esac
+
+# Withdrawing the delete bit has to actually stop a deletion, or Delete's
+# protection check is reading something ACE never wrote. FORCE then clears it
+# and removes the file, which is the same seam in the other direction.
+delete_protected_name=$(control name "$delete_protected")
+protect_output=$(printf 'Protect %s d SUB\nDelete %s\nEndCLI\n' \
+    "$delete_protected_name" "$delete_protected_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-protect-test "$repo_dir/build/ace-user-shell")
+[ -e "$delete_protected" ]
+case "$protect_output" in
+    *"protected from deletion"*) ;;
+    *)
+        echo "Protect did not stop Delete from removing the file" >&2
+        exit 1
+        ;;
+esac
+force_output=$(printf 'Delete %s FORCE\nEndCLI\n' "$delete_protected_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=shell-force-test "$repo_dir/build/ace-user-shell")
+[ ! -e "$delete_protected" ]
+case "$force_output" in
+    *"Not Deleted"*)
+        echo "Delete FORCE did not clear the protection it was given" >&2
+        exit 1
+        ;;
+esac
+
 broker_pid=$(sed -n '1p' "$socket_path.lock")
 case "$broker_pid" in
     ''|*[!0-9]*) echo "broker lock did not contain a PID" >&2; exit 1 ;;
@@ -279,8 +331,12 @@ esac
 assign_output=$(printf 'Assign ACE_TEST: :\nAssign ACE_TEST: EXISTS\nCD ACE_TEST:\nCD\nAssign ACE_TEST: LIST\nEndCLI\n' |
     env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=shell-assign-test \
     PATH="$repo_dir/build:$PATH" "$repo_dir/build/ace-user-shell")
+# The volume is named from whatever the host's own filesystem carries, so the
+# expected spelling has to come from the broker rather than from a device name
+# written into the test: a root filesystem with a label is named for the label,
+# one without for its kernel device.
 case "$assign_output" in
-    *"ACE_TEST"*"sda2:"*"$volume_name"*) ;;
+    *"ACE_TEST"*"$volume_name"*"$volume_name"*) ;;
     *) echo "Assign did not create or resolve a broker-backed assignment" >&2; exit 1 ;;
 esac
 case "$assign_output" in

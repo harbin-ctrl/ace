@@ -35,6 +35,7 @@
     memset((destination), (value), (length))
 
 struct DosList *LockDosList(ULONG flags);
+struct DosList *AttemptLockDosList(ULONG flags);
 struct DosList *NextDosEntry(struct DosList *entry, ULONG flags);
 struct DosList *FindDosEntry(struct DosList *list, CONST_STRPTR name,
                              ULONG flags);

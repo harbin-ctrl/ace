@@ -50,6 +50,7 @@ LONG RootDir(struct DevProc *device, struct DosLibrary *dos_base);
 /* The compatibility DOS list has no blocking read lock, but it still needs
  * the same public entry points that real DOS code calls. */
 struct DosList *LockDosList(ULONG flags);
+struct DosList *AttemptLockDosList(ULONG flags);
 struct DosList *FindDosEntry(struct DosList *list, CONST_STRPTR name,
                              ULONG flags);
 void UnLockDosList(ULONG flags);

@@ -79,6 +79,39 @@ AROS source. It supports multiple directory names and the `ALL` switch for
 creating intermediate directories. Its DOS argument layer now supports
 multi-valued `/M` arguments and explicit `FreeArgs()` cleanup.
 
+Every ACE command now parses its arguments with AROS's own `ReadArgs()`.
+Commands declare their arguments either by calling it directly or with the
+`AROS_SHn` macros, and both routes are AROS's: the macros are expanded by
+AROS's own `compiler/include/aros/shcommands.h`, which is where the
+`ReadArgs()`/`FreeArgs()` pair around a command's body lives. ACE supplies only
+the host process entry point that header assumes, in
+`compat/include/ace_shcommand_host.h`.
+
+AmigaDOS leaves a command's argument line in its input stream for `ReadArgs()`
+to read, and ACE does the same: the shell puts the line it parsed there, and a
+command started straight from a Linux shell gets its `argv` put back together
+into one, quoted the way `readitem.c` will take it apart again.
+
+`Delete` and `Protect` are the first destructive commands, both built from
+their original AROS sources. `Delete` uses the real pattern matcher, deletes
+directory trees with `ALL`, and refuses an object whose delete bit is
+withdrawn unless `FORCE` is given; `Protect` is what withdraws it:
+
+```sh
+./build/Delete WORK:build/#?.o
+./build/Delete WORK:scratch ALL
+./build/Protect WORK:keep.txt d SUB
+./build/Delete WORK:keep.txt          # refused
+./build/Delete WORK:keep.txt FORCE    # clears protection, then deletes
+```
+
+AmigaDOS's delete bit has no separate Unix permission -- on Unix it is the
+containing directory that governs removal -- so it shares the owner write bit
+with the write bit, which is the pairing ACE's `Examine()` already used in the
+read direction. `Protect`'s other flags follow the same rule: the bits ACE can
+express are the ones it maps, and the archive/pure/script trio is left
+alone rather than guessed at.
+
 `Dir` is now built from the original AROS `workbench/c/Dir.c` together with
 the real AROS DOS pattern-matching and `ExAll()` sources. It exercises the
 host filesystem seam through `Lock()`, `Examine()`, `ExNext()`, `DupLock()`,

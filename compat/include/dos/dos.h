@@ -49,6 +49,13 @@
 #define ERROR_NOT_IMPLEMENTED   236
 #define ERROR_BUFFER_OVERFLOW   303
 #define ERROR_IS_SOFT_LINK      201
+#define ERROR_INVALID_RESIDENT_LIBRARY 122
+#define ERROR_DISK_WRITE_PROTECTED 214
+#define ERROR_DIRECTORY_NOT_EMPTY 216
+#define ERROR_DELETE_PROTECTED  222
+#define ERROR_WRITE_PROTECTED   223
+
+#define DOSNAME "dos.library"
 
 #define SIGBREAKF_CTRL_C (1u << 12)
 #define SIGBREAKF_CTRL_D (1u << 13)
@@ -250,6 +257,7 @@ BPTR Input(void);
 BPTR Open(CONST_STRPTR name, LONG mode);
 LONG Close(BPTR file);
 LONG DeleteFile(CONST_STRPTR name);
+LONG SetProtection(CONST_STRPTR name, ULONG protection);
 LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name);
 LONG SameLock(BPTR lock1, BPTR lock2);
 BOOL IsInteractive(BPTR file);

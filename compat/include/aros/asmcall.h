@@ -24,6 +24,21 @@
 #define AROS_USERFUNC_INIT
 #define AROS_USERFUNC_EXIT
 
+/* CreateProc() entry point, as compiler/arossupport/include/asmcall.h
+   defines it. This is the shape AROS's shell-command macros give a
+   command's real entry point: the argument line, its length, and SysBase.
+   On ACE the caller is the host main() in ace_shcommand_host.h. */
+struct ExecBase;
+
+#define AROS_PROCH(n, argptr, argsize, sysbase) \
+    AROS_UFH3(SIPTR, n, \
+        AROS_UFHA(STRPTR, argptr, A0), \
+        AROS_UFHA(ULONG, argsize, D0), \
+        AROS_UFHA(struct ExecBase *, sysbase, A6))
+
+#define AROS_PROCFUNC_INIT AROS_USERFUNC_INIT
+#define AROS_PROCFUNC_EXIT AROS_USERFUNC_EXIT
+
 /* exall.c's eac_MatchFunc hook call. Dir.c never sets eac_MatchFunc (NULL,
    from AllocDosObject's zeroed allocation), so this compiles the call site
    without ever actually being invoked in the profile ACE runs. */
