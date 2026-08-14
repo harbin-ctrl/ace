@@ -8,7 +8,18 @@ GFX_CFLAGS := $(shell pkg-config --cflags cairo fontconfig)
 GFX_LIBS := $(shell pkg-config --libs cairo fontconfig)
 WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client)
 WAYLAND_LIBS := $(shell pkg-config --libs wayland-client)
-PREFIX ?= /usr/local
+# ACE installs into the user's own prefix, not the system's. Every ACE
+# program finds its companions -- the shell, the console, the broker, the AROS
+# commands -- beside its own executable, so an install is a set that has to
+# stay together, and two sets on one PATH drift silently: the older one keeps
+# working, just old, while the newer one never runs. Defaulting here means the
+# obvious command is the correct one and needs no sudo.
+#
+# A system-wide install is still an ordinary PREFIX override --
+# `sudo make PREFIX=/usr/local AROS_ROOT="$$HOME/aros" install`, with AROS_ROOT
+# passed explicitly because sudo resets HOME -- but it is deliberately not a
+# target of its own. Nothing should reach it by accident.
+PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 APPLICATIONSDIR ?= $(DATADIR)/applications
@@ -582,13 +593,33 @@ $(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(
 clean:
 	$(RM) -r $(BUILD)
 
+# The launcher names the binary it was installed beside, rather than looking
+# ace-shell up on PATH. PATH order is not the desktop session's to promise,
+# and when a second install exists the icon silently runs whichever directory
+# comes first -- which is how an install can look complete and still start
+# yesterday's build.
+# Written by the install recipe rather than as a file target of its own,
+# because its content depends on BINDIR -- a variable, not a file. As a target
+# make would consider it up to date whenever data/ace.desktop.in had not
+# changed, and happily install a launcher pointing at the prefix from the
+# previous install.
 install: all
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
 	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR)
-	$(INSTALL) -m 0644 data/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
+	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
+	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
 	$(INSTALL) -m 0644 assets/ace.png $(DESTDIR)$(ICONDIR)/ace.png
+	@if [ -z "$(DESTDIR)" ]; then \
+	    found=`command -v ace-shell 2>/dev/null || true`; \
+	    if [ -n "$$found" ] && [ "$$found" != "$(BINDIR)/ace-shell" ]; then \
+	        echo; \
+	        echo "warning: installed $(BINDIR)/ace-shell, but PATH finds $$found first."; \
+	        echo "         Typing ace-shell runs that older install, not this one."; \
+	        echo "         Remove it, or put $(BINDIR) earlier on PATH."; \
+	    fi; \
+	fi
 
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
@@ -623,7 +654,4 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-user-install:
-	$(MAKE) install PREFIX=$$HOME/.local
-
-.PHONY: all clean install user-install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install test-console-device test-console-device-bridge test-filesystem-translation test-aros-exec-runtime test-aros-console-editor test-exec-compat test-boopsi test-graphics

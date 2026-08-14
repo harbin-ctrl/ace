@@ -5,13 +5,25 @@
 Two hosts are set up, both building and passing the full test suite:
 
 * a Raspberry Pi (aarch64, Debian, labwc) at `~/repo/ace`, run from `build/`;
-* `blackberry` (x86_64, Debian 13) at `~/repo/ace`, also installed into
-  `/usr/local/bin` with `sudo make AROS_ROOT="$HOME/aros" install`.
+* `blackberry` (x86_64, Debian 13) at `~/repo/ace`.
 
-`AROS_ROOT` has to be passed explicitly through `sudo`, because `sudo` resets
-`$HOME` and the Makefile defaults `AROS_ROOT` to `$HOME/aros`; without it the
-build looks for AROS under `/root` and the install fails before it copies
-anything.
+`make install` installs into `~/.local/bin` and needs no privileges. A
+system-wide install is a `PREFIX` override --
+`sudo make PREFIX=/usr/local AROS_ROOT="$HOME/aros" install` -- with
+`AROS_ROOT` passed explicitly because `sudo` resets `$HOME` and the Makefile
+defaults `AROS_ROOT` to `$HOME/aros`; without it the build looks for AROS
+under `/root` and the install fails before it copies anything.
+
+**One install per machine.** ACE programs find their companions beside their
+own executable, so an install is a set that stays together, and two sets on
+one `PATH` drift apart in the quietest possible way: the older set keeps
+working, just old, and the newer one is simply never reached. This happened
+here -- a `~/.local/bin` install shadowed `/usr/local/bin`, so a fresh
+`sudo make install` left the panel icon starting the previous build, with no
+symptom beyond a missing command that had only been installed to the root
+nothing was reading. Hence the default prefix, the absolute path in the
+launcher, and the warning `make install` prints when `PATH` will not select
+what it just installed.
 
 ## Current state
 

@@ -19,16 +19,31 @@ where there is no runtime directory). One broker serves all of a user's ACE
 processes: a second one started on the same socket reports that one is
 already running and exits rather than displacing it.
 
-Install the built commands and console runtime into `/usr/local/bin`:
+Install the built commands and console runtime into `~/.local/bin`:
 
 ```sh
 make install
 ```
 
-Use `PREFIX` for a different installation root, for example
-`make PREFIX="$HOME/.local" install`. All installed ACE programs share one
-directory so they can locate the companion shell, console, broker, and AROS
-commands at runtime.
+That is the whole install, and it needs no privileges. All installed ACE
+programs share one directory, because each finds its companions -- the shell,
+the console, the broker, the AROS commands -- beside its own executable. The
+desktop launcher is written with that directory's absolute path in it, so the
+icon starts the build that was installed rather than whatever PATH happens to
+find first.
+
+A system-wide install is an ordinary `PREFIX` override rather than a target of
+its own:
+
+```sh
+sudo make PREFIX=/usr/local AROS_ROOT="$HOME/aros" install
+```
+
+`AROS_ROOT` has to be passed explicitly there because `sudo` resets `$HOME`.
+Prefer one install per machine: two sets of ACE binaries on one `PATH` drift
+apart silently, since the older set keeps working perfectly well and only the
+newer one stops being reached. `make install` warns when it has just installed
+a copy that `PATH` will not select.
 
 For testing, the project also provides quiet lifecycle commands:
 
