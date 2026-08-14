@@ -36,8 +36,6 @@ COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
 AROS_ROOT ?= $(HOME)/aros
 VIM_SRC ?=
-LHA_VENDOR := $(CURDIR)/vendor/lha
-LHA_SOURCES := $(wildcard $(LHA_VENDOR)/src/*.c)
 HOST_ARCH ?= $(shell uname -m)
 ifeq ($(HOST_ARCH),aarch64)
 AROS_CPU_ARCH ?= aarch64-all
@@ -192,15 +190,14 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
 # and nothing else has to be in here.
 AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
                   FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX NewCLI \
-                  If Else EndIf Execute Setenv Unsetenv LhA
+                  If Else EndIf Execute Setenv Unsetenv
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
-INSTALL_SUPPORT_BINS := ace-lha-core
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-lha-core $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -346,12 +343,6 @@ $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
 
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
-
-$(BUILD)/ace-lha-core: tools/build-lha.sh $(LHA_VENDOR)/configure.ac $(LHA_VENDOR)/Makefile.am $(LHA_SOURCES) | $(BUILD)
-	LHA_SOURCE_DIR="$(LHA_VENDOR)" LHA_OUTPUT="$@" LHA_MAKE_JOBS=2 bash tools/build-lha.sh
-
-$(BUILD)/LhA: src/lha.c $(BUILD)/broker_client.o | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc $^ -o $@
 
 $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
@@ -719,7 +710,6 @@ clean:
 install: all
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_BINS)) $(DESTDIR)$(BINDIR)
-	$(INSTALL) -m 0755 $(addprefix $(BUILD)/,$(INSTALL_SUPPORT_BINS)) $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 broker-start broker-stop $(DESTDIR)$(BINDIR)
 	# SYS: -- the boot volume, in the shape dos.library's boot assigns expect.
 	# Only the drawers ACE actually fills are created: AddBootAssign() in
@@ -798,7 +788,4 @@ test-system-assigns: all
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-test-lha: all
-	sh tests/lha_test.sh
-
-.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
