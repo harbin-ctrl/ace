@@ -74,9 +74,12 @@ printf 'ACE file-command test\nsecond line\n' > "$sys_dir/C/expected-joined.txt"
 cmp "$sys_dir/C/expected-joined.txt" "$sys_dir/C/joined.txt" || \
     fail 'Join produced the wrong contents'
 
+eval_output=$(run_command Eval 2 + 3)
+[ "$eval_output" = '5' ] || fail "Eval produced '$eval_output' instead of 5"
+
 list_output=$(run_command List SYS:C NOHEAD FILES)
 printf '%s\n' "$list_output" | grep -q 'source.txt' || fail 'List omitted source.txt'
 printf '%s\n' "$list_output" | grep -q 'copied.txt' || fail 'List omitted copied.txt'
 printf '%s\n' "$list_output" | grep -q 'touched.txt' || fail 'List omitted touched.txt'
 
-printf '%s\n' 'Copy, List, Touch, MakeLink, and Join file-command test passed'
+printf '%s\n' 'Copy, List, Touch, MakeLink, Join, and Eval file-command test passed'
