@@ -648,6 +648,11 @@ static void cell_record(struct ace_gfx_rp_private *priv, int column, int row,
 
     if (!cell)
         return;
+    /* JAM1 draws only the glyph.  Its BPen says nothing about the pixels
+       already in this cell, so retaining it would make a later cursor
+       redraw invent a background that was never displayed. */
+    if (!opaque && cell->valid)
+        background = cell->background;
     cell->character = character;
     cell->algo_style = algo_style;
     cell->opaque = opaque;
@@ -1292,16 +1297,18 @@ static void render_cell(struct ace_gfx_rp_private *priv, struct TextFont *font,
     style = style_index(cell->algo_style);
     ensure_glyph_cache(font_private, style);
 
-    if (cell->opaque) {
-        fill_rect_raw(priv, x, top,
-                      x + priv->cell_width - 1,
-                      top + priv->cell_height - 1,
-                      0xff000000u | background);
-        cairo_surface_mark_dirty_rectangle(priv->surface, x,
-                                           priv->origin_y + top,
-                                           priv->cell_width,
-                                           priv->cell_height);
-    }
+    /* This is a logical cell redraw, not a replay of the original Text()
+       call. Even a JAM1 character needs its remembered background restored
+       before its antialiased glyph is painted, or cairo blends the new glyph
+       with the old one and leaves a fringe. */
+    fill_rect_raw(priv, x, top,
+                  x + priv->cell_width - 1,
+                  top + priv->cell_height - 1,
+                  0xff000000u | background);
+    cairo_surface_mark_dirty_rectangle(priv->surface, x,
+                                       priv->origin_y + top,
+                                       priv->cell_width,
+                                       priv->cell_height);
 
     cairo_save(priv->cr);
     cairo_rectangle(priv->cr, x, top, priv->cell_width, priv->cell_height);

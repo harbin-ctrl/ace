@@ -386,6 +386,51 @@ static void test_cursor_redraws_glyph(void)
     DisposeObject(unit);
 }
 
+/* A transparent Text() leaves the cell background alone.  The cache must
+ * therefore inherit the background already in the cell, then cursor redraw
+ * must paint that background before drawing the complemented antialiased
+ * glyph.  Otherwise the old glyph becomes cairo's blending backdrop. */
+static void test_cursor_redraws_transparent_glyph(void)
+{
+    uint8_t *normal;
+    uint8_t *cursor;
+    int cell_width = g_font->tf_XSize;
+    int cell_height = g_font->tf_YSize;
+    int x, y, channel;
+
+    SetDrMd(g_rp, JAM2);
+    SetAPen(g_rp, 0);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, WIN_HEIGHT - 1);
+    SetAPen(g_rp, 1);
+    SetBPen(g_rp, 1); /* Deliberately unlike the existing pen-0 background. */
+    SetDrMd(g_rp, JAM1);
+    Move(g_rp, 0, g_font->tf_Baseline);
+    Text(g_rp, (CONST_STRPTR)"d", 1);
+
+    normal = read_frame();
+    SetDrMd(g_rp, COMPLEMENT);
+    RectFill(g_rp, 0, 0, cell_width - 1, cell_height - 1);
+    cursor = read_frame();
+    for (y = 0; y < cell_height; y++) {
+        for (x = 0; x < cell_width; x++) {
+            const uint8_t *normal_pixel =
+                normal + ((size_t)y * WIN_WIDTH + x) * 3;
+            const uint8_t *cursor_pixel =
+                cursor + ((size_t)y * WIN_WIDTH + x) * 3;
+
+            for (channel = 0; channel < 3; channel++)
+                assert(abs((int)cursor_pixel[channel] +
+                           (int)normal_pixel[channel] - 255) <= 1);
+        }
+    }
+    free(cursor);
+    free(normal);
+
+    /* Leave the shared rastport in its ordinary drawing mode. */
+    RectFill(g_rp, 0, 0, cell_width - 1, cell_height - 1);
+    SetDrMd(g_rp, JAM2);
+}
+
 /*
  * A COMPLEMENT RectFill is how stdconclass.c draws and erases its cursor, and
  * on planar hardware it inverts the pen index rather than the colour: pen n
@@ -467,6 +512,7 @@ int main(void)
     }
 
     test_cursor_redraws_glyph();
+    test_cursor_redraws_transparent_glyph();
     test_scroll_raster_direction();
     test_complement_inverts_pen_index();
 
