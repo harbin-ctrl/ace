@@ -129,6 +129,7 @@ struct console_window {
     size_t title_length;
     gboolean menu_type_hint_restored;
     gboolean menu_wayland_live;
+    gboolean fullscreen;
     GDBusConnection *menu_bus;
     GMenu *menu_model;
     GSimpleActionGroup *menu_actions;
@@ -994,6 +995,17 @@ static int send_input(struct console_window *console, const void *data,
     return 0;
 }
 
+static void toggle_fullscreen(struct console_window *console)
+{
+    if (console->fullscreen) {
+        gtk_window_unfullscreen(GTK_WINDOW(console->window));
+        console->fullscreen = FALSE;
+    } else {
+        gtk_window_fullscreen(GTK_WINDOW(console->window));
+        console->fullscreen = TRUE;
+    }
+}
+
 /*
  * The console input codes an Amiga program expects for the keys that are not
  * characters. These are the console.device raw sequences, the same ones the
@@ -1108,6 +1120,10 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
     gunichar unicode;
 
     (void)widget;
+    if (key == GDK_KEY_F11 && modifiers == 0) {
+        toggle_fullscreen(console);
+        return TRUE;
+    }
     for (size_t index = 0; index < G_N_ELEMENTS(console_keys); index++) {
         const struct console_key *entry = &console_keys[index];
 
