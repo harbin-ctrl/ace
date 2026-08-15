@@ -139,7 +139,7 @@ printf 'one\ntwo\nthree\n' > "$work/nine.txt"
 printf 'V-\nM2\nI\nnew\nZ\nREWIND\nTL\nM*\nW\n' > "$work/nine.cmd"
 edit SYS:C/nine.txt WITH SYS:C/nine.cmd > "$test_dir/output" ||
     fail 'rewind failed'
-grep -A1 '^2\.$' "$test_dir/output" | grep -q '^new$' ||
+grep -q '^    2  new$' "$test_dir/output" ||
     fail 'rewind did not renumber the inserted line'
 expect_file nine.txt one new two three
 # The work files live in T: and are named as the original names them. The
@@ -178,19 +178,35 @@ edit SYS:C/twelve.txt WIDTH 16 WITH SYS:C/twelve.cmd > /dev/null ||
     fail 'narrow width failed'
 expect_file twelve.txt abcdefghijklmnopqrstuvwxyz short
 
-# A line number that is not in the file is reported rather than searched for
-# forever: the direction of the search is decided before it starts, so neither
-# the extra line past the end nor a non-original line can send it back and
-# forth. The timeout is the point of the case.
+# A line number that is not in the file walks to the end and reports running
+# out of input, the way the original does, rather than searching for it
+# forever: the direction is decided before the search starts, so neither the
+# extra line past the end nor a non-original line can send it back and forth.
+# The timeout is the point of the case.
 printf '1\n2\n3\n4\n' > "$work/thirteen.txt"
 printf 'V-\nM999\nM2\nI\nins\nZ\nM4\nM2\n?\nM*\nW\n' > "$work/thirteen.cmd"
 env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
     timeout 20 "$repo_dir/build/Edit" SYS:C/thirteen.txt \
     WITH SYS:C/thirteen.cmd > "$test_dir/output" ||
     fail 'a line number outside the file did not finish'
-grep -q 'No such line' "$test_dir/output" ||
+grep -q 'Input exhausted' "$test_dir/output" ||
     fail 'a line number outside the file was not reported'
 expect_file thirteen.txt 1 ins 2 3 4
+
+# A line number that has been passed -- deleted, or left behind -- is its own
+# error, and the number is in it.
+printf '1\n2\n3\n4\n' > "$work/small.txt"
+printf 'V-\nM3\nM2\nI\nx\nZ\nSTOP\n' > "$work/small.cmd"
+env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
+    timeout 20 "$repo_dir/build/Edit" SYS:C/small.txt WITH SYS:C/small.cmd \
+    > "$test_dir/output" 2>&1 || true
+printf 'D2 3\nM1;I3\nZ\nSTOP\n' > "$work/small.cmd"
+cp "$test_dir/original" "$work/small.txt" 2>/dev/null || printf '1\n2\n3\n4\n' > "$work/small.txt"
+env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
+    timeout 20 "$repo_dir/build/Edit" SYS:C/small.txt WITH SYS:C/small.cmd \
+    > "$test_dir/output" 2>&1 || true
+grep -q 'Line number 3 too small' "$test_dir/output" ||
+    fail 'reaching past a wanted line number was not reported'
 
 # Fidelity to the original. These three cases are transcripts taken from
 # AmigaDOS's own EDIT running under emulation, on a file of six lines and a
@@ -249,7 +265,7 @@ edit SYS:C/queue.txt WITH SYS:C/queue.cmd > "$test_dir/queue.out" 2>&1 || true
     printf 'Editor\n56*\n\n'
     i=1
     while [ "$i" -le "$lines" ]; do
-        printf '%s.\nline %s\n' "$i" "$i"
+        printf 'line %s\n' "$i"
         i=$((i + 1))
     done
     printf '56*\n\n'

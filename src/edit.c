@@ -39,9 +39,21 @@
  *   - A string left unclosed ends at a semicolon as well as at the end of the
  *     line, so PB/CAT;? is a pointer command followed by a verify.
  *
- *   - The editor announces itself as "Editor" and prompts with ":" when it
- *     enters command mode -- at startup and when an insertion ends -- not
- *     before every command, and not at all inside an insertion.
+ *   - The editor announces itself as "Editor" and prompts with ":" before a
+ *     command only when the command line before it did not end by verifying a
+ *     line: a verification is itself the invitation to type the next command.
+ *     There is no prompt inside an insertion.
+ *
+ *   - T,L has a one-line format of its own -- the number right-aligned in
+ *     five columns, two spaces, the text -- while T and T,P and T,N type the
+ *     text alone. Only ? and ! and the end-of-line verification use the
+ *     two-line form.
+ *
+ *   - M takes a number or an asterisk. A period is "Number expected after M",
+ *     and the offending character is consumed with the command rather than
+ *     left to be read as another one. A number the file has gone past is
+ *     "Line number <n> too small"; a number beyond the end walks to the end
+ *     and is "Input exhausted", which is also what a failed F reports.
  *
  *   - Work files are T:E<nn>-WK<n> and the backup is T:EDIT-BACKUP.
  *
@@ -207,8 +219,14 @@ struct Edit
     LONG ver_fill;
 
     BOOL verify;
-    BOOL shown;
-    BOOL prompt;
+    /* What a command line did, which decides both whether the line it left
+       behind is shown at the end of it and whether the next command gets a
+       prompt. */
+    LONG entry_serial;
+    LONG shown_serial;
+    BOOL shown_any;
+    BOOL modified;
+    BOOL verified;
     BOOL trailing;
 
     UBYTE terminator[STRING_SIZE];
@@ -360,6 +378,21 @@ static BOOL is_graphic(UBYTE character)
 static BOOL is_blank(UBYTE character)
 {
     return character == ' ' || character == '\t';
+}
+
+static void append_number(UBYTE *buffer, LONG *at, LONG value, LONG digits)
+{
+    UBYTE text[12];
+    LONG count = 0;
+
+    do {
+        text[count++] = (UBYTE)('0' + (value % 10));
+        value /= 10;
+    } while (value > 0);
+    while (count < digits)
+        text[count++] = '0';
+    while (count > 0)
+        buffer[(*at)++] = text[--count];
 }
 
 static void copy_name(UBYTE *destination, const UBYTE *source, LONG length)
@@ -892,8 +925,18 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
             if (!previous_line(edit))
                 return FALSE;
         } else {
-            if (at_end(edit)) {
-                report(edit, "No such line");
+            /* Walking forward past the wanted number means it is not in the
+               file any more -- deleted, or renumbered away -- and there is no
+               going back for it once its place has been passed. */
+            if (edit->current->number > number) {
+                UBYTE message[48];
+                LONG at = 0;
+
+                memcpy(message, "Line number ", 12);
+                at = 12;
+                append_number(message, &at, number, 1);
+                memcpy(message + at, " too small", 11);
+                report(edit, (const char *)message);
                 return FALSE;
             }
             if (!next_line(edit))
@@ -934,12 +977,10 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
     for (index = 0; index < line->length; index++)
         ver_char(edit, is_graphic(line->text[index]) ? line->text[index] : '?');
     ver_newline(edit);
-    /* Showing the current line satisfies the end-of-line verification;
-       showing any other line un-satisfies it, because the current line is no
-       longer the last thing on the screen.  That is why T,P ends by showing
-       the current line again after typing the output queue, while T, which
-       ends on the current line, does not repeat it. */
-    edit->shown = (line == edit->current);
+    edit->shown_serial = line->serial;
+    edit->shown_any = TRUE;
+    if (numbered)
+        edit->verified = TRUE;
     if (edit->pointer > 0 && line == edit->current) {
         for (index = 0; index < edit->pointer; index++)
             ver_char(edit, ' ');
@@ -948,21 +989,37 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
     }
 }
 
-/* Called by every command that moves to or changes the current line.  The
-   display itself is deferred to the end of the whole command line and happens
-   only if nothing has shown the line already, which is what makes M2;M3 show
-   one line rather than two, 3(N) show only the line it arrives at, and
-   2(N;?) show two lines rather than four. */
+/* Called by every command that changes the text of the current line.  Moving
+   is not a change: the end-of-line rule below notices movement on its own. */
 static void verify_current(struct Edit *edit)
 {
-    edit->shown = FALSE;
+    edit->modified = TRUE;
 }
 
-/* The end of a command line: show where it left the current line. */
+/* The end of a command line.  The line it left behind is shown when the
+   command line moved somewhere else, changed the line's text, or put some
+   other line on the screen -- and not when something has already shown the
+   current line.  That one rule accounts for all of it: M2;M3 shows one line,
+   3(N) shows only the line it arrives at, 2(N;?) shows two rather than four,
+   M1 when line 1 is already current shows nothing at all, M1;I3 that walks
+   away and is thrown back where it started shows nothing, and T,P shows the
+   current line again after typing the queue over it. */
 static void verify_pending(struct Edit *edit)
 {
-    if (edit->verify && !edit->shown && edit->current)
-        verify_line(edit, edit->current, TRUE);
+    LONG serial = edit->current ? edit->current->serial : 0;
+    BOOL moved = serial != edit->entry_serial;
+
+    if (!edit->verify || !edit->current)
+        return;
+    /* Nothing happened worth reporting: no move, no change, and nothing put
+       on the screen. */
+    if (!moved && !edit->modified && !edit->shown_any)
+        return;
+    /* Something already left the current line on the screen -- an explicit ?,
+       or a T that ended on it. */
+    if (edit->shown_serial == serial)
+        return;
+    verify_line(edit, edit->current, TRUE);
 }
 
 static UBYTE hex_digit(UBYTE value)
@@ -1227,16 +1284,17 @@ static enum Command parse_command(struct Parser *parser)
 /* Command input: the keyboard, the WITH file, and whatever the C command has
    opened on top of them. */
 
-/* The prompt appears when the editor enters command mode -- at startup, and
-   again when an insertion ends -- rather than before every command, and only
-   when the commands are being typed rather than read from a file. */
+/* The prompt appears when the command line before it did not end by verifying
+   a line -- at startup, after a command that printed nothing, after an error
+   that did not move anywhere, and when an insertion ends.  A verification is
+   itself the invitation to type the next command, so it is not followed by
+   one. */
 static void prompt(struct Edit *edit)
 {
     struct CommandFile *file;
 
-    if (!edit->prompt || edit->depth < 0)
+    if (edit->depth < 0 || edit->verified)
         return;
-    edit->prompt = FALSE;
     file = &edit->commands[edit->depth];
     if (!IsInteractive(file->reader.handle))
         return;
@@ -1313,8 +1371,9 @@ static void insert_lines(struct Edit *edit)
                     break;
                 }
             if (match) {
-                /* Back in command mode, which is where a prompt belongs. */
-                edit->prompt = TRUE;
+                /* Back in command mode, and an insertion verifies nothing, so
+                   the next command is prompted for. */
+                edit->verified = FALSE;
                 return;
             }
         }
@@ -1412,21 +1471,6 @@ static struct Sink *open_sink(struct Edit *edit, const UBYTE *name,
     sink->next = edit->sinks;
     edit->sinks = sink;
     return sink;
-}
-
-static void append_number(UBYTE *buffer, LONG *at, LONG value, LONG digits)
-{
-    UBYTE text[12];
-    LONG count = 0;
-
-    do {
-        text[count++] = (UBYTE)('0' + (value % 10));
-        value /= 10;
-    } while (value > 0);
-    while (count < digits)
-        text[count++] = '0';
-    while (count > 0)
-        buffer[(*at)++] = text[--count];
 }
 
 /* The work file, named the way the original names it: T:E<nn>-WK<n>, with the
@@ -1625,15 +1669,16 @@ static void command_move(struct Edit *edit, struct Parser *parser)
     if (character == '*') {
         parser->position++;
         move_to_end(edit);
-    } else if (character == '.') {
-        parser->position++;
     } else if (parse_number(parser, &number))
         move_to_number(edit, number);
     else {
-        report(edit, "Line number needed");
-        return;
+        /* The offending character is taken with the command, so that the
+           error points at it and it is not then read as a command of its
+           own. */
+        if (character >= 0)
+            parser->position++;
+        report(edit, "Number expected after M");
     }
-    verify_current(edit);
 }
 
 static void command_delete(struct Edit *edit, struct Parser *parser)
@@ -1712,12 +1757,13 @@ static void command_find(struct Edit *edit, struct Parser *parser,
                 return;
         } else if (!next_line(edit))
             return;
-        if (line_find(edit->current, 0, edit->search, edit->search_length) >= 0) {
-            verify_current(edit);
+        if (line_find(edit->current, 0, edit->search, edit->search_length) >= 0)
             return;
-        }
+        /* Searching off the end of the file is reported as running out of
+           input, the same as any other move past the last line, and it leaves
+           the extra line current. */
         if (!backward && at_end(edit)) {
-            report(edit, "No match");
+            report(edit, "Input exhausted");
             return;
         }
     }
@@ -2012,6 +2058,37 @@ static BOOL interrupted(void)
 #endif
 }
 
+static void type_numbered(struct Edit *edit, struct Line *line)
+{
+    UBYTE field[8];
+    LONG at = 0;
+    LONG index;
+
+    if (line->number > 0) {
+        LONG digits = 1;
+        LONG scale = 10;
+
+        while (line->number >= scale && digits < 5) {
+            digits++;
+            scale *= 10;
+        }
+        for (index = digits; index < 5; index++)
+            field[at++] = ' ';
+        append_number(field, &at, line->number, 1);
+    } else {
+        memcpy(field, "  +++", 5);
+        at = 5;
+    }
+    ver_bytes(edit, field, at);
+    ver_text(edit, "  ");
+    for (index = 0; index < line->length; index++)
+        ver_char(edit, is_graphic(line->text[index]) ? line->text[index] : '?');
+    ver_newline(edit);
+    edit->shown_serial = line->serial;
+    edit->shown_any = TRUE;
+    edit->verified = TRUE;
+}
+
 static void command_type(struct Edit *edit, struct Parser *parser,
                          BOOL numbered)
 {
@@ -2030,7 +2107,10 @@ static void command_type(struct Edit *edit, struct Parser *parser,
            there. */
         if (!edit->current || at_end(edit))
             return;
-        verify_line(edit, edit->current, numbered);
+        if (numbered)
+            type_numbered(edit, edit->current);
+        else
+            verify_line(edit, edit->current, FALSE);
         if (!next_line(edit))
             return;
     }
@@ -2041,7 +2121,7 @@ static void command_type_queue(struct Edit *edit)
     LONG index;
 
     for (index = 0; index < edit->queue_count; index++)
-        verify_line(edit, queue_at(edit, index), TRUE);
+        verify_line(edit, queue_at(edit, index), FALSE);
 }
 
 /* T,N: type forward until every line now in the output queue has been written
@@ -2059,7 +2139,7 @@ static void command_type_new(struct Edit *edit)
         }
         if (!edit->current || at_end(edit))
             return;
-        verify_line(edit, edit->current, TRUE);
+        verify_line(edit, edit->current, FALSE);
         if (!next_line(edit))
             return;
     }
@@ -2684,6 +2764,11 @@ static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
         edit->last_command[keep] = '\0';
         edit->last_command_length = keep;
     }
+    edit->entry_serial = edit->current ? edit->current->serial : 0;
+    edit->modified = FALSE;
+    edit->shown_serial = 0;
+    edit->shown_any = FALSE;
+    edit->verified = FALSE;
     parser_init(&parser, text, length, 0);
     execute_commands(edit, &parser);
     /* The line the commands left behind is shown once, here, rather than by
@@ -2824,8 +2909,6 @@ int main(void)
     /* The first line becomes current without being shown: the original
        announces itself and then waits for a command. */
     next_line(&edit);
-    edit.shown = TRUE;
-    edit.prompt = TRUE;
     report(&edit, "Editor");
 
     while (!edit.finished && command_line(&edit, command, &length))
