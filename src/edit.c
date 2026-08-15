@@ -1499,7 +1499,7 @@ static void push_command_file(struct Edit *edit, const UBYTE *name)
     }
     handle = Open((CONST_STRPTR)name, MODE_OLDFILE);
     if (!handle) {
-        report_name(edit, "can't open", name);
+        report_name(edit, "Can't open", name);
         return;
     }
     edit->depth++;
@@ -1577,7 +1577,7 @@ static struct Source *open_source(struct Edit *edit, const UBYTE *name)
         return source;
     handle = Open((CONST_STRPTR)name, MODE_OLDFILE);
     if (!handle) {
-        report_name(edit, "can't open", name);
+        report_name(edit, "Can't open", name);
         return NULL;
     }
     source = (struct Source *)AllocVec((ULONG)sizeof(*source),
@@ -1615,7 +1615,7 @@ static struct Sink *open_sink(struct Edit *edit, const UBYTE *name,
         return sink;
     handle = Open((CONST_STRPTR)name, MODE_NEWFILE);
     if (!handle) {
-        report_name(edit, "can't open", name);
+        report_name(edit, "Can't open", name);
         return NULL;
     }
     sink = (struct Sink *)AllocVec((ULONG)sizeof(*sink),
@@ -1695,7 +1695,7 @@ static void close_named_file(struct Edit *edit, const UBYTE *name)
         }
         source_link = &source->next;
     }
-    report_name(edit, "no such open file:", name);
+    report_name(edit, "No such open file:", name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1780,7 +1780,7 @@ static void rewind_file(struct Edit *edit)
 
     handle = Open((CONST_STRPTR)finished_name, MODE_OLDFILE);
     if (!handle) {
-        report_name(edit, "can't reopen", finished_name);
+        report_name(edit, "Can't reopen", finished_name);
         edit->finished = TRUE;
         edit->result = RETURN_FAIL;
         return;
@@ -3054,8 +3054,9 @@ int main(void)
     args_handle = ReadArgs((CONST_STRPTR)EDIT_TEMPLATE, (IPTR *)args, NULL);
     if (!args_handle) {
         /* The original's own words for an argument line it cannot read,
-           including the commonest case of no arguments at all. */
-        report(&edit, "bad args");
+           including the commonest case of no arguments at all, and a keyword
+           given without its value. */
+        report(&edit, "Bad args");
         return RETURN_FAIL;
     }
 
@@ -3089,7 +3090,7 @@ int main(void)
                                                   sizeof(struct Line *)),
                                           MEMF_ANY | MEMF_CLEAR);
     if (!edit.queue) {
-        report(&edit, "out of memory");
+        report(&edit, "Out of memory");
         goto fail;
     }
 

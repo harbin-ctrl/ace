@@ -479,8 +479,24 @@ printf '\n' | edit > "$test_dir/output" 2>&1
 status=$?
 set -e
 [ "$status" -eq 20 ] || fail "no arguments exited $status instead of 20"
-grep -q '^bad args$' "$test_dir/output" ||
-    fail 'no arguments did not report bad args'
+grep -q '^Bad args$' "$test_dir/output" ||
+    fail 'no arguments did not report Bad args'
+set +e
+printf '\n' | edit VER > "$test_dir/output" 2>&1
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "a keyword with no value exited $status"
+grep -q '^Bad args$' "$test_dir/output" ||
+    fail 'a keyword with no value did not report Bad args'
+
+# A file that is not there is named in the refusal.
+set +e
+edit SYS:C/nosuchfile < /dev/null > "$test_dir/output" 2>&1
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "a missing file exited $status instead of 20"
+grep -q "^Can't open SYS:C/nosuchfile$" "$test_dir/output" ||
+    fail 'a missing file was not named in the refusal'
 
 # A missing source file is a failure, not an empty edit.
 set +e
