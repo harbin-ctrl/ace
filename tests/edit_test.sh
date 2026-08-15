@@ -249,11 +249,10 @@ transcript groups
 # next verification runs onto its line.
 printf 'M1;E/cat/dog/;A/dog/X/;B/dog/Y/;?\nM3;GE/cat/CAT/;PB/CAT;?\nI\nx\nZ\n?\nSTOP\n' \
     > "$work/change.cmd"
-# The two marker columns here are the one place the hand transcript and the
-# later session disagree: this was written down as six spaces, and the
-# window session established the mark sits one column left of that -- under
-# the character before the window. Five is what the confirmed rule gives.
-# P,B specifically has not been re-checked on its own.
+# The two marker columns here were written down as six spaces in the hand
+# transcript. Re-running P,B on its own gave five, which is what the rule
+# established by the window session gives: the mark sits under the character
+# before the window. The six was a slip of the pen.
 printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >' \
     > "$test_dir/change.expected"
 transcript change
