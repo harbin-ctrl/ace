@@ -72,6 +72,7 @@ AROS_ENDSKIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndSkip.c
 AROS_LAB_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Lab.c
 AROS_SKIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Skip.c
 ACE_QUIT_SRC := src/quit.c
+ACE_EDIT_SRC := src/edit.c
 AROS_GET_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Get.c
 AROS_GETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Getenv.c
 AROS_SETENV_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Setenv.c
@@ -262,7 +263,7 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
 # drawer of. C: is the loader's last resort, so a command reachable by name
 # and nothing else has to be in here.
 AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias Beep \
-                  FailAt Why Prompt MakeDir MakeLink Join Eval Copy List Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
+                  FailAt Why Prompt MakeDir MakeLink Join Eval Edit Copy List Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
                   If Else EndIf EndSkip Lab Quit Skip Execute Setenv Unsetenv LhA
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
@@ -270,7 +271,7 @@ AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault 
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -331,6 +332,13 @@ $(BUILD)/MakeLink.o: $(AROS_MAKELINK_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/Join.o: $(AROS_JOIN_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
+
+# Edit has no AROS source to fetch: it is written here, to dos.library and
+# exec.library alone, so the one file also builds with an Amiga or AROS
+# compiler. On ACE it enters through the same seam as any command that keeps
+# its own main() and calls ReadArgs() itself.
+$(BUILD)/Edit.o: $(ACE_EDIT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/evalParser.tab.c: $(AROS_EVAL_PARSER_SRC) | $(BUILD)
@@ -762,6 +770,12 @@ $(BUILD)/Eval: $(BUILD)/Eval.o $(BUILD)/native_command_entry.o \
               $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
+$(BUILD)/Edit: $(BUILD)/Edit.o $(BUILD)/native_command_entry.o \
+              $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+              $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+              $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 $(BUILD)/Copy: $(BUILD)/Copy.o $(BUILD)/copy_entry.o $(AROS_DOSPAT_OBJS) \
 	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
 	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
@@ -1046,4 +1060,7 @@ test-file-commands: all
 test-relabel: all
 	sh tests/relabel_test.sh
 
-.PHONY: all clean install lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+test-edit: all
+	sh tests/edit_test.sh
+
+.PHONY: all clean install lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics

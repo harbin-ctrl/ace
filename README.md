@@ -413,6 +413,49 @@ from either mode, and copy operations briefly report their character count at
 the bottom of the console. F12 always copies the full retained output and
 returns to the live console when scrollback was active.
 
+## Edit, the line editor
+
+`Edit` is the one command here with no AROS source behind it. AmigaDOS shipped
+two editors -- ED, the full-screen one, and EDIT, the line editor -- and only
+the second is a command in the sense the rest of `SYS:C` is: it edits a file
+from a script of one-line commands, in a forward pass, so a file larger than
+memory can still be edited. AROS never had it, so `src/edit.c` is written to
+the AmigaDOS manual's description rather than ported from anything.
+
+It is written to `dos.library` and `exec.library` alone -- no stdio, no
+`malloc`, no host calls -- so the same file compiles for AmigaOS and for AROS
+as readily as for ACE, where it enters through the same seam as any other
+command that keeps its own `main()` and calls `ReadArgs()` itself.
+
+```sh
+./build/Edit WORK:notes.txt WITH WORK:notes.ed
+printf 'M2\nE/old/new/\nM*\nW\n' | ./build/Edit WORK:notes.txt
+```
+
+The source file passes through a queue of previous lines on its way to the
+destination, and `PREVIOUS` and `WIDTH` size that queue exactly as the manual
+says: `PREVIOUS` lines of `WIDTH` characters is the memory it uses, and the
+number of lines `P` can move back over. A line longer than `WIDTH` is carried
+in two while it is edited and written back as one, and a last line with no
+line feed does not acquire one, so an edit that changes nothing writes the
+file back byte for byte.
+
+With no `TO` file the editing goes to a temporary beside the source, and `W`
+renames it into place, keeping the source as `T:Edit-backup` -- so a session
+that fails partway through has not touched the original. `STOP` throws the
+edit away and exits with a warning code. `REWIND` closes the destination,
+reopens it as the source, and starts a second pass on a fresh temporary,
+which is what turns inserted lines into numbered original ones.
+
+Two places where the manual contradicts itself are resolved in the source
+comment at the top of `src/edit.c`: the first string of `A`, `B`, `E` and
+their global forms is always the one searched for, and a global change acts on
+every occurrence in a line where the single-line commands act on the first.
+The string qualifiers the manual mentions but never defines are not
+implemented, and are reported as unknown commands rather than ignored.
+
+`make test-edit` runs the editor against a broker of its own.
+
 ## The standard assigns, and who makes them
 
 An Amiga makes its standard assigns in two layers, and ACE keeps the split.

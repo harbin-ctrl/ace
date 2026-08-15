@@ -44,6 +44,15 @@ child command process and stops the parent shell. Ordinary host commands are
 not searched through `PATH`; `LNX` is the explicit direct Linux executable
 escape hatch.
 
+`Edit`, the AmigaDOS line editor, is the one command here that is written
+rather than ported: AROS has no source for it, so `src/edit.c` follows the
+AmigaDOS manual's description instead. It is written to `dos.library` and
+`exec.library` alone -- no stdio, no `malloc`, no host calls -- so the same
+file is meant to compile for AmigaOS and AROS as well as for ACE, which is
+also why it is the one place to be careful about adding a host dependency.
+`make test-edit` covers it. README has the behaviour, including the two places
+where the manual contradicts itself.
+
 The real AROS BOOPSI implementation is built from unmodified AROS source in
 `rom/intuition` and `compiler/alib`, on the ACE seam in
 `src/aros_boopsi_runtime.c`. This is the first step of moving the display seam
