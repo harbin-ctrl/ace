@@ -173,8 +173,15 @@ enum {
     ARG_COUNT
 };
 
-#define DEFAULT_WIDTH     1200
-#define DEFAULT_PREVIOUS  100
+#define DEFAULT_WIDTH     120
+#define DEFAULT_PREVIOUS  40
+/* Two of the PREVIOUS lines are not reachable: on the original, moving back
+   from the extra line past a 60 line file with the default 40 stops at line
+   23, which is 38 lines of reach. */
+#define PREVIOUS_RESERVE  2
+/* A line is never chopped at WIDTH, so the buffer a line sits in is at least
+   this, whatever WIDTH says. */
+#define LINE_FLOOR        1200
 #define MINIMUM_WIDTH     16
 #define MAXIMUM_WIDTH     65535
 #define MINIMUM_PREVIOUS  1
@@ -287,6 +294,7 @@ struct Edit
     LONG width;
     LONG capacity;
     LONG previous;
+    LONG depth_limit;
 
     struct Line **queue;
     LONG queue_head;
@@ -315,6 +323,7 @@ struct Edit
     LONG shown_serial;
     LONG numbered_serial;
     BOOL shown_any;
+    BOOL shown_plain;
     BOOL modified;
     BOOL verified;
     BOOL aborted;
@@ -582,6 +591,13 @@ static void ver_newline(struct Edit *edit)
    D, reports the period, and never looks at the asterisk. */
 static void report(struct Edit *edit, const char *message)
 {
+    /* Commands read from a file are echoed before the pointer that faults
+       them, because nothing put them on the screen to point at. */
+    if (!edit->aborted && edit->active && edit->depth >= 0 &&
+        !IsInteractive(edit->commands[edit->depth].reader.handle)) {
+        ver_bytes(edit, edit->last_command, edit->last_command_length);
+        ver_newline(edit);
+    }
     edit->aborted = TRUE;
     if (edit->active) {
         LONG column = edit->active->offset + edit->active->position - 1;
@@ -783,16 +799,17 @@ static void sink_write(struct Edit *edit, struct Line *line)
 
 static void queue_push(struct Edit *edit, struct Line *line)
 {
-    if (edit->queue_count == edit->previous) {
+    if (edit->queue_count == edit->depth_limit) {
         struct Line *oldest = edit->queue[edit->queue_head];
 
         edit->queue[edit->queue_head] = NULL;
-        edit->queue_head = (edit->queue_head + 1) % edit->previous;
+        edit->queue_head = (edit->queue_head + 1) % edit->depth_limit;
         edit->queue_count--;
         sink_write(edit, oldest);
         line_free(edit, oldest);
     }
-    edit->queue[(edit->queue_head + edit->queue_count) % edit->previous] = line;
+    edit->queue[(edit->queue_head + edit->queue_count) % edit->depth_limit] =
+        line;
     edit->queue_count++;
 }
 
@@ -803,7 +820,7 @@ static struct Line *queue_pop(struct Edit *edit)
 
     if (edit->queue_count == 0)
         return NULL;
-    index = (edit->queue_head + edit->queue_count - 1) % edit->previous;
+    index = (edit->queue_head + edit->queue_count - 1) % edit->depth_limit;
     line = edit->queue[index];
     edit->queue[index] = NULL;
     edit->queue_count--;
@@ -812,7 +829,7 @@ static struct Line *queue_pop(struct Edit *edit)
 
 static struct Line *queue_at(struct Edit *edit, LONG offset)
 {
-    return edit->queue[(edit->queue_head + offset) % edit->previous];
+    return edit->queue[(edit->queue_head + offset) % edit->depth_limit];
 }
 
 static void queue_flush(struct Edit *edit)
@@ -821,7 +838,7 @@ static void queue_flush(struct Edit *edit)
         struct Line *line = edit->queue[edit->queue_head];
 
         edit->queue[edit->queue_head] = NULL;
-        edit->queue_head = (edit->queue_head + 1) % edit->previous;
+        edit->queue_head = (edit->queue_head + 1) % edit->depth_limit;
         edit->queue_count--;
         sink_write(edit, line);
         line_free(edit, line);
@@ -1137,7 +1154,8 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
     if (numbered) {
         edit->numbered_serial = line->serial;
         edit->verified = TRUE;
-    }
+    } else
+        edit->shown_plain = TRUE;
     /* The mark sits under the character before the window, not under the
        first character in it: PR shows no mark at all, one > puts it in
        column 0, and two put it in column 1. */
@@ -1164,23 +1182,36 @@ static void verify_current(struct Edit *edit)
    M1 when line 1 is already current shows nothing at all, M1;I3 that walks
    away and is thrown back where it started shows nothing, and T,P shows the
    current line again after typing the queue over it. */
+/* The end of a command line.  The line is shown unless the last thing
+   verified was that same line -- a state that persists across command lines,
+   which is why M1 when line 1 was just verified shows nothing, while an error
+   on a line nothing has verified yet shows it.  Changing the line, or putting
+   any other line on the screen, calls for it again: the typing commands show
+   text without numbers, so T ending on the current line still leaves it to be
+   verified after. */
 static void verify_pending(struct Edit *edit)
 {
     LONG serial = edit->current ? edit->current->serial : 0;
-    BOOL moved = serial != edit->entry_serial;
+    BOOL asked;
 
     if (!edit->verify || !edit->current)
         return;
-    /* Nothing happened worth reporting: no move, no change, and nothing put
-       on the screen. */
-    if (!moved && !edit->modified && !edit->shown_any)
+    /* Something has to have happened: a move, a change to the text, anything
+       put on the screen, or an error. Renumbering with = is none of those,
+       and shows nothing. */
+    asked = serial != edit->entry_serial || edit->modified || edit->shown_any;
+    /* An error shows where it left you when the commands came from a file,
+       where there is no prompt and no typed line to orient by. Typed at the
+       keyboard it does not. */
+    if (edit->aborted && edit->depth >= 0 &&
+        !IsInteractive(edit->commands[edit->depth].reader.handle))
+        asked = TRUE;
+    if (!asked)
         return;
-    /* Only a numbered display satisfies the pending verification.  The typing
-       commands show text without numbers, so T ending on the current line
-       still leaves it to be verified -- which is what T on the extra line
-       past the end does, typing its empty text and then showing 7* after
-       it. */
-    if (edit->numbered_serial == serial)
+    /* And the line is not shown again when the last line verified was this
+       one -- which outlives the command line it happened on -- unless a
+       typing command has since put unnumbered text over it. */
+    if (edit->numbered_serial == serial && !edit->shown_plain)
         return;
     verify_line(edit, edit->current, TRUE);
 }
@@ -1344,6 +1375,26 @@ static BOOL parse_qualifiers(struct Edit *edit, struct Parser *parser,
    choosing -- a slash by convention, a period for file names, because a
    slash is part of a path.  Two strings for one command share the delimiter
    between them. */
+/* A command that takes no qualifiers still reads the letters in front of its
+   string, and then refuses at the delimiter -- E U/CAT/X/ points at the / and
+   says "Illegal qualifiers". */
+static BOOL refuse_qualifiers(struct Edit *edit, struct Parser *parser)
+{
+    LONG at;
+
+    parse_blanks(parser);
+    at = parser->position;
+    if (at >= parser->length || !is_letter(parser->text[at]))
+        return TRUE;
+    while (parser->position < parser->length &&
+           is_letter(parser->text[parser->position]))
+        parser->position++;
+    if (parser->position < parser->length)
+        parser->position++;
+    report(edit, "Illegal qualifiers");
+    return FALSE;
+}
+
 static BOOL parse_string(struct Parser *parser, UBYTE *buffer, LONG *length)
 {
     UBYTE delimiter;
@@ -1464,10 +1515,13 @@ static enum Command parse_command(struct Parser *parser)
     }
     if (count == 0)
         return CMD_NONE;
+    /* The whole run of letters is the name, and it is looked up as it stands:
+       EU is not E followed by a qualifier, it is a command that does not
+       exist, which is what the original says about it. */
     for (index = 0; command_names[index].name; index++) {
         LONG length = (LONG)strlen(command_names[index].name);
 
-        if (length <= count &&
+        if (length == count &&
             memcmp(token, command_names[index].name, (size_t)length) == 0) {
             /* Step the parser over exactly the letters that matched, commas
                and all, leaving any further letters for the next command. */
@@ -2059,14 +2113,16 @@ static void command_find(struct Edit *edit, struct Parser *parser,
         report(edit, "No search string");
         return;
     }
+    /* The search starts on the current line: F for something already on it
+       finds it and stays put. */
     for (;;) {
+        if (line_find(edit->current, 0, edit->search, edit->search_length,
+                      edit->search_qualifiers) >= 0)
+            return;
         if (backward) {
             if (!previous_line(edit))
                 return;
         } else if (!next_line(edit))
-            return;
-        if (line_find(edit->current, 0, edit->search, edit->search_length,
-                      edit->search_qualifiers) >= 0)
             return;
         /* Searching off the end of the file is reported as running out of
            input, the same as any other move past the last line, and it leaves
@@ -2109,8 +2165,9 @@ static void command_change(struct Edit *edit, struct Parser *parser,
         report(edit, "No current line");
         return;
     }
-    if (!parse_qualifiers(edit, parser, &qualifiers))
+    if (!refuse_qualifiers(edit, parser))
         return;
+    qualifiers = 0;
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
         report(edit, "Two strings needed");
         return;
@@ -2159,8 +2216,9 @@ static void command_global(struct Edit *edit, struct Parser *parser,
     struct Global *global;
     struct Global **link;
 
-    if (!parse_qualifiers(edit, parser, &qualifiers))
+    if (!refuse_qualifiers(edit, parser))
         return;
+    qualifiers = 0;
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
         report(edit, "Two strings needed");
         return;
@@ -2317,8 +2375,9 @@ static void command_delete_window(struct Edit *edit, struct Parser *parser,
         report(edit, "No current line");
         return;
     }
-    if (!parse_qualifiers(edit, parser, &qualifiers))
+    if (!refuse_qualifiers(edit, parser))
         return;
+    qualifiers = 0;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
@@ -2349,8 +2408,9 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
         report(edit, "No current line");
         return;
     }
-    if (!parse_qualifiers(edit, parser, &qualifiers))
+    if (!refuse_qualifiers(edit, parser))
         return;
+    qualifiers = 0;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
@@ -2540,8 +2600,9 @@ static void command_pointer_string(struct Edit *edit, struct Parser *parser,
         report(edit, "No current line");
         return;
     }
-    if (!parse_qualifiers(edit, parser, &qualifiers))
+    if (!refuse_qualifiers(edit, parser))
         return;
+    qualifiers = 0;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
@@ -2552,7 +2613,6 @@ static void command_pointer_string(struct Edit *edit, struct Parser *parser,
         return;
     }
     edit->pointer = after ? at + length : at;
-    verify_current(edit);
 }
 
 static void command_from(struct Edit *edit, struct Parser *parser)
@@ -2896,7 +2956,6 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         for (index = 0; index < count; index++)
             if (!next_line(edit))
                 break;
-        verify_current(edit);
         return;
     }
     case CMD_P: {
@@ -2907,7 +2966,6 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         for (index = 0; index < count; index++)
             if (!previous_line(edit))
                 break;
-        verify_current(edit);
         return;
     }
     case CMD_F:
@@ -3030,7 +3088,6 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
 
     case CMD_PR:
         edit->pointer = 0;
-        verify_current(edit);
         return;
     case CMD_PA:
         command_pointer_string(edit, parser, TRUE);
@@ -3071,8 +3128,13 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
             edit->ceiling = 0;
         } else if (parse_number(parser, &number))
             edit->ceiling = number;
-        else
-            edit->ceiling = 0;
+        else {
+            /* The offending character goes with the command, as M does with
+               its own bad argument. */
+            if (parse_peek(parser) >= 0)
+                parser->position++;
+            report(edit, "Number expected after H");
+        }
         return;
     }
     case CMD_REWIND:
@@ -3203,8 +3265,8 @@ static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
     edit->modified = FALSE;
     edit->aborted = FALSE;
     edit->shown_serial = 0;
-    edit->numbered_serial = 0;
     edit->shown_any = FALSE;
+    edit->shown_plain = FALSE;
     edit->verified = FALSE;
     parser_init(&parser, text, length, 0);
     execute_commands(edit, &parser);
@@ -3292,7 +3354,7 @@ int main(void)
        the original carries a line longer than WIDTH whole, and shows it
        whole. So the buffer a line gets is the larger of WIDTH and the default
        width, and only a line longer than that has to be carried in two. */
-    edit.capacity = edit.width > DEFAULT_WIDTH ? edit.width : DEFAULT_WIDTH;
+    edit.capacity = edit.width > LINE_FLOOR ? edit.width : LINE_FLOOR;
 
     if (args[ARG_VER]) {
         handle = Open((CONST_STRPTR)args[ARG_VER], MODE_NEWFILE);
@@ -3305,7 +3367,9 @@ int main(void)
         edit.ver_close = TRUE;
     }
 
-    edit.queue = (struct Line **)AllocVec((ULONG)((size_t)edit.previous *
+    edit.depth_limit = edit.previous > PREVIOUS_RESERVE ?
+                       edit.previous - PREVIOUS_RESERVE : 1;
+    edit.queue = (struct Line **)AllocVec((ULONG)((size_t)edit.depth_limit *
                                                   sizeof(struct Line *)),
                                           MEMF_ANY | MEMF_CLEAR);
     if (!edit.queue) {
@@ -3355,7 +3419,9 @@ int main(void)
     /* The first line becomes current without being shown: the original
        announces itself and then waits for a command. */
     next_line(&edit);
-    report(&edit, "Editor");
+    /* The banner goes to the screen, not to the VER file: that file gets the
+       line verifications and the errors, and nothing else. */
+    Write(Output(), (APTR)"Editor\n", 7);
 
     while (!edit.finished && command_line(&edit, command, &length))
         execute_line(&edit, command, length);

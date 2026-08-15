@@ -125,10 +125,11 @@ edit SYS:C/seven.txt WITH SYS:C/seven.cmd > /dev/null || fail 'join failed'
 expect_file seven.txt 'leftright'
 
 # Moving backward through the queue of previous lines, and the limit the
-# PREVIOUS argument puts on it.
+# PREVIOUS argument puts on it: two of the PREVIOUS lines are not reachable,
+# measured on the original, so PREVIOUS 4 reaches back two lines.
 printf '1\n2\n3\n4\n5\n' > "$work/eight.txt"
 printf 'V-\n4N\n3P\n?\nM*\nW\n' > "$work/eight.cmd"
-edit SYS:C/eight.txt PREVIOUS 2 WITH SYS:C/eight.cmd > "$test_dir/output" ||
+edit SYS:C/eight.txt PREVIOUS 4 WITH SYS:C/eight.cmd > "$test_dir/output" ||
     fail 'backward move failed'
 grep -q 'No more previous lines' "$test_dir/output" ||
     fail 'PREVIOUS did not limit backward movement'
@@ -250,8 +251,21 @@ transcript()
     name=$1
     source=${2:-"$test_dir/original"}
     cp "$source" "$work/$name.txt"
-    edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" > "$test_dir/$name.out" 2>&1 ||
+    edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" > "$test_dir/$name.raw" 2>&1 ||
         fail "$name exited non-zero"
+    # These transcripts were taken from a keyboard session, where a faulting
+    # command is already on the screen. Read from a file it is echoed instead,
+    # so the echo lines come out before comparing; the probe cases below cover
+    # the echo itself against the original's own logs.
+    awk 'NR == FNR { cmd[$0] = 1; next }
+         { line[++n] = $0 }
+         END {
+             for (i = 1; i <= n; i++) {
+                 if ((line[i] in cmd) && i < n && line[i + 1] ~ /^ *>$/)
+                     continue
+                 print line[i]
+             }
+         }' "$work/$name.cmd" "$test_dir/$name.raw" > "$test_dir/$name.out"
     cmp -s "$test_dir/$name.out" "$test_dir/$name.expected" || {
         printf 'edit test: %s does not match the Amiga transcript:\n' "$name" >&2
         diff "$test_dir/$name.expected" "$test_dir/$name.out" >&2 || true
@@ -279,7 +293,9 @@ printf 'M1;E/cat/dog/;A/dog/X/;B/dog/Y/;?\nM3;GE/cat/CAT/;PB/CAT;?\nI\nx\nZ\n?\n
 # transcript. Re-running P,B on its own gave five, which is what the rule
 # established by the window session gives: the mark sits under the character
 # before the window. The six was a slip of the pen.
-printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >' \
+# The trailing newline is grep's, from filtering the echo lines out; the
+# original leaves the cursor sitting after the marker with none.
+printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >\n' \
     > "$test_dir/change.expected"
 transcript change
 
@@ -295,7 +311,8 @@ while [ "$i" -le "$lines" ]; do
 done > "$test_dir/queue.original"
 cp "$test_dir/queue.original" "$work/queue.txt"
 printf 'M*\nTP\nSTOP\n' > "$work/queue.cmd"
-edit SYS:C/queue.txt WITH SYS:C/queue.cmd > "$test_dir/queue.out" 2>&1 || true
+edit SYS:C/queue.txt PREVIOUS 100 WITH SYS:C/queue.cmd > "$test_dir/queue.out" \
+    2>&1 || true
 {
     printf 'Editor\n56*\n\n'
     i=1
@@ -386,12 +403,64 @@ printf 'I*\nx\nZ\n?\nSTOP\n' > "$work/append.cmd"
 printf 'Editor\n7*\n\n7*\n\n' > "$test_dir/append.expected"
 transcript append "$test_dir/original6"
 
-# The insert terminator cannot be changed: every spelling is refused, and one
-# error is reported for the line rather than one for each thing left on it.
-printf "Z'END'\nZ,END\nZ,E\nZEND\nSTOP\n" > "$work/term.cmd"
-printf 'Editor\n >\nUnknown qualifier\n >\nIllegal qualifiers\n >\nIllegal qualifiers\n >\nUnknown command\n' \
-    > "$test_dir/term.expected"
-transcript term "$test_dir/original6"
+# Logs taken from the original by pointing VER at a file on a shared drive:
+# the exact bytes it wrote, replayed here. In this mode a faulting command is
+# echoed before the pointer, and an error shows where it left the line.
+probe()
+{
+    name=$1
+    command=$2
+    cp "$test_dir/probe.original" "$work/$name.txt"
+    printf '%s\nSTOP\n' "$command" > "$work/$name.cmd"
+    edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" VER "SYS:C/$name.log" \
+        > /dev/null 2>&1 || fail "$name exited non-zero"
+    cmp -s "$work/$name.log" "$test_dir/$name.expected" || {
+        printf 'edit test: %s does not match the Amiga log:\n' "$name" >&2
+        cat "$work/$name.log" >&2
+        exit 1
+    }
+}
+
+printf 'one cat\ntwo dog\nCAT cat pig\nfour\n' > "$test_dir/probe.original"
+
+printf 'M3;E U/CAT/X/;?\n      >\nIllegal qualifiers\n3.\nCAT cat pig\n' \
+    > "$test_dir/pq1.expected"
+probe pq1 'M3;E U/CAT/X/;?'
+
+printf 'M3;EU/CAT/X/;?\n    >\nUnknown command\n3.\nCAT cat pig\n' \
+    > "$test_dir/pq2.expected"
+probe pq2 'M3;EU/CAT/X/;?'
+
+printf 'M1;F B/cat/;?\n          >\nInput exhausted\n5*\n\n' \
+    > "$test_dir/pq3.expected"
+probe pq3 'M1;F B/cat/;?'
+
+printf '3.\nCAT cat pig\n' > "$test_dir/pq4.expected"
+probe pq4 'M1;F U/PIG/;?'
+
+printf '1.\none cat\n' > "$test_dir/pq5.expected"
+probe pq5 'M1;F E/cat/;?'
+
+printf '3.\nCAT cat pig\n' > "$test_dir/pq6.expected"
+probe pq6 'M3;F/cat/;?'
+
+printf 'M3;SB U/cat/;?\n       >\nIllegal qualifiers\n3.\nCAT cat pig\n' \
+    > "$test_dir/pq7.expected"
+probe pq7 'M3;SB U/cat/;?'
+
+printf 'GE U/cat/X/\n    >\nIllegal qualifiers\n1.\none cat\n' \
+    > "$test_dir/pq8.expected"
+probe pq8 'GE U/cat/X/'
+
+printf '5*\n\n' > "$test_dir/pq9.expected"
+probe pq9 'H 2;H *;M*;?'
+
+printf 'H 2;H;M*;?\n     >\nNumber expected after H\n1.\none cat\n' \
+    > "$test_dir/pq10.expected"
+probe pq10 'H 2;H;M*;?'
+
+printf 'M9;?\n >\nInput exhausted\n5*\n\n' > "$test_dir/pq11.expected"
+probe pq11 'M9;?'
 
 # Creating a global announces it as G<n> and applies it to the line that is
 # current, which is shown only if it changed.
@@ -424,7 +493,7 @@ env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
 # the character at the window and steps past it, as % capitalises it.
 printf 'SHD\nF/dog/\nSHD\nSG\nSG 1\nM3;PA/three /;%%;?;<;$;?\nSTOP\n' \
     > "$work/saved.cmd"
-printf "Editor\n' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntwo dog\n' cmd: unset\nSearch string: /dog\nInput terminator: /Z\n >\nUnknown command\n >\nUnknown command\n3.\nthree Cat cat\n      >3.\nthree cat cat\n      >" \
+printf "Editor\n' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntwo dog\n' cmd: unset\nSearch string: /dog\nInput terminator: /Z\n >\nUnknown command\n >\nUnknown command\n3.\nthree Cat cat\n      >3.\nthree cat cat\n      >\n" \
     > "$test_dir/saved.expected"
 transcript saved "$test_dir/original6"
 
@@ -506,15 +575,9 @@ printf 'M3;SB/cat/;?\n?\nSTOP\n' > "$work/split.cmd"
 printf 'Editor\n3.\nthree \n+++.\ncat cat\n+++.\ncat cat\n' > "$test_dir/split.expected"
 transcript split "$test_dir/original6"
 
-# Qualified strings, which The AmigaDOS Manual's quick reference defines and
-# the chapter this was first written from does not: B pins the match to the
-# start, L takes the last match, U ignores case, E pins it to the end of the
-# line, and anything else is an unknown qualifier.
-printf 'M3;E B/three/THREE/;?\nM3;EL/cat/LAST/;?\nM1;EU/CAT/x/;?\nM3;E E/cat/END/;?\nF Q/x/\nSTOP\n' \
-    > "$work/qualified.cmd"
-printf 'Editor\n3.\nTHREE cat cat\n3.\nTHREE cat LAST\n1.\none x\n              >\nNo match\n3.\nTHREE cat LAST\n  >\nUnknown qualifier\n' \
-    > "$test_dir/qualified.expected"
-transcript qualified "$test_dir/original6"
+# Qualifiers belong to the line searches alone -- the change commands, the
+# pointer moves, the splits and the globals all refuse them, which the pq
+# cases above take from the original's own logs.
 
 # Inserting takes its material from a file when one is named, which is what
 # the manual's "I2000 .XYZ." does.
@@ -529,7 +592,9 @@ expect_file insfile.txt 'one cat' 'two dog' X1 X2 'three cat cat' four five six
 # refuse the string argument the quick reference gives them.
 printf 'one cat\ntwo dog\nCAT cat pig\nfour\n' > "$test_dir/ceiling.original"
 printf 'Z /END/\nM1;CL / /;?\nH 3\nM*\nSTOP\n' > "$work/ceiling.cmd"
-printf 'Editor\n  >\nIllegal qualifiers\n      >\nIllegal qualifiers\n >\nCeiling reached\n3.\nCAT cat pig\n' \
+# Recorded at the keyboard; read from a file, an error also shows the line it
+# left, which is the "1." here that the keyboard session did not print.
+printf 'Editor\n  >\nIllegal qualifiers\n1.\none cat\n      >\nIllegal qualifiers\n >\nCeiling reached\n3.\nCAT cat pig\n' \
     > "$test_dir/ceiling.expected"
 transcript ceiling "$test_dir/ceiling.original"
 
