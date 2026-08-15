@@ -53,6 +53,10 @@
  *   - ! heads its two rows with the line number and marks capitals with
  *     underscores, not the minus signs the manual describes.
  *
+ *   - The line window's mark sits under the character before the window, not
+ *     under the first character in it: PR shows no mark, one > puts it in
+ *     column 0, two put it in column 1.
+ *
  *   - D takes a count or a range. The manual's "D .*" for deleting to the end
  *     of the file is not a thing: D runs on its own and the period is left
  *     over as "Unknown command - .", which is how an unreadable character is
@@ -1008,8 +1012,11 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
         edit->numbered_serial = line->serial;
         edit->verified = TRUE;
     }
+    /* The mark sits under the character before the window, not under the
+       first character in it: PR shows no mark at all, one > puts it in
+       column 0, and two put it in column 1. */
     if (edit->pointer > 0 && line == edit->current) {
-        for (index = 0; index < edit->pointer; index++)
+        for (index = 1; index < edit->pointer; index++)
             ver_char(edit, ' ');
         ver_char(edit, '>');
         ver_flush(edit);

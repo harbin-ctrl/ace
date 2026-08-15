@@ -249,7 +249,12 @@ transcript groups
 # next verification runs onto its line.
 printf 'M1;E/cat/dog/;A/dog/X/;B/dog/Y/;?\nM3;GE/cat/CAT/;PB/CAT;?\nI\nx\nZ\n?\nSTOP\n' \
     > "$work/change.cmd"
-printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n      >3.\nthree CAT CAT\n      >' \
+# The two marker columns here are the one place the hand transcript and the
+# later session disagree: this was written down as six spaces, and the
+# window session established the mark sits one column left of that -- under
+# the character before the window. Five is what the confirmed rule gives.
+# P,B specifically has not been re-checked on its own.
+printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >' \
     > "$test_dir/change.expected"
 transcript change
 
@@ -312,6 +317,15 @@ transcript typeend "$test_dir/original6"
 printf 'M1;E/one/ONE/\n!\nSTOP\n' > "$work/hex.cmd"
 printf 'Editor\n1.\nONE cat\n1.\nONE cat\n___\n' > "$test_dir/hex.expected"
 transcript hex "$test_dir/original6"
+
+# The line window. The mark sits under the character before the window, so
+# PR shows none at all, and %, _ and 2# act on the window and step it along.
+# D,F,A cuts from after the string to the end of the line.
+printf 'M3;PA/three /;?;%%;?;_;?;2#;?\nPR;?;>;>;?;<;?\nM2;DFA/two/;?\nSTOP\n' \
+    > "$work/window.cmd"
+printf 'Editor\n3.\nthree cat cat\n     >3.\nthree Cat cat\n      >3.\nthree C t cat\n       >3.\nthree C cat\n       >3.\nthree C cat\n3.\nthree C cat\n >3.\nthree C cat\n>2.\ntwo\n' \
+    > "$test_dir/window.expected"
+transcript window "$test_dir/original6"
 
 # A missing source file is a failure, not an empty edit.
 set +e
