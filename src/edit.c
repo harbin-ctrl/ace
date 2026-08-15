@@ -8,25 +8,55 @@
  * file far larger than memory can be edited by a script of one-line commands.
  *
  * There is no AROS source for it, so this is a clone written to the manual
- * rather than a port.  It is written to dos.library and exec.library alone --
- * no stdio, no malloc, no host calls -- so the one source builds for AmigaOS,
- * for AROS, and for ACE, where it links against ACE's broker-backed DOS the
- * same way every other command here does.
+ * rather than a port -- and then corrected against the original itself,
+ * running under emulation, which settled a dozen things the manual either
+ * garbles or never says. It is written to dos.library and exec.library alone
+ * -- no stdio, no malloc, no host calls -- so the one source builds for
+ * AmigaOS, for AROS, and for ACE, where it links against ACE's broker-backed
+ * DOS the same way every other command here does.
  *
- * Two points where the manual contradicts itself, resolved and recorded here
- * so the behaviour is not mistaken for a bug:
+ * What the original does that the manual does not say, all of it observed
+ * rather than guessed, and all of it covered by the transcript cases in
+ * tests/edit_test.sh:
+ *
+ *   - A line verifies as two lines: the number, then the text. The number is
+ *     +++ for a line that has none of its own, and the terminator is a period
+ *     except on the extra line past the end of the file, which shows the
+ *     number it would have and an asterisk.
+ *
+ *   - Verification is deferred to the end of a command line and happens only
+ *     if nothing has shown the line already. That one rule is why M2;M3 shows
+ *     one line, 3(N) shows only the line it arrives at, and 2(N;?) shows two
+ *     lines rather than four.
+ *
+ *   - n(...) is a repeat group, with semicolons between the commands inside.
+ *     The manual only hints at this, in a sentence about ending a command
+ *     with a closing parenthesis.
+ *
+ *   - An error prints a line of spaces and a > under the character of the
+ *     command line the editor had reached, then the message.
+ *
+ *   - A string left unclosed ends at a semicolon as well as at the end of the
+ *     line, so PB/CAT;? is a pointer command followed by a verify.
+ *
+ *   - The editor announces itself as "Editor" and prompts with ":" when it
+ *     enters command mode -- at startup and when an insertion ends -- not
+ *     before every command, and not at all inside an insertion.
+ *
+ *   - Work files are T:E<nn>-WK<n> and the backup is T:EDIT-BACKUP.
+ *
+ * Two places where the manual contradicts itself, resolved the same way:
  *
  *   - The manual's summary table writes the exchange command as
  *     "E <string2> <string1>" while its own worked example, GE /DF0:/DF2:/,
- *     changes DF0: into DF2:.  The example wins, and it agrees with the A,P /
- *     B,P / E,P table: the first string is always the one searched for, the
- *     second is always the new text.  A, B, E, GA, GB and GE all read that
- *     way here.
+ *     changes DF0: into DF2:. The example wins, and the original agrees:
+ *     chaining E, A and B turns "one cat" into "one YdogX". The first string
+ *     is always the one searched for.
  *
  *   - Global changes are described as applying "to any occurrence" of the
  *     search string, where the single-line A, B and E commands act on the
- *     first occurrence only.  Globals therefore change every occurrence in
- *     each line they see.
+ *     first occurrence only. The original does change every occurrence in
+ *     each line a global sees.
  *
  * The string qualifiers the manual mentions for the split and global commands
  * are not implemented, because the excerpt this was written from never
@@ -143,6 +173,18 @@ struct CommandFile
     BOOL close;
 };
 
+/* A command line being executed, and the arguments read out of it.  A repeat
+   group runs its body through a parser of its own, and `offset' is where that
+   body starts in the line the user typed, so an error inside a group still
+   points at the right column. */
+struct Parser
+{
+    UBYTE *text;
+    LONG length;
+    LONG position;
+    LONG offset;
+};
+
 struct Edit
 {
     LONG width;
@@ -165,6 +207,8 @@ struct Edit
     LONG ver_fill;
 
     BOOL verify;
+    BOOL shown;
+    BOOL prompt;
     BOOL trailing;
 
     UBYTE terminator[STRING_SIZE];
@@ -194,18 +238,11 @@ struct Edit
 
     struct Global *globals;
     LONG next_global;
+    struct Parser *active;
 
     BOOL finished;
     BOOL saving;
     LONG result;
-};
-
-/* A command line being executed, and the arguments read out of it. */
-struct Parser
-{
-    UBYTE *text;
-    LONG length;
-    LONG position;
 };
 
 enum Command
@@ -286,6 +323,7 @@ static const struct CommandName command_names[] =
 };
 
 static void execute_line(struct Edit *edit, UBYTE *text, LONG length);
+static void execute_commands(struct Edit *edit, struct Parser *parser);
 
 /* ------------------------------------------------------------------ */
 /* Small character and string helpers, written out rather than taken from
@@ -403,8 +441,23 @@ static void ver_newline(struct Edit *edit)
     ver_flush(edit);
 }
 
+/* An error names its place before it names itself: a line of spaces and a >
+   under the character of the command line the editor had reached, then the
+   message.  The pointer is under the last character consumed, so a command
+   whose argument was read in full points at the end of that argument. */
 static void report(struct Edit *edit, const char *message)
 {
+    if (edit->active) {
+        LONG column = edit->active->offset + edit->active->position - 1;
+        LONG index;
+
+        if (column < 0)
+            column = 0;
+        for (index = 0; index < column; index++)
+            ver_char(edit, ' ');
+        ver_char(edit, '>');
+        ver_newline(edit);
+    }
     ver_text(edit, message);
     ver_newline(edit);
 }
@@ -473,7 +526,7 @@ static BOOL line_insert(struct Edit *edit, struct Line *line, LONG at,
     if (length <= 0)
         return TRUE;
     if (line->length + length > edit->width) {
-        report(edit, "line too long");
+        report(edit, "Line too long");
         return FALSE;
     }
     memmove(line->text + at + length, line->text + at,
@@ -630,6 +683,10 @@ static struct Line *source_line(struct Edit *edit, struct Source *source)
         line = line_alloc(edit);
         if (!line)
             return NULL;
+        /* The extra line past the end of the file takes the next number and
+           is marked as having none of its own, which is what the original
+           shows: 8* on a file of seven lines. */
+        line->number = source->next_number++;
         line->phantom = TRUE;
         line->newline = FALSE;
         return line;
@@ -738,7 +795,7 @@ static BOOL next_line(struct Edit *edit)
     struct Line *line = pull_line(edit);
 
     if (!line) {
-        report(edit, "at end of file");
+        report(edit, "Input exhausted");
         return FALSE;
     }
     if (edit->current)
@@ -753,7 +810,7 @@ static BOOL previous_line(struct Edit *edit)
     struct Line *line = queue_pop(edit);
 
     if (!line) {
-        report(edit, "no more previous lines");
+        report(edit, "No more previous lines");
         return FALSE;
     }
     if (edit->current) {
@@ -772,12 +829,12 @@ static BOOL delete_current(struct Edit *edit)
     struct Line *line;
 
     if (!edit->current || edit->current->phantom) {
-        report(edit, "at end of file");
+        report(edit, "Input exhausted");
         return FALSE;
     }
     line = pull_line(edit);
     if (!line) {
-        report(edit, "at end of file");
+        report(edit, "Input exhausted");
         return FALSE;
     }
     line_free(edit, edit->current);
@@ -807,7 +864,7 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
     BOOL backward;
 
     if (!edit->current) {
-        report(edit, "no current line");
+        report(edit, "No current line");
         return FALSE;
     }
     if (edit->current->number == number)
@@ -836,7 +893,7 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
                 return FALSE;
         } else {
             if (at_end(edit)) {
-                report(edit, "no such line");
+                report(edit, "No such line");
                 return FALSE;
             }
             if (!next_line(edit))
@@ -849,52 +906,58 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
 /* ------------------------------------------------------------------ */
 /* Verification. */
 
+/* A line verifies as two lines: its number, followed by a period when the
+   line has that number in the source file and by an asterisk when it does
+   not, and then the text on a line of its own.  The line window's position is
+   shown by a pointer under the text -- with no number field in the way, since
+   the number is on the line above -- and the original leaves the cursor
+   sitting after that pointer rather than ending the line, which is why a
+   command typed next appears alongside it. */
 static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
 {
     LONG index;
 
     if (!line)
         return;
-    /* A fixed-width number field, so that the line window's pointer below the
-       line lands under the character it points at. */
     if (numbered) {
-        if (line->number > 0) {
-            LONG digits = 1;
-            LONG scale = 10;
-
-            while (line->number >= scale && digits < 4) {
-                digits++;
-                scale *= 10;
-            }
-            for (index = digits; index < 4; index++)
-                ver_char(edit, ' ');
+        /* The number, or +++ for a line that has none of its own because it
+           was inserted or split.  The terminator is a period, except on the
+           extra line past the end of the file, which shows the number it
+           would have and an asterisk: 8* on a file of seven lines. */
+        if (line->number > 0)
             ver_number(edit, line->number);
-        } else
-            ver_text(edit, "++++");
-        ver_text(edit, ": ");
+        else
+            ver_text(edit, "+++");
+        ver_char(edit, line->phantom ? '*' : '.');
+        ver_newline(edit);
     }
     for (index = 0; index < line->length; index++)
         ver_char(edit, is_graphic(line->text[index]) ? line->text[index] : '?');
     ver_newline(edit);
-    /* The line window's position is shown by a pointer under the line, and
-       omitted when the window starts at the beginning of the line. */
+    if (line == edit->current)
+        edit->shown = TRUE;
     if (edit->pointer > 0 && line == edit->current) {
-        LONG lead = edit->pointer + (numbered ? 6 : 0);
-
-        for (index = 0; index < lead; index++)
+        for (index = 0; index < edit->pointer; index++)
             ver_char(edit, ' ');
         ver_char(edit, '>');
-        ver_newline(edit);
+        ver_flush(edit);
     }
 }
 
-/* Automatic verification, after a command that moved or changed the current
-   line.  The extra line past the end of the source is left unverified: it is
-   not a line of the file, and showing it would suggest the file has one more
-   line than it has. */
+/* Called by every command that moves to or changes the current line.  The
+   display itself is deferred to the end of the whole command line and happens
+   only if nothing has shown the line already, which is what makes M2;M3 show
+   one line rather than two, 3(N) show only the line it arrives at, and
+   2(N;?) show two lines rather than four. */
 static void verify_current(struct Edit *edit)
 {
-    if (edit->verify && edit->current && !edit->current->phantom)
+    edit->shown = FALSE;
+}
+
+/* The end of a command line: show where it left the current line. */
+static void verify_pending(struct Edit *edit)
+{
+    if (edit->verify && !edit->shown && edit->current)
         verify_line(edit, edit->current, TRUE);
 }
 
@@ -938,11 +1001,13 @@ static void verify_hex(struct Edit *edit)
 /* ------------------------------------------------------------------ */
 /* Command line parsing. */
 
-static void parser_init(struct Parser *parser, UBYTE *text, LONG length)
+static void parser_init(struct Parser *parser, UBYTE *text, LONG length,
+                        LONG offset)
 {
     parser->text = text;
     parser->length = length;
     parser->position = 0;
+    parser->offset = offset;
 }
 
 static void parse_blanks(struct Parser *parser)
@@ -976,14 +1041,44 @@ static BOOL parse_number(struct Parser *parser, LONG *value)
     return any;
 }
 
+/* Reads up to the closing delimiter, which it consumes.  A string left open
+   is closed by the end of the line or by a semicolon -- PB/CAT;? is the
+   pointer command on CAT followed by a verify, not a search for "CAT;?" --
+   and the semicolon is left for the command parser to see.  Returns FALSE
+   only when the string was left open, which the callers that need a pair of
+   strings care about and the rest do not. */
+static BOOL read_delimited(struct Parser *parser, UBYTE delimiter,
+                           UBYTE *buffer, LONG *length)
+{
+    LONG count = 0;
+    BOOL closed = FALSE;
+
+    while (parser->position < parser->length) {
+        UBYTE character = parser->text[parser->position];
+
+        if (character == delimiter) {
+            parser->position++;
+            closed = TRUE;
+            break;
+        }
+        if (character == ';')
+            break;
+        if (count < STRING_SIZE - 1)
+            buffer[count++] = character;
+        parser->position++;
+    }
+    buffer[count] = '\0';
+    *length = count;
+    return closed;
+}
+
 /* A string argument is bracketed by a delimiter character of the caller's
    choosing -- a slash by convention, a period for file names, because a
-   slash is part of a path.  A closing delimiter at the end of the line may be
-   left off.  Two strings for one command share the delimiter between them. */
+   slash is part of a path.  Two strings for one command share the delimiter
+   between them. */
 static BOOL parse_string(struct Parser *parser, UBYTE *buffer, LONG *length)
 {
     UBYTE delimiter;
-    LONG count = 0;
 
     parse_blanks(parser);
     if (parser->position == parser->length)
@@ -992,36 +1087,7 @@ static BOOL parse_string(struct Parser *parser, UBYTE *buffer, LONG *length)
     if (delimiter == ';' || is_letter(delimiter) || is_digit(delimiter))
         return FALSE;
     parser->position++;
-    while (parser->position < parser->length &&
-           parser->text[parser->position] != delimiter) {
-        if (count < STRING_SIZE - 1)
-            buffer[count++] = parser->text[parser->position];
-        parser->position++;
-    }
-    if (parser->position < parser->length)
-        parser->position++;
-    buffer[count] = '\0';
-    *length = count;
-    return TRUE;
-}
-
-/* The second of a pair of strings: the delimiter that closed the first one
-   opened this one, so only the closing delimiter is left to find. */
-static BOOL parse_second(struct Parser *parser, UBYTE delimiter, UBYTE *buffer,
-                         LONG *length)
-{
-    LONG count = 0;
-
-    while (parser->position < parser->length &&
-           parser->text[parser->position] != delimiter) {
-        if (count < STRING_SIZE - 1)
-            buffer[count++] = parser->text[parser->position];
-        parser->position++;
-    }
-    if (parser->position < parser->length)
-        parser->position++;
-    buffer[count] = '\0';
-    *length = count;
+    read_delimited(parser, delimiter, buffer, length);
     return TRUE;
 }
 
@@ -1029,7 +1095,6 @@ static BOOL parse_pair(struct Parser *parser, UBYTE *first, LONG *first_length,
                        UBYTE *second, LONG *second_length)
 {
     UBYTE delimiter;
-    LONG count = 0;
 
     parse_blanks(parser);
     if (parser->position == parser->length)
@@ -1038,18 +1103,10 @@ static BOOL parse_pair(struct Parser *parser, UBYTE *first, LONG *first_length,
     if (delimiter == ';' || is_letter(delimiter) || is_digit(delimiter))
         return FALSE;
     parser->position++;
-    while (parser->position < parser->length &&
-           parser->text[parser->position] != delimiter) {
-        if (count < STRING_SIZE - 1)
-            first[count++] = parser->text[parser->position];
-        parser->position++;
-    }
-    if (parser->position == parser->length)
+    if (!read_delimited(parser, delimiter, first, first_length))
         return FALSE;
-    parser->position++;
-    first[count] = '\0';
-    *first_length = count;
-    return parse_second(parser, delimiter, second, second_length);
+    read_delimited(parser, delimiter, second, second_length);
+    return TRUE;
 }
 
 /* A file name, delimited the way the manual delimits one -- with periods,
@@ -1166,6 +1223,23 @@ static enum Command parse_command(struct Parser *parser)
 /* Command input: the keyboard, the WITH file, and whatever the C command has
    opened on top of them. */
 
+/* The prompt appears when the editor enters command mode -- at startup, and
+   again when an insertion ends -- rather than before every command, and only
+   when the commands are being typed rather than read from a file. */
+static void prompt(struct Edit *edit)
+{
+    struct CommandFile *file;
+
+    if (!edit->prompt || edit->depth < 0)
+        return;
+    edit->prompt = FALSE;
+    file = &edit->commands[edit->depth];
+    if (!IsInteractive(file->reader.handle))
+        return;
+    ver_char(edit, ':');
+    ver_flush(edit);
+}
+
 static BOOL command_line(struct Edit *edit, UBYTE *buffer, LONG *length)
 {
     while (edit->depth >= 0) {
@@ -1173,6 +1247,7 @@ static BOOL command_line(struct Edit *edit, UBYTE *buffer, LONG *length)
         LONG count = 0;
         LONG character;
 
+        prompt(edit);
         character = reader_char(&file->reader);
         if (character < 0) {
             if (file->close)
@@ -1197,7 +1272,7 @@ static void push_command_file(struct Edit *edit, const UBYTE *name)
     BPTR handle;
 
     if (edit->depth + 1 >= COMMAND_DEPTH) {
-        report(edit, "command files nested too deeply");
+        report(edit, "Command files nested too deeply");
         return;
     }
     handle = Open((CONST_STRPTR)name, MODE_OLDFILE);
@@ -1233,12 +1308,15 @@ static void insert_lines(struct Edit *edit)
                     match = FALSE;
                     break;
                 }
-            if (match)
+            if (match) {
+                /* Back in command mode, which is where a prompt belongs. */
+                edit->prompt = TRUE;
                 return;
+            }
         }
         line = line_alloc(edit);
         if (!line) {
-            report(edit, "out of memory");
+            report(edit, "Out of memory");
             return;
         }
         if (length > edit->width)
@@ -1251,7 +1329,7 @@ static void insert_lines(struct Edit *edit)
            already been passed: straight into the queue. */
         queue_push(edit, line);
     }
-    report(edit, "unterminated insertion");
+    report(edit, "Input exhausted");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1283,7 +1361,7 @@ static struct Source *open_source(struct Edit *edit, const UBYTE *name)
                                        MEMF_ANY | MEMF_CLEAR);
     if (!source) {
         Close(handle);
-        report(edit, "out of memory");
+        report(edit, "Out of memory");
         return NULL;
     }
     reader_init(&source->reader, handle);
@@ -1321,7 +1399,7 @@ static struct Sink *open_sink(struct Edit *edit, const UBYTE *name,
                                    MEMF_ANY | MEMF_CLEAR);
     if (!sink) {
         Close(handle);
-        report(edit, "out of memory");
+        report(edit, "Out of memory");
         return NULL;
     }
     sink->handle = handle;
@@ -1332,46 +1410,44 @@ static struct Sink *open_sink(struct Edit *edit, const UBYTE *name,
     return sink;
 }
 
-/* A temporary destination, made in the same drawer as the file it will
-   eventually be renamed over so that the rename stays on one device.  Names
-   are tried in turn until one is free: a rewind needs a second temporary
-   while the first is still being read, and another editor running in the same
-   drawer must not be handed the same name. */
-static void next_temporary_name(struct Edit *edit, const UBYTE *near,
-                                UBYTE *buffer)
+static void append_number(UBYTE *buffer, LONG *at, LONG value, LONG digits)
 {
-    UBYTE directory[NAME_SIZE];
-    LONG length;
+    UBYTE text[12];
+    LONG count = 0;
 
-    copy_name(directory, near, (LONG)strlen((const char *)near));
-    length = (LONG)strlen((const char *)directory);
-    while (length > 0 && directory[length - 1] != '/' &&
-           directory[length - 1] != ':')
-        length--;
-    directory[length] = '\0';
+    do {
+        text[count++] = (UBYTE)('0' + (value % 10));
+        value /= 10;
+    } while (value > 0);
+    while (count < digits)
+        text[count++] = '0';
+    while (count > 0)
+        buffer[(*at)++] = text[--count];
+}
+
+/* The work file, named the way the original names it: T:E<nn>-WK<n>, with the
+   editing process's number in it.  A rewind needs a second one while the
+   first is still being read, which is what the WK number is for, and it is
+   also what keeps two editors in one process from colliding -- ACE gives
+   every command the same process number, so the name is probed rather than
+   trusted. */
+static void work_file_name(struct Edit *edit, UBYTE *buffer)
+{
+    struct Process *process = (struct Process *)FindTask(NULL);
+    LONG task = process ? process->pr_TaskNum : 0;
+
     for (;;) {
-        LONG at = length;
+        LONG at = 0;
         BPTR lock;
 
-        copy_name(buffer, directory, length);
-        if (at + 20 >= NAME_SIZE)
-            at = 0;
-        memcpy(buffer + at, "Edit-Temp", 9);
-        at += 9;
-        if (edit->temp_serial > 0) {
-            UBYTE digits[12];
-            LONG count = 0;
-            LONG value = edit->temp_serial;
-
-            do {
-                digits[count++] = (UBYTE)('0' + (value % 10));
-                value /= 10;
-            } while (value > 0);
-            while (count > 0)
-                buffer[at++] = digits[--count];
-        }
-        buffer[at] = '\0';
+        memcpy(buffer, "T:E", 3);
+        at = 3;
+        append_number(buffer, &at, task, 2);
+        memcpy(buffer + at, "-WK", 3);
+        at += 3;
         edit->temp_serial++;
+        append_number(buffer, &at, edit->temp_serial, 1);
+        buffer[at] = '\0';
         lock = Lock((CONST_STRPTR)buffer, SHARED_LOCK);
         if (!lock)
             return;
@@ -1389,7 +1465,7 @@ static void close_named_file(struct Edit *edit, const UBYTE *name)
 
         if (same_name(sink->name, name)) {
             if (sink == edit->sink) {
-                report(edit, "can't close the current output file");
+                report(edit, "Output file in use");
                 return;
             }
             *sink_link = sink->next;
@@ -1404,7 +1480,7 @@ static void close_named_file(struct Edit *edit, const UBYTE *name)
 
         if (same_name(source->name, name)) {
             if (source == edit->source) {
-                report(edit, "can't close the current input file");
+                report(edit, "Input file in use");
                 return;
             }
             *source_link = source->next;
@@ -1458,11 +1534,11 @@ static void rewind_file(struct Edit *edit)
     BPTR handle;
 
     if (edit->sink != old_sink) {
-        report(edit, "can't rewind an alternate output file");
+        report(edit, "Rewind needs the main output file");
         return;
     }
     if (edit->source != old_source) {
-        report(edit, "can't rewind an alternate input file");
+        report(edit, "Rewind needs the main input file");
         return;
     }
     drain_source(edit);
@@ -1508,7 +1584,7 @@ static void rewind_file(struct Edit *edit)
                                              MEMF_ANY | MEMF_CLEAR);
     if (!edit->source) {
         Close(handle);
-        report(edit, "out of memory");
+        report(edit, "Out of memory");
         edit->finished = TRUE;
         edit->result = RETURN_FAIL;
         return;
@@ -1525,7 +1601,7 @@ static void rewind_file(struct Edit *edit)
     if (stale_temp)
         DeleteFile((CONST_STRPTR)stale);
 
-    next_temporary_name(edit, edit->final_name, stale);
+    work_file_name(edit, stale);
     edit->sink = open_sink(edit, stale, TRUE);
     if (!edit->sink) {
         edit->finished = TRUE;
@@ -1553,7 +1629,7 @@ static void command_move(struct Edit *edit, struct Parser *parser)
     } else if (parse_number(parser, &number))
         move_to_number(edit, number);
     else {
-        report(edit, "M needs a line number, a period or an asterisk");
+        report(edit, "Line number needed");
         return;
     }
     verify_current(edit);
@@ -1602,12 +1678,12 @@ static void command_delete_found(struct Edit *edit, struct Parser *parser)
         memcpy(edit->search, text, (size_t)length + 1);
         edit->search_length = length;
     } else if (edit->search_length == 0) {
-        report(edit, "no string to search for");
+        report(edit, "No search string");
         return;
     }
     while (line_find(edit->current, 0, edit->search, edit->search_length) < 0) {
         if (at_end(edit)) {
-            report(edit, "string not found");
+            report(edit, "No match");
             return;
         }
         if (!delete_current(edit))
@@ -1626,7 +1702,7 @@ static void command_find(struct Edit *edit, struct Parser *parser,
         memcpy(edit->search, text, (size_t)length + 1);
         edit->search_length = length;
     } else if (edit->search_length == 0) {
-        report(edit, "no string to search for");
+        report(edit, "No search string");
         return;
     }
     for (;;) {
@@ -1640,7 +1716,7 @@ static void command_find(struct Edit *edit, struct Parser *parser,
             return;
         }
         if (!backward && at_end(edit)) {
-            report(edit, "string not found");
+            report(edit, "No match");
             return;
         }
     }
@@ -1658,16 +1734,16 @@ static void command_change(struct Edit *edit, struct Parser *parser,
     LONG at;
 
     if (!edit->current) {
-        report(edit, "no current line");
+        report(edit, "No current line");
         return;
     }
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
-        report(edit, "two strings needed");
+        report(edit, "Two strings needed");
         return;
     }
     at = line_find(edit->current, edit->pointer, first, first_length);
     if (at < 0) {
-        report(edit, "string not found");
+        report(edit, "No match");
         return;
     }
     switch (type) {
@@ -1706,17 +1782,17 @@ static void command_global(struct Edit *edit, struct Parser *parser,
     struct Global **link;
 
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
-        report(edit, "two strings needed");
+        report(edit, "Two strings needed");
         return;
     }
     if (first_length == 0) {
-        report(edit, "nothing to search for");
+        report(edit, "No search string");
         return;
     }
     global = (struct Global *)AllocVec((ULONG)sizeof(*global),
                                        MEMF_ANY | MEMF_CLEAR);
     if (!global) {
-        report(edit, "out of memory");
+        report(edit, "Out of memory");
         return;
     }
     global->id = edit->next_global++;
@@ -1739,7 +1815,8 @@ static void command_global(struct Edit *edit, struct Parser *parser,
         edit->globals = saved;
         verify_current(edit);
     }
-    ver_text(edit, "global ");
+    /* The original announces a new global as G followed by its number. */
+    ver_char(edit, 'G');
     ver_number(edit, global->id);
     ver_newline(edit);
 }
@@ -1771,7 +1848,7 @@ static void command_global_state(struct Edit *edit, struct Parser *parser,
         link = &global->next;
     }
     if (one && cancel)
-        report(edit, "no such global");
+        report(edit, "No such global");
 }
 
 static void command_show_globals(struct Edit *edit)
@@ -1792,7 +1869,7 @@ static void command_show_globals(struct Edit *edit)
         ver_newline(edit);
     }
     if (!edit->globals)
-        report(edit, "no global commands");
+        report(edit, "No global commands");
 }
 
 static void command_show_state(struct Edit *edit)
@@ -1822,16 +1899,16 @@ static void command_delete_window(struct Edit *edit, struct Parser *parser,
     LONG at;
 
     if (!edit->current) {
-        report(edit, "no current line");
+        report(edit, "No current line");
         return;
     }
     if (!parse_string(parser, text, &length)) {
-        report(edit, "a string is needed");
+        report(edit, "String needed");
         return;
     }
     at = line_find(edit->current, edit->pointer, text, length);
     if (at < 0) {
-        report(edit, "string not found");
+        report(edit, "No match");
         return;
     }
     if (from)
@@ -1851,23 +1928,23 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
     struct Line *tail;
 
     if (!edit->current) {
-        report(edit, "no current line");
+        report(edit, "No current line");
         return;
     }
     if (!parse_string(parser, text, &length)) {
-        report(edit, "a string is needed");
+        report(edit, "String needed");
         return;
     }
     at = line_find(edit->current, edit->pointer, text, length);
     if (at < 0) {
-        report(edit, "string not found");
+        report(edit, "No match");
         return;
     }
     if (after)
         at += length;
     tail = line_alloc(edit);
     if (!tail) {
-        report(edit, "out of memory");
+        report(edit, "Out of memory");
         return;
     }
     tail->length = edit->current->length - at;
@@ -1893,7 +1970,7 @@ static void command_join(struct Edit *edit, struct Parser *parser)
     struct Line *next;
 
     if (!edit->current || edit->current->phantom) {
-        report(edit, "at end of file");
+        report(edit, "Input exhausted");
         return;
     }
     if (parse_string(parser, text, &length))
@@ -1902,7 +1979,7 @@ static void command_join(struct Edit *edit, struct Parser *parser)
             return;
     next = pull_line(edit);
     if (!next) {
-        report(edit, "at end of file");
+        report(edit, "Input exhausted");
         return;
     }
     if (next->phantom) {
@@ -1995,16 +2072,16 @@ static void command_pointer_string(struct Edit *edit, struct Parser *parser,
     LONG at;
 
     if (!edit->current) {
-        report(edit, "no current line");
+        report(edit, "No current line");
         return;
     }
     if (!parse_string(parser, text, &length)) {
-        report(edit, "a string is needed");
+        report(edit, "String needed");
         return;
     }
     at = line_find(edit->current, edit->pointer, text, length);
     if (at < 0) {
-        report(edit, "string not found");
+        report(edit, "No match");
         return;
     }
     edit->pointer = after ? at + length : at;
@@ -2088,24 +2165,63 @@ static void close_files(struct Edit *edit)
     }
 }
 
-/* The source file becomes the backup.  The manual keeps it in T:, where it
-   lasts only until the next edit.  If T: will not take it -- no such assign,
-   or a rename across devices -- the backup goes beside the file instead,
+static BOOL copy_file(const UBYTE *from, const UBYTE *to)
+{
+    UBYTE buffer[READ_BUFFER];
+    BPTR in;
+    BPTR out;
+    LONG got;
+
+    in = Open((CONST_STRPTR)from, MODE_OLDFILE);
+    if (!in)
+        return FALSE;
+    out = Open((CONST_STRPTR)to, MODE_NEWFILE);
+    if (!out) {
+        Close(in);
+        return FALSE;
+    }
+    while ((got = Read(in, buffer, READ_BUFFER)) > 0)
+        if (Write(out, buffer, got) != got) {
+            Close(in);
+            Close(out);
+            return FALSE;
+        }
+    Close(in);
+    Close(out);
+    return got >= 0;
+}
+
+/* The work file lives in T: and the file being edited generally does not, and
+   AmigaDOS cannot rename across devices, so a move that fails is retried as a
+   copy.  This is why the editor can afford to keep its work where the manual
+   says it does. */
+static BOOL move_file(const UBYTE *from, const UBYTE *to)
+{
+    if (Rename((CONST_STRPTR)from, (CONST_STRPTR)to))
+        return TRUE;
+    if (!copy_file(from, to))
+        return FALSE;
+    DeleteFile((CONST_STRPTR)from);
+    return TRUE;
+}
+
+/* The source file becomes T:EDIT-BACKUP, which lasts only until the next
+   edit.  If T: will not take it, the backup goes beside the file instead,
    because losing the original would be worse than keeping it elsewhere. */
 static void make_backup(struct Edit *edit)
 {
     UBYTE backup[NAME_SIZE];
     LONG length;
 
-    DeleteFile((CONST_STRPTR)"T:Edit-backup");
-    if (Rename((CONST_STRPTR)edit->source_name, (CONST_STRPTR)"T:Edit-backup"))
+    DeleteFile((CONST_STRPTR)"T:EDIT-BACKUP");
+    if (move_file(edit->source_name, (const UBYTE *)"T:EDIT-BACKUP"))
         return;
     length = (LONG)strlen((const char *)edit->source_name);
     copy_name(backup, edit->source_name, length);
     if (length < NAME_SIZE - 8)
         memcpy(backup + length, "-backup", 8);
     DeleteFile((CONST_STRPTR)backup);
-    if (!Rename((CONST_STRPTR)edit->source_name, (CONST_STRPTR)backup))
+    if (!move_file(edit->source_name, backup))
         DeleteFile((CONST_STRPTR)edit->source_name);
 }
 
@@ -2138,8 +2254,8 @@ static void finish_saving(struct Edit *edit)
         make_backup(edit);
     else
         DeleteFile((CONST_STRPTR)edit->final_name);
-    if (!Rename((CONST_STRPTR)temporary, (CONST_STRPTR)edit->final_name)) {
-        report_name(edit, "can't rename over", edit->final_name);
+    if (!move_file(temporary, edit->final_name)) {
+        report_name(edit, "Can't write", edit->final_name);
         edit->result = RETURN_FAIL;
     }
 }
@@ -2182,13 +2298,50 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         parse_number(parser, &count);
         character = parse_peek(parser);
         if (character < 0) {
-            report(edit, "a count needs a command after it");
+            report(edit, "Command needed");
             return;
         }
     }
 
+    /* A repeat group: n(commands), with the commands inside separated by
+       semicolons.  The count belongs to the whole group, so 2(N;?) advances
+       and verifies twice.  The scan for the closing parenthesis counts nested
+       ones but does not look inside string arguments, so a parenthesis used
+       as a string delimiter inside a group is not understood. */
+    if (character == '(') {
+        LONG start = parser->position + 1;
+        LONG depth = 1;
+        LONG scan = start;
+
+        while (scan < parser->length && depth > 0) {
+            if (parser->text[scan] == '(')
+                depth++;
+            else if (parser->text[scan] == ')')
+                depth--;
+            scan++;
+        }
+        if (depth > 0) {
+            parser->position = parser->length;
+            report(edit, "Unmatched parenthesis");
+            return;
+        }
+        for (index = 0; index < count && !edit->finished; index++) {
+            struct Parser body;
+
+            parser_init(&body, parser->text + start, scan - 1 - start,
+                        parser->offset + start);
+            execute_commands(edit, &body);
+        }
+        parser->position = scan;
+        return;
+    }
+
     /* The single-character commands, which take no name of their own. */
     switch (character) {
+    case ')':
+        parser->position++;
+        report(edit, "Unmatched parenthesis");
+        return;
     case ';':
         parser->position++;
         return;
@@ -2206,7 +2359,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
             LONG number;
 
             if (!parse_number(parser, &number)) {
-                report(edit, "= needs a line number");
+                report(edit, "Line number needed");
                 return;
             }
             if (edit->current)
@@ -2235,7 +2388,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     case '_':
         parser->position++;
         if (!edit->current) {
-            report(edit, "no current line");
+            report(edit, "No current line");
             return;
         }
         for (index = 0; index < count; index++) {
@@ -2256,7 +2409,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     case '#':
         parser->position++;
         if (!edit->current) {
-            report(edit, "no current line");
+            report(edit, "No current line");
             return;
         }
         line_delete(edit->current, edit->pointer, count);
@@ -2269,7 +2422,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     command = parse_command(parser);
     switch (command) {
     case CMD_NONE:
-        report(edit, "unknown command");
+        report(edit, "Unknown command");
         parser->position = parser->length;
         return;
 
@@ -2333,8 +2486,10 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         } else if (parse_number(parser, &number) &&
                    !move_to_number(edit, number))
             return;
+        /* Inserting does not change the current line, so it does not arm the
+           end-of-line display: M2;I shows line 2 because M2 moved to it, and
+           an insert below a line already shown adds no display at all. */
         insert_lines(edit);
-        verify_current(edit);
         return;
     }
     case CMD_D:
@@ -2370,7 +2525,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
                 copy_name(edit->terminator, name, length2);
                 edit->terminator_length = length2;
             } else
-                report(edit, "Z needs a terminator string");
+                report(edit, "String needed");
         }
         return;
     }
@@ -2381,7 +2536,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         if (parse_switch(parser, &flag))
             edit->trailing = flag;
         else
-            report(edit, "T,R needs + or -");
+            report(edit, "+ or - needed");
         return;
 
     case CMD_PR:
@@ -2425,7 +2580,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         if (parse_switch(parser, &flag))
             edit->verify = flag;
         else
-            report(edit, "V needs + or -");
+            report(edit, "+ or - needed");
         return;
     case CMD_T:
         command_type(edit, parser, FALSE);
@@ -2468,7 +2623,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         if (parse_file(parser, name))
             push_command_file(edit, name);
         else
-            report(edit, "C needs a file name");
+            report(edit, "File name needed");
         return;
     }
     case CMD_FROM:
@@ -2483,7 +2638,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         if (parse_file(parser, name))
             close_named_file(edit, name);
         else
-            report(edit, "CF needs a file name");
+            report(edit, "File name needed");
         return;
     }
     case CMD_Q:
@@ -2510,6 +2665,28 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     }
 }
 
+/* Runs commands until the parser is exhausted.  A repeat group re-enters
+   this with a parser over its body, so the count applies to everything
+   between the parentheses. */
+static void execute_commands(struct Edit *edit, struct Parser *parser)
+{
+    struct Parser *outer = edit->active;
+
+    edit->active = parser;
+    while (!edit->finished) {
+        LONG before = parser->position;
+
+        if (parse_peek(parser) < 0)
+            break;
+        execute_one(edit, parser);
+        if (parser->position == before) {
+            report(edit, "Unknown command");
+            break;
+        }
+    }
+    edit->active = outer;
+}
+
 static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
 {
     struct Parser parser;
@@ -2521,18 +2698,12 @@ static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
         edit->last_command[keep] = '\0';
         edit->last_command_length = keep;
     }
-    parser_init(&parser, text, length);
-    while (!edit->finished) {
-        LONG before = parser.position;
-
-        if (parse_peek(&parser) < 0)
-            return;
-        execute_one(edit, &parser);
-        if (parser.position == before) {
-            report(edit, "unknown command");
-            return;
-        }
-    }
+    parser_init(&parser, text, length, 0);
+    execute_commands(edit, &parser);
+    /* The line the commands left behind is shown once, here, rather than by
+       each command that touched it. */
+    if (!edit->finished)
+        verify_pending(edit);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2647,7 +2818,7 @@ int main(void)
         copy_name(edit.final_name, edit.source_name,
                   (LONG)strlen((const char *)edit.source_name));
         edit.backup_source = TRUE;
-        next_temporary_name(&edit, edit.final_name, temporary);
+        work_file_name(&edit, temporary);
         if (!open_sink(&edit, temporary, TRUE))
             goto fail;
     }
@@ -2664,8 +2835,12 @@ int main(void)
     if (args[ARG_WITH])
         push_command_file(&edit, (const UBYTE *)args[ARG_WITH]);
 
+    /* The first line becomes current without being shown: the original
+       announces itself and then waits for a command. */
     next_line(&edit);
-    verify_current(&edit);
+    edit.shown = TRUE;
+    edit.prompt = TRUE;
+    report(&edit, "Editor");
 
     while (!edit.finished && command_line(&edit, command, &length))
         execute_line(&edit, command, length);

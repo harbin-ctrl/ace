@@ -65,9 +65,10 @@ printf 'M2\nE/beta/BETA/\nN\nI\ninserted\nZ\nM*\nW\n' > "$work/one.cmd"
 edit SYS:C/one.txt WITH SYS:C/one.cmd > /dev/null || fail 'in-place edit failed'
 expect_file one.txt "alpha-$$" BETA inserted gamma delta
 
-# The source file it replaced is kept as the backup the manual describes.
+# The source file it replaced is kept as the backup, under the name the
+# original uses.
 env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
-    "$repo_dir/build/Type" T:Edit-backup > "$test_dir/backup" ||
+    "$repo_dir/build/Type" T:EDIT-BACKUP > "$test_dir/backup" ||
     fail 'no backup file was kept'
 cmp -s "$test_dir/backup" "$test_dir/one.original" ||
     fail 'the backup does not hold the original file'
@@ -122,9 +123,9 @@ printf '1\n2\n3\n4\n5\n' > "$work/eight.txt"
 printf 'V-\n4N\n3P\n?\nM*\nW\n' > "$work/eight.cmd"
 edit SYS:C/eight.txt PREVIOUS 2 WITH SYS:C/eight.cmd > "$test_dir/output" ||
     fail 'backward move failed'
-grep -q 'no more previous lines' "$test_dir/output" ||
+grep -q 'No more previous lines' "$test_dir/output" ||
     fail 'PREVIOUS did not limit backward movement'
-grep -q '3: 3' "$test_dir/output" ||
+grep -A1 '^3\.$' "$test_dir/output" | grep -q '^3$' ||
     fail 'backward move stopped on the wrong line'
 expect_file eight.txt 1 2 3 4 5
 
@@ -134,11 +135,13 @@ printf 'one\ntwo\nthree\n' > "$work/nine.txt"
 printf 'V-\nM2\nI\nnew\nZ\nREWIND\nTL\nM*\nW\n' > "$work/nine.cmd"
 edit SYS:C/nine.txt WITH SYS:C/nine.cmd > "$test_dir/output" ||
     fail 'rewind failed'
-grep -q '   2: new' "$test_dir/output" ||
+grep -A1 '^2\.$' "$test_dir/output" | grep -q '^new$' ||
     fail 'rewind did not renumber the inserted line'
 expect_file nine.txt one new two three
-if ls "$work" | grep -q 'Edit-Temp'; then
-    fail 'rewind left a temporary file behind'
+# The work files live in T: and are named as the original names them, so a
+# rewind's second one must not be left there either.
+if find "$runtime_dir" -name 'E*-WK*' | grep -q .; then
+    fail 'rewind left a work file behind'
 fi
 
 # FROM switches the input file without closing the one it leaves, exactly as
@@ -176,9 +179,55 @@ env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
     timeout 20 "$repo_dir/build/Edit" SYS:C/thirteen.txt \
     WITH SYS:C/thirteen.cmd > "$test_dir/output" ||
     fail 'a line number outside the file did not finish'
-grep -q 'no such line' "$test_dir/output" ||
+grep -q 'No such line' "$test_dir/output" ||
     fail 'a line number outside the file was not reported'
 expect_file thirteen.txt 1 ins 2 3 4
+
+# Fidelity to the original. These three cases are transcripts taken from
+# AmigaDOS's own EDIT running under emulation, on a file of six lines and a
+# trailing empty one, replayed here and compared byte for byte. The only
+# things left out are the ":" prompt, which appears when commands are typed
+# rather than read from a file, and the echo of the typed commands.
+printf 'one cat\ntwo dog\nthree cat cat\nfour\nfive\nsix\n\n' > "$test_dir/original"
+
+transcript()
+{
+    name=$1
+    cp "$test_dir/original" "$work/$name.txt"
+    edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" > "$test_dir/$name.out" 2>&1 ||
+        true
+    cmp -s "$test_dir/$name.out" "$test_dir/$name.expected" || {
+        printf 'edit test: %s does not match the Amiga transcript:\n' "$name" >&2
+        diff "$test_dir/$name.expected" "$test_dir/$name.out" >&2 || true
+        exit 1
+    }
+}
+
+# Movement, repeat groups, and running off the end of the file. The pointer
+# under "3N" and "Input exhausted" are the original's, and so is showing the
+# extra line past the end as 8* -- numbered, but marked as having no number
+# of its own.
+printf '?\n3(N)\n2(N;?)\n(N)\n3N\nSTOP\n' > "$work/groups.cmd"
+printf 'Editor\n1.\none cat\n4.\nfour\n5.\nfive\n6.\nsix\n7.\n\n >\nInput exhausted\n8*\n\n' \
+    > "$test_dir/groups.expected"
+transcript groups
+
+# The three change commands chained on one line, a global change, and the
+# line window. "one YdogX" is the string the original produces, and it is
+# what settles the argument order: the first string is always the one
+# searched for. The marker is written without a newline after it, so the
+# next verification runs onto its line.
+printf 'M1;E/cat/dog/;A/dog/X/;B/dog/Y/;?\nM3;GE/cat/CAT/;PB/CAT;?\nI\nx\nZ\n?\nSTOP\n' \
+    > "$work/change.cmd"
+printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n      >3.\nthree CAT CAT\n      >' \
+    > "$test_dir/change.expected"
+transcript change
+
+# An inserted line has no number of its own and verifies as +++, and the
+# insertion does not re-display the line it was inserted before.
+printf 'M2;I\nx\nZ\nP;?\nSTOP\n' > "$work/insert.cmd"
+printf 'Editor\n2.\ntwo dog\n+++.\nx\n' > "$test_dir/insert.expected"
+transcript insert
 
 # A missing source file is a failure, not an empty edit.
 set +e

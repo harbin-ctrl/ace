@@ -440,21 +440,47 @@ in two while it is edited and written back as one, and a last line with no
 line feed does not acquire one, so an edit that changes nothing writes the
 file back byte for byte.
 
-With no `TO` file the editing goes to a temporary beside the source, and `W`
-renames it into place, keeping the source as `T:Edit-backup` -- so a session
-that fails partway through has not touched the original. `STOP` throws the
-edit away and exits with a warning code. `REWIND` closes the destination,
-reopens it as the source, and starts a second pass on a fresh temporary,
+With no `TO` file the editing goes to a work file in `T:`, named the way the
+original names it -- `T:E<nn>-WK<n>`, with the process number in it and the
+`WK` number distinguishing the second one a `REWIND` needs while the first is
+still being read. `W` moves it into place and keeps the source as
+`T:EDIT-BACKUP`, so a session that fails partway through has not touched the
+original. Because `T:` is rarely on the same device as the file being edited
+and AmigaDOS cannot rename across devices, a move that fails is retried as a
+copy. `STOP` throws the edit away and exits with a warning code. `REWIND`
+closes the destination, reopens it as the source, and starts a second pass,
 which is what turns inserted lines into numbered original ones.
 
-Two places where the manual contradicts itself are resolved in the source
-comment at the top of `src/edit.c`: the first string of `A`, `B`, `E` and
-their global forms is always the one searched for, and a global change acts on
+The screen behaviour is the original's rather than anything invented here,
+because it was checked against AmigaDOS's own EDIT running under emulation.
+A line verifies as two lines -- its number, then its text:
+
+```
+3.
+three cat cat
+```
+
+The number is `+++` for a line that has none of its own because it was
+inserted or split, and the terminator is `*` rather than `.` on the extra line
+past the end of the file, which is numbered as though it were the next one.
+Verification is deferred to the end of a whole command line and happens only
+if nothing has shown the line already, so `M2;M3` prints one line, `3(N)`
+prints only the line it arrives at, and `2(N;?)` prints two lines rather than
+four. `n(...)` is a repeat group, with `;` between the commands inside it.
+Errors name their place before they name themselves, with a `>` under the
+character of the command line the editor had reached.
+
+Two places where the manual contradicts itself are settled, and the real
+program was the arbiter for both: the first string of `A`, `B`, `E` and their
+global forms is always the one searched for -- chaining them turns `one cat`
+into `one YdogX` on the Amiga and here alike -- and a global change acts on
 every occurrence in a line where the single-line commands act on the first.
 The string qualifiers the manual mentions but never defines are not
 implemented, and are reported as unknown commands rather than ignored.
 
-`make test-edit` runs the editor against a broker of its own.
+`make test-edit` runs the editor against a broker of its own. Three of its
+cases are transcripts taken from the original under emulation, replayed and
+compared byte for byte.
 
 ## The standard assigns, and who makes them
 
