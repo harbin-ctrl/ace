@@ -148,7 +148,7 @@ int main(void)
         frame = read_surface(ace_console_device_scrollback_surface(device),
                              ace_console_device_scrollback_origin_y(device),
                              width, height);
-        assert(frame_has_ink(frame, width, height, 0x000000u));
+        assert(band_has_ink(frame, width, 0, height / 2, 0x000000u));
         free(frame);
         ace_console_device_write(device, "output while scrolled\n", 22);
         assert(ace_console_device_scrollback_lines(device) == 1);

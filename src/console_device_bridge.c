@@ -84,6 +84,7 @@ struct ace_console_device {
     struct TextFont *font;
     struct RastPort *rp;
     Object *unit;
+    struct Window scrollback_window;
     struct RastPort *scrollback_rp;
     Object *scrollback_unit;
     int scrollback_lines;
@@ -416,7 +417,6 @@ static int create_scrollback_view(struct ace_console_device *device,
 {
     struct RastPort *rp;
     Object *unit;
-    struct RastPort *saved_rp;
     struct TagItem tags[] = {
         { A_Console_Window, 0 },
         { TAG_DONE, 0 },
@@ -428,11 +428,10 @@ static int create_scrollback_view(struct ace_console_device *device,
     if (!rp)
         return -1;
 
-    saved_rp = device->amiga_window.RPort;
-    device->amiga_window.RPort = rp;
-    tags[0].ti_Data = (IPTR)&device->amiga_window;
+    device->scrollback_window = device->amiga_window;
+    device->scrollback_window.RPort = rp;
+    tags[0].ti_Data = (IPTR)&device->scrollback_window;
     unit = NewObjectA(device->std_class, NULL, tags);
-    device->amiga_window.RPort = saved_rp;
     if (!unit) {
         ace_gfx_destroy_rastport(rp);
         return -1;

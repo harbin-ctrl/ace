@@ -801,8 +801,8 @@ static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
     char text[128];
     PangoLayout *layout;
     PangoFontDescription *font;
-    GdkRGBA background = palette_rgba(console->palette[0]);
-    GdkRGBA foreground = palette_rgba(console->palette[1]);
+    GdkRGBA background = palette_rgba(console->palette[1]);
+    GdkRGBA foreground = palette_rgba(console->palette[0]);
     int text_width;
     int text_height;
     int overlay_height;
@@ -815,7 +815,8 @@ static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
                                       console->font_family
                                           ? console->font_family
                                           : "monospace");
-    pango_font_description_set_size(font, console->font_size * PANGO_SCALE);
+    pango_font_description_set_absolute_size(font,
+                                             console->font_size * PANGO_SCALE);
     pango_layout_set_font_description(layout, font);
     pango_layout_set_text(layout, text, -1);
     pango_layout_set_width(layout, MAX(1, width - 12) * PANGO_SCALE);
