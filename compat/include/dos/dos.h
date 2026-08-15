@@ -55,6 +55,7 @@
 #define ERROR_COMMENT_TOO_BIG   220
 #define ERROR_DELETE_PROTECTED  222
 #define ERROR_WRITE_PROTECTED   223
+#define ERROR_INVALID_LOCK      211
 
 #define DOSNAME "dos.library"
 
@@ -72,6 +73,10 @@
 #define LOCK_SAME         0
 #define LOCK_SAME_VOLUME  1
 #define LOCK_DIFFERENT   (-1)
+
+/* The link type values used by MakeLink(). */
+#define LINK_HARD         0
+#define LINK_SOFT         1
 
 /* Real, from dos/dosextens.h: only the one field the pattern-matching
    engine reads (DOSBase->dl_Root->rn_Flags & RNF_WILDSTAR, whether '*' is
@@ -97,6 +102,8 @@ struct DateStamp {
     LONG ds_Minute;
     LONG ds_Tick;
 };
+
+struct DateTime;
 
 #define MAXFILENAMELENGTH 108
 #define MAXCOMMENTLENGTH  80
@@ -261,9 +268,20 @@ LONG SetMode(BPTR file, LONG mode);
 LONG WaitForChar(BPTR file, LONG timeout);
 void Delay(ULONG ticks);
 LONG DeleteFile(CONST_STRPTR name);
+BOOL SetFileDate(CONST_STRPTR name, const struct DateStamp *date);
+struct DateStamp *DateStamp(struct DateStamp *date);
+BOOL DateToStr(struct DateTime *datetime);
+LONG CompareDates(const struct DateStamp *first, const struct DateStamp *second);
+BOOL StrToDate(struct DateTime *datetime);
 LONG SetProtection(CONST_STRPTR name, ULONG protection);
 LONG SetComment(CONST_STRPTR name, CONST_STRPTR comment);
 LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name);
+LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft);
+LONG ReadLink(struct MsgPort *port, BPTR lock, CONST_STRPTR name,
+              STRPTR buffer, LONG size);
+BOOL SameDevice(BPTR lock1, BPTR lock2);
+BPTR ParentDir(BPTR lock);
+BOOL IsFileSystem(CONST_STRPTR device_name);
 LONG SameLock(BPTR lock1, BPTR lock2);
 BOOL IsInteractive(BPTR file);
 LONG FPutC(BPTR file, LONG character);
@@ -275,6 +293,7 @@ void SetIoErr(LONG error);
 LONG Write(BPTR file, CONST_APTR buffer, LONG length);
 LONG Fault(LONG error, CONST_STRPTR header, STRPTR buffer, LONG length);
 BOOL PrintFault(LONG error, CONST_STRPTR header);
+BOOL Relabel(CONST_STRPTR drive, CONST_STRPTR name);
 LONG Printf(CONST_STRPTR format, ...);
 LONG SplitName(CONST_STRPTR path, LONG separator, STRPTR buffer,
                LONG buffer_position, LONG buffer_size);

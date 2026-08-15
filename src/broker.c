@@ -1559,6 +1559,11 @@ static int handle_client(struct broker_connection *connection)
             status = errno;
         break;
 
+    case AMIGA_BROKER_RELABEL:
+        if (ace_dos_devices_relabel(path, value) != 0)
+            status = errno;
+        break;
+
     /*
      * The shell claiming its session. From here the session's lifetime is
      * this connection's: it cannot be reclaimed while the connection is

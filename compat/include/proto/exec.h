@@ -6,6 +6,7 @@
 #include <exec/libraries.h>
 
 struct ExecBase;
+struct Message;
 extern struct ExecBase *SysBase;
 
 #ifdef AMIGA_EXEC_COMPAT_ENABLED
@@ -15,6 +16,7 @@ extern struct ExecBase *SysBase;
 struct Library *OpenLibrary(CONST_STRPTR name, ULONG version);
 void CloseLibrary(struct Library *library);
 APTR FindTask(CONST_STRPTR name);
+void ReplyMsg(struct Message *message);
 void Forbid(void);
 void Permit(void);
 ULONG SetSignal(ULONG set_mask, ULONG clear_mask);

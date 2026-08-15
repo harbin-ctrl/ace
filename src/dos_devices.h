@@ -26,4 +26,7 @@ void ace_dos_devices_shutdown(void);
 /* Serialize the current DOS device list for diagnostics and future DOS APIs. */
 int ace_dos_devices_list(char *result, size_t result_size);
 
+/* Change a supported filesystem label and update the live DOS catalog. */
+int ace_dos_devices_relabel(const char *name, const char *label);
+
 #endif

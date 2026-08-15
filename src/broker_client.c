@@ -534,3 +534,11 @@ int native_broker_listdos(char *result, size_t result_size)
     return broker_request(AMIGA_BROKER_LISTDOS, NULL, NULL, 0, result,
                           result_size);
 }
+
+int native_broker_relabel(const char *drive, const char *name)
+{
+    char ignored[1];
+
+    return broker_request(AMIGA_BROKER_RELABEL, drive, name, 0,
+                          ignored, sizeof(ignored));
+}

@@ -11,11 +11,14 @@
 #include <sys/xattr.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <utime.h>
 #include <unistd.h>
 
 #include <dirent.h>
 
 #include <dos/dos.h>
+#include <dos/datetime.h>
 #include <dos/dosextens.h>
 #include <dos/exall.h>
 #include <dos/stdio.h>
@@ -28,6 +31,8 @@
 #include "broker_protocol.h"
 #include "aros_dos_path.h"
 #include "aros_console_editor.h"
+
+struct CommandLineInterface *Cli(void);
 
 static struct Process native_process;
 /* IoErr() is the process's pr_Result2, not a variable beside it. The AROS
@@ -427,6 +432,151 @@ static void native_datestamp_from_unix(time_t when, struct DateStamp *stamp)
     stamp->ds_Tick = (LONG)((seconds_of_day % 60) * 50);
 }
 
+static int native_unix_from_datestamp(const struct DateStamp *stamp,
+                                      time_t *result)
+{
+    int64_t seconds;
+
+    if (!stamp || stamp->ds_Days < 0 || stamp->ds_Minute < 0 ||
+        stamp->ds_Minute >= 24 * 60 || stamp->ds_Tick < 0 ||
+        stamp->ds_Tick >= 60 * 50)
+        return -1;
+    seconds = ((int64_t)stamp->ds_Days + NATIVE_AMIGA_EPOCH_DAYS) * 86400;
+    seconds += (int64_t)stamp->ds_Minute * 60;
+    seconds += stamp->ds_Tick / 50;
+    *result = (time_t)seconds;
+    return (int64_t)*result == seconds ? 0 : -1;
+}
+
+struct DateStamp *DateStamp(struct DateStamp *date)
+{
+    if (date)
+        native_datestamp_from_unix(time(NULL), date);
+    return date;
+}
+
+BOOL SetFileDate(CONST_STRPTR name, const struct DateStamp *date)
+{
+    char resolved[PATH_MAX];
+    struct stat information;
+    struct utimbuf times;
+
+    if (!name || !date) {
+        errno = EINVAL;
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    if (native_unix_from_datestamp(date, &times.modtime) != 0) {
+        errno = EINVAL;
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
+        stat(resolved, &information) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    times.actime = information.st_atime;
+    if (utime(resolved, &times) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    native_ioerr = 0;
+    return DOSTRUE;
+}
+
+BOOL DateToStr(struct DateTime *datetime)
+{
+    static const char *const months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    static const char *const weekdays[] = {
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday"
+    };
+    time_t seconds;
+    struct tm broken_down;
+
+    if (!datetime || native_unix_from_datestamp(&datetime->dat_Stamp,
+                                                &seconds) != 0 ||
+        gmtime_r(&seconds, &broken_down) == NULL)
+        return DOSFALSE;
+    if (datetime->dat_StrDay)
+        strcpy((char *)datetime->dat_StrDay, weekdays[broken_down.tm_wday]);
+    if (datetime->dat_StrDate) {
+        switch (datetime->dat_Format) {
+        case FORMAT_INT:
+            sprintf((char *)datetime->dat_StrDate,
+                    "%02d-%s-%02d", (broken_down.tm_year + 1900) % 100,
+                    months[broken_down.tm_mon], broken_down.tm_mday);
+            break;
+        case FORMAT_USA:
+            sprintf((char *)datetime->dat_StrDate,
+                    "%02d-%02d-%02d", broken_down.tm_mon + 1,
+                    broken_down.tm_mday, (broken_down.tm_year + 1900) % 100);
+            break;
+        case FORMAT_CDN:
+            sprintf((char *)datetime->dat_StrDate,
+                    "%02d-%02d-%02d", broken_down.tm_mday,
+                    broken_down.tm_mon + 1, (broken_down.tm_year + 1900) % 100);
+            break;
+        default:
+            sprintf((char *)datetime->dat_StrDate,
+                    "%02d-%s-%02d", broken_down.tm_mday,
+                    months[broken_down.tm_mon], (broken_down.tm_year + 1900) % 100);
+            break;
+        }
+    }
+    if (datetime->dat_StrTime)
+        sprintf((char *)datetime->dat_StrTime, "%02d:%02d:%02d",
+                broken_down.tm_hour, broken_down.tm_min,
+                (datetime->dat_Stamp.ds_Tick / 50) % 60);
+    return DOSTRUE;
+}
+
+LONG CompareDates(const struct DateStamp *first, const struct DateStamp *second)
+{
+    if (first->ds_Days != second->ds_Days)
+        return first->ds_Days < second->ds_Days ? -1 : 1;
+    if (first->ds_Minute != second->ds_Minute)
+        return first->ds_Minute < second->ds_Minute ? -1 : 1;
+    if (first->ds_Tick != second->ds_Tick)
+        return first->ds_Tick < second->ds_Tick ? -1 : 1;
+    return 0;
+}
+
+BOOL StrToDate(struct DateTime *datetime)
+{
+    struct tm broken_down = { 0 };
+    time_t seconds;
+    char *end;
+    const char *date_format;
+
+    if (!datetime || !datetime->dat_StrDate)
+        return DOSFALSE;
+    date_format = datetime->dat_Format == FORMAT_INT ? "%y-%b-%d" :
+                  datetime->dat_Format == FORMAT_USA ? "%m-%d-%y" :
+                  datetime->dat_Format == FORMAT_CDN ? "%d-%m-%y" :
+                  "%d-%b-%y";
+    end = strptime((const char *)datetime->dat_StrDate, date_format,
+                   &broken_down);
+    if (!end || *end != '\0')
+        return DOSFALSE;
+    if (datetime->dat_StrTime) {
+        end = strptime((const char *)datetime->dat_StrTime, "%H:%M:%S",
+                       &broken_down);
+        if (!end || *end != '\0')
+            return DOSFALSE;
+    }
+    broken_down.tm_isdst = -1;
+    seconds = timegm(&broken_down);
+    if (seconds == (time_t)-1 || seconds < (time_t)0)
+        return DOSFALSE;
+    native_datestamp_from_unix(seconds, &datetime->dat_Stamp);
+    return DOSTRUE;
+}
+
 /* FIBF_{READ,WRITE,EXECUTE,DELETE} are historically inverted: the bit is
    SET to mean the permission is DENIED. A Unix file that is owner-writable
    and owner-executable therefore maps to protection 0 (everything
@@ -621,7 +771,17 @@ APTR FindTask(CONST_STRPTR name)
     (void)name;
     SysBase = &native_exec_base;
     native_refresh_local_vars();
+    /* Copy.c is an older AROS process entry point. It checks pr_CLI directly
+       before it ever calls a DOS routine that would normally initialize the
+       CLI, so make the host process look like the CLI-backed process it is. */
+    if (!native_cli_loaded)
+        (void)Cli();
     return &native_process;
+}
+
+void ReplyMsg(struct Message *message)
+{
+    (void)message;
 }
 
 struct LocalVar *FindVar(CONST_STRPTR name, LONG type)
@@ -730,6 +890,20 @@ APTR AllocVec(ULONG size, ULONG flags)
 APTR AllocMem(ULONG size, ULONG flags)
 {
     return (flags & 1u) ? calloc(1, size) : malloc(size);
+}
+
+STRPTR StrDup(CONST_STRPTR string)
+{
+    return string ? strdup(string) : NULL;
+}
+
+void __sprintf(UBYTE *buffer, const UBYTE *format, ...)
+{
+    va_list arguments;
+
+    va_start(arguments, format);
+    vsprintf((char *)buffer, (const char *)format, arguments);
+    va_end(arguments);
 }
 
 void FreeMem(APTR memory, ULONG size)
@@ -1471,6 +1645,118 @@ LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name)
     return DOSTRUE;
 }
 
+LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
+{
+    char link_path[PATH_MAX];
+    char target_path[PATH_MAX];
+    struct native_lock *source;
+
+    if (!name || native_broker_resolve_path(name, link_path,
+                                             sizeof(link_path)) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    if (soft) {
+        if (native_broker_resolve_path((const char *)destination, target_path,
+                                       sizeof(target_path)) != 0) {
+            set_native_broker_error();
+            return DOSFALSE;
+        }
+        if (symlink(target_path, link_path) != 0) {
+            set_native_broker_error();
+            return DOSFALSE;
+        }
+    } else {
+        source = (struct native_lock *)destination;
+        if (!source || link(source->path, link_path) != 0) {
+            if (!source)
+                errno = EINVAL;
+            set_native_broker_error();
+            return DOSFALSE;
+        }
+    }
+    native_ioerr = 0;
+    return DOSTRUE;
+}
+
+LONG ReadLink(struct MsgPort *port, BPTR handle, CONST_STRPTR name,
+              STRPTR buffer, LONG size)
+{
+    struct native_lock *lock = handle;
+    char path[PATH_MAX];
+    ssize_t length;
+
+    (void)port;
+    if (!lock || !name || !buffer || size <= 0 ||
+        native_broker_resolve_beneath(lock->path, name, path,
+                                      sizeof(path)) != 0) {
+        set_native_broker_error();
+        return -1;
+    }
+    length = readlink(path, buffer, (size_t)size - 1);
+    if (length < 0) {
+        set_native_broker_error();
+        return -1;
+    }
+    if (length >= size) {
+        native_ioerr = ERROR_BUFFER_OVERFLOW;
+        return -2;
+    }
+    buffer[length] = '\0';
+    native_ioerr = 0;
+    return (LONG)length;
+}
+
+BOOL SameDevice(BPTR first_handle, BPTR second_handle)
+{
+    struct native_lock *first = first_handle;
+    struct native_lock *second = second_handle;
+    struct stat first_information;
+    struct stat second_information;
+
+    if (!first || !second || stat(first->path, &first_information) != 0 ||
+        stat(second->path, &second_information) != 0)
+        return DOSFALSE;
+    return first_information.st_dev == second_information.st_dev;
+}
+
+BPTR ParentDir(BPTR handle)
+{
+    struct native_lock *lock = handle;
+    struct native_lock *parent;
+    char path[PATH_MAX];
+    char *slash;
+
+    if (!lock)
+        return BNULL;
+    snprintf(path, sizeof(path), "%s", lock->path);
+    slash = strrchr(path, '/');
+    if (!slash || slash == path)
+        return BNULL;
+    *slash = '\0';
+    parent = calloc(1, sizeof(*parent));
+    if (!parent) {
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return BNULL;
+    }
+    native_init_lock(parent, path, SHARED_LOCK);
+    native_ioerr = 0;
+    return parent;
+}
+
+BOOL IsFileSystem(CONST_STRPTR device_name)
+{
+    if (!device_name || strcasecmp(device_name, "CON:") == 0 ||
+        strcasecmp(device_name, "RAW:") == 0 ||
+        strcasecmp(device_name, "CONSOLE:") == 0 ||
+        strcmp(device_name, "*") == 0) {
+        native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        return DOSFALSE;
+    }
+    native_ioerr = 0;
+    return DOSTRUE;
+}
+
 LONG SameLock(BPTR lock1, BPTR lock2)
 {
     struct native_lock *first = lock1;
@@ -1666,6 +1952,20 @@ static void set_native_broker_error(void)
     case ENOTSUP:     native_ioerr = ERROR_ACTION_NOT_KNOWN; break;
     default:          native_ioerr = (LONG)errno; break;
     }
+}
+
+BOOL Relabel(CONST_STRPTR drive, CONST_STRPTR name)
+{
+    if (!drive || !*drive || !name || !*name) {
+        native_ioerr = ERROR_REQUIRED_ARG_MISSING;
+        return DOSFALSE;
+    }
+    if (native_broker_relabel(drive, name) != 0) {
+        set_native_broker_error();
+        return DOSFALSE;
+    }
+    native_ioerr = 0;
+    return DOSTRUE;
 }
 
 /*

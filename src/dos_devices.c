@@ -60,7 +60,7 @@ static int valid_alias(const char *name)
         unsigned char character = (unsigned char)name[index];
         /* A volume label may contain spaces.  The DOS separator and host
          * path separators may not be part of the alias itself. */
-        if (character < 0x21 || character == ':' || character == '/' ||
+        if (character < 0x20 || character == ':' || character == '/' ||
             character == '\\')
             return 0;
     }
@@ -844,5 +844,81 @@ int ace_dos_devices_list(char *result, size_t result_size)
         }
         used += (size_t)written;
     }
+    return 0;
+}
+
+static const char *label_program(const char *filesystem_type)
+{
+    if (strcasecmp(filesystem_type, "ext2") == 0 ||
+        strcasecmp(filesystem_type, "ext3") == 0 ||
+        strcasecmp(filesystem_type, "ext4") == 0)
+        return "/usr/sbin/e2label";
+    if (strcasecmp(filesystem_type, "vfat") == 0 ||
+        strcasecmp(filesystem_type, "fat") == 0 ||
+        strcasecmp(filesystem_type, "msdos") == 0)
+        return "/usr/sbin/fatlabel";
+    return NULL;
+}
+
+int ace_dos_devices_relabel(const char *name, const char *label)
+{
+    char alias[DEVICE_VALUE_MAX];
+    struct ace_dos_device *match = NULL;
+    const char *program;
+    size_t length;
+    const char *arguments[4];
+
+    if (!name || !label) {
+        errno = EINVAL;
+        return -1;
+    }
+    length = strlen(name);
+    if (length && name[length - 1] == ':')
+        length--;
+    if (!length || length >= sizeof(alias)) {
+        errno = ENOENT;
+        return -1;
+    }
+    memcpy(alias, name, length);
+    alias[length] = '\0';
+    if (!valid_alias(alias) || !valid_alias(label)) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
+        if (!devices[index].in_use ||
+            !device_alias_matches(&devices[index], alias))
+            continue;
+        if (match) {
+            errno = EEXIST;
+            return -1;
+        }
+        match = &devices[index];
+    }
+    if (!match) {
+        errno = ENOENT;
+        return -1;
+    }
+    program = label_program(match->filesystem_type);
+    if (strcasecmp(match->filesystem_type, "tmpfs") == 0) {
+        /* tmpfs has no on-disk volume label. Keep the AmigaDOS operation
+         * useful for ACE's synthetic RAM: volumes by changing their live
+         * broker alias for the lifetime of this broker. */
+        snprintf(match->label, sizeof(match->label), "%s", label);
+        return 0;
+    }
+    if (!program || !match->device_path[0]) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    arguments[0] = program;
+    arguments[1] = match->device_path;
+    arguments[2] = label;
+    arguments[3] = NULL;
+    if (run_quiet(program, arguments) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    snprintf(match->label, sizeof(match->label), "%s", label);
     return 0;
 }

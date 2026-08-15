@@ -174,9 +174,11 @@ so a bare `*` remains a literal pattern character, matching the configured
 AmigaDOS behavior.
 
 The broker owns per-session current directories and Assigns.  Its protocol is
-deliberately small and binary; the DOS shim now has the first read-only host
-filesystem lock/enumeration seam, while richer volume, mount, and device
-semantics remain future work.
+deliberately small and binary; the DOS shim now has host filesystem
+lock/enumeration and volume-label seams. `Relabel` uses `e2label` for ext2--4
+and `fatlabel` for VFAT, while a tmpfs-backed synthetic `RAM:` volume gets a
+live ACE-only label for the lifetime of the broker. Other filesystem types
+return the AmigaDOS "action not known" error.
 
 LNX is the explicit Linux escape hatch. It executes the named Linux program
 directly with execv() and an explicit PATH search, passing the remaining arguments unchanged; it never

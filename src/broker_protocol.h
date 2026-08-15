@@ -90,7 +90,9 @@ enum amiga_broker_operation {
     /* Resolve a relative DOS path beneath a specific host-side assignment
      * target. The AROS DOS dispatcher chooses the target; the broker only
      * performs component mapping and containment checks here. */
-    AMIGA_BROKER_RESOLVE_BENEATH = 19
+    AMIGA_BROKER_RESOLVE_BENEATH = 19,
+    /* Change the filesystem label behind a DOS volume alias. */
+    AMIGA_BROKER_RELABEL = 20
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

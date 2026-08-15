@@ -41,7 +41,6 @@ static inline void AddTail(struct List *list, struct Node *node)
     list->lh_TailPred = node;
 }
 
-
 static inline void Remove(struct Node *node)
 {
     if (node && node->ln_Pred && node->ln_Succ) {
@@ -52,4 +51,33 @@ static inline void Remove(struct Node *node)
     }
 }
 
+static inline struct Node *RemHead(struct List *list)
+{
+    struct Node *node = list->lh_Head;
+
+    if (!node || !node->ln_Succ)
+        return NULL;
+    Remove(node);
+    return node;
+}
+
+static inline void Insert(struct List *list, struct Node *node,
+                           struct Node *pred)
+{
+    struct Node *successor;
+
+    if (!pred) {
+        node->ln_Succ = list->lh_Head;
+        node->ln_Pred = (struct Node *)list;
+        list->lh_Head->ln_Pred = node;
+        list->lh_Head = node;
+        return;
+    }
+    successor = pred->ln_Succ;
+    node->ln_Succ = successor;
+    node->ln_Pred = pred;
+    pred->ln_Succ = node;
+    if (successor)
+        successor->ln_Pred = node;
+}
 #endif

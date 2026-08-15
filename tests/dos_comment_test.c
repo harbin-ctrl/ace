@@ -1,9 +1,8 @@
 /* Reads a file comment back out of the DOS seam.
  *
- * Filenote only writes. Nothing ACE has ported yet displays a comment --
- * List is the AmigaDOS command that does, and it is not here -- so without
- * this the read half of SetComment()/Examine() would ship untested and stay
- * that way until List landed on top of it.
+ * Filenote only writes. List is the AmigaDOS command that displays a comment,
+ * but this harness also checks the DOS seam directly so the metadata path is
+ * tested independently of command formatting.
  *
  * Both paths that fill a FileInfoBlock are driven, because they reach
  * native_fill_fib() from opposite ends: Examine() on a lock over the object

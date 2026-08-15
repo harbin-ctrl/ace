@@ -29,5 +29,6 @@ int native_broker_clone_session(const char *child_session);
 int native_broker_getresult(char *result, size_t result_size);
 int native_broker_setresult(int32_t return_code, int32_t result2);
 int native_broker_listdos(char *result, size_t result_size);
+int native_broker_relabel(const char *drive, const char *name);
 
 #endif

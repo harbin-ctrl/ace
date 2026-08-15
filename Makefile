@@ -31,6 +31,9 @@ ICONDIR ?= $(DATADIR)/icons/hicolor/512x512/apps
 # so both views are true at once and neither is a copy of the other.
 SYSDIR ?= $(DATADIR)/ace
 INSTALL ?= install
+CURL ?= curl
+TAR ?= tar
+SHA256SUM ?= sha256sum
 
 COMPAT := $(CURDIR)/compat/include
 BUILD := $(CURDIR)/build
@@ -74,6 +77,7 @@ AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
 AROS_ENDCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/EndCLI.c
 AROS_NEWCLI_SRC := $(AROS_ROOT)/workbench/c/shellcommands/NewCLI.c
 AROS_ASSIGN_SRC := $(AROS_ROOT)/workbench/c/Assign.c
+AROS_RELABEL_SRC := $(AROS_ROOT)/workbench/c/Relabel.c
 AROS_TYPE_SRC := $(AROS_ROOT)/workbench/c/Type.c
 AROS_RENAME_SRC := $(AROS_ROOT)/workbench/c/Rename.c
 AROS_STACK_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Stack.c
@@ -82,6 +86,59 @@ AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
 AROS_DELETE_SRC := $(AROS_ROOT)/workbench/c/Delete.c
 AROS_PROTECT_SRC := $(AROS_ROOT)/workbench/c/Protect.c
 AROS_FILENOTE_SRC := $(AROS_ROOT)/workbench/c/Filenote.c
+AROS_COPY_SRC := $(AROS_ROOT)/workbench/c/Copy.c
+AROS_LIST_SRC := $(AROS_ROOT)/workbench/c/List.c
+AROS_TOUCH_SRC := $(AROS_ROOT)/workbench/c/Touch.c
+LHA_AROS_VERSION := 1.14i.1
+LHA_AROS_URL := https://github.com/sodero/lha/archive/refs/tags/$(LHA_AROS_VERSION).tar.gz
+LHA_AROS_SHA256 := 6776004c56c5fcbbed746517ecf4882e6170d1e5ee553ef228f0e6ff5e4f304b
+LHA_AROS_ARCHIVE := $(BUILD)/lha-aros-$(LHA_AROS_VERSION).tar.gz
+LHA_AROS_DIR := $(BUILD)/lha-aros-$(LHA_AROS_VERSION)
+LHA_AROS_SOURCE_STAMP := $(LHA_AROS_DIR)/.source-ready
+LHA_AROS_CONFIG := $(CURDIR)/config/lha-aros/config.h
+LHA_AROS_NAMES := append bitio crcio dhuf extract getopt_long header huf indicator \
+                  larc lhadd lharc lhext lhlist maketbl maketree patmatch \
+                  pm2 pm2hist pm2tree shuf slide support_utf8 util
+LHA_AROS_OBJS := $(addprefix $(BUILD)/lha-aros-,$(addsuffix .o,$(LHA_AROS_NAMES)))
+LHA_AROS_INCLUDES := -I$(CURDIR)/config/lha-aros -I$(LHA_AROS_DIR) \
+                     -I$(LHA_AROS_DIR)/src -Isrc \
+                     -I$(CURDIR)/compat/aros-real/include -I$(COMPAT) \
+                     -I$(AROS_ROOT)/arch/all-pc/include \
+                     -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+                     -I$(AROS_ROOT)/compiler/arossupport/include \
+                     -I$(AROS_ROOT)/compiler/include
+LHA_AROS_CFLAGS := -D_AMIGA -D__AROS__ -DEXPAND_WILDCARDS \
+                   -DHAVE_CONFIG_H -D_XOPEN_SOURCE=700 \
+                   -Wno-return-mismatch -Wno-unused-parameter \
+                   -Wno-pointer-sign -Wno-unused-variable \
+                   -Wno-unused-but-set-variable \
+                   -Wno-implicit-function-declaration \
+                   -Wno-int-conversion -Wno-int-to-pointer-cast \
+                   -Wno-sign-compare -Wno-missing-field-initializers \
+                   -Wno-strict-aliasing -Wno-maybe-uninitialized \
+                   -Wno-format -Wno-unused-function \
+                   -Wno-implicit-fallthrough \
+                   -Wno-dangling-pointer \
+                   -Wno-parentheses \
+                   -Wno-stringop-truncation \
+                   -include dos/dos.h -include ace_amiga_posix.h \
+                   -Dfopen=ace_amiga_posix_fopen \
+                   -Dopen=ace_amiga_posix_open \
+                   -Dmkstemp=ace_amiga_posix_mkstemp \
+                   -Dstat=ace_amiga_posix_stat \
+                   -Dlstat=ace_amiga_posix_lstat \
+                   -Daccess=ace_amiga_posix_access \
+                   -Dmkdir=ace_amiga_posix_mkdir \
+                   -Dopendir=ace_amiga_posix_opendir \
+                   -Drename=ace_amiga_posix_rename \
+                   -Dunlink=ace_amiga_posix_unlink \
+                   -Dremove=ace_amiga_posix_remove \
+                   -Drmdir=ace_amiga_posix_rmdir \
+                   -Dchmod=ace_amiga_posix_chmod \
+                   -Dutime=ace_amiga_posix_utime \
+                   -Dutimes=ace_amiga_posix_utimes \
+                   -Dsymlink=ace_amiga_posix_symlink \
+                   -Dreadlink=ace_amiga_posix_readlink
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
                      matchpatternnocase parsepatternnocase \
@@ -189,21 +246,52 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
 # drawer of. C: is the loader's last resort, so a command reachable by name
 # and nothing else has to be in here.
 AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
-                  FailAt Why Prompt MakeDir EndCLI Assign Type Rename Stack Run LNX NewCLI \
-                  If Else EndIf Execute Setenv Unsetenv
+                  FailAt Why Prompt MakeDir Copy List Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
+                  If Else EndIf Execute Setenv Unsetenv LhA
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
 
+lha-fetch: $(LHA_AROS_SOURCE_STAMP)
+
+lha: $(BUILD)/LhA
+
+$(LHA_AROS_ARCHIVE): | $(BUILD)
+	$(CURL) --location --fail --silent --show-error --output "$@" "$(LHA_AROS_URL)"
+	printf '%s  %s\n' "$(LHA_AROS_SHA256)" "$@" | $(SHA256SUM) --check --status -
+
+$(LHA_AROS_SOURCE_STAMP): $(LHA_AROS_ARCHIVE) | $(BUILD)
+	mkdir -p "$(LHA_AROS_DIR)"
+	$(TAR) --extract --gzip --file "$<" --strip-components=1 --directory "$(LHA_AROS_DIR)"
+	touch "$@"
+
 $(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_amiga_posix.h \
+                            src/broker_client.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+# The fetched source path does not exist until the stamp recipe runs, so keep
+# the stamp as the Make prerequisite and name the generated .c file explicitly
+# in the recipe below.
+$(BUILD)/lha-aros-%.o: $(LHA_AROS_SOURCE_STAMP) $(LHA_AROS_CONFIG) \
+                       src/ace_amiga_posix.h | $(BUILD)
+	$(CC) $(CFLAGS) $(LHA_AROS_CFLAGS) $(LHA_AROS_INCLUDES) \
+	    -c $(LHA_AROS_DIR)/src/$*.c -o $@
+
+$(BUILD)/LhA: $(LHA_AROS_OBJS) $(BUILD)/ace-amiga-posix.o \
+             $(BUILD)/dos-runtime.o $(BUILD)/native_dos.o \
+             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+             $(BUILD)/broker_client.o $(AROS_DOSPAT_OBJS)
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/ace-vim-runtime.o: src/ace_vim_runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
@@ -221,6 +309,30 @@ $(BUILD)/native_process.o: src/native_process.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
+
+# Copy predates the AROS_SHn command-entry macros and enters through an
+# AROS process-start function. Its fetched source stays unmodified: expose
+# that function from this translation unit and call it from src/copy_entry.c.
+$(BUILD)/Copy.o: $(AROS_COPY_SRC) compat/include/dos/dosextens.h | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-unused-function -Wno-unused-variable \
+	    -Wno-unused-but-set-variable -Wno-maybe-uninitialized \
+	    -Wno-implicit-function-declaration -Wno-int-conversion \
+	    -Wno-int-to-pointer-cast -Wno-sign-compare \
+	    -I$(COMPAT) -I$(AROS_ROOT)/compiler/include -D__AROS__ -Dstatic= \
+	    -DGetDeviceProc=ace_aros_GetDeviceProc \
+	    -DFreeDeviceProc=ace_aros_FreeDeviceProc \
+	    -include dos/dosextens.h -c $< -o $@
+
+$(BUILD)/copy_entry.o: src/copy_entry.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/List.o: $(AROS_LIST_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-compare-distinct-pointer-types \
+	    -I$(COMPAT) -I$(AROS_ROOT)/compiler/include \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Touch.o: $(AROS_TOUCH_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/native_command_entry.o: src/native_command_entry.c | $(BUILD)
@@ -339,6 +451,16 @@ $(BUILD)/Assign: $(BUILD)/Assign.o $(BUILD)/assign_entry.o \
                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
                  $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
                  $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Relabel.o: $(AROS_RELABEL_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -include ace_dos_path_intern.h \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Relabel: $(BUILD)/Relabel.o $(BUILD)/native_command_entry.o \
+                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+                  $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+                  $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
@@ -556,6 +678,24 @@ $(BUILD)/Prompt.o: $(AROS_PROMPT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/MakeDir: $(BUILD)/makedir.o $(BUILD)/native_command_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Copy: $(BUILD)/Copy.o $(BUILD)/copy_entry.o $(AROS_DOSPAT_OBJS) \
+	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	             $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/List: $(BUILD)/List.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) \
+	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	             $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Touch: $(BUILD)/Touch.o $(BUILD)/native_command_entry.o \
+	              $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	              $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	              $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/EndCLI: $(BUILD)/endcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
@@ -779,9 +919,8 @@ test-graphics: $(BUILD)/graphics-test
 test-console-device-bridge: $(BUILD)/console-device-bridge-test
 	$(BUILD)/console-device-bridge-test
 
-# The comment harness is a test binary rather than a command: nothing ported
-# yet reads a file comment back (List is the AmigaDOS command that displays
-# one), so the read half of the seam has no other consumer to check it.
+# The comment harness is a test binary rather than a command: it checks the
+# metadata path independently of List's command-level formatting.
 $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
                           $(BUILD)/native_dos.o $(BUILD)/native_command.o \
                           $(BUILD)/native_shcommand.o \
@@ -794,4 +933,13 @@ test-system-assigns: all
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
-.PHONY: all clean install install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+test-lha: all
+	sh tests/lha_test.sh
+
+test-file-commands: all
+	sh tests/file_commands_test.sh
+
+test-relabel: all
+	sh tests/relabel_test.sh
+
+.PHONY: all clean install lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
