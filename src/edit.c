@@ -65,6 +65,15 @@
  *     36 character line shows and writes it whole. Trailing blanks are
  *     dropped, and T,R+ does not bring back the ones already read past.
  *
+ *   - The asterisk is what the manual spells as a period: D* deletes to the
+ *     end of the file, I* inserts there, and "D.*" is a D followed by an
+ *     unreadable period.
+ *
+ *   - An error abandons the rest of the command line.
+ *
+ *   - The insert terminator cannot be changed. Eight spellings of Z were
+ *     refused; the terminator is always Z.
+ *
  *   - D takes a count or a range. The manual's "D .*" for deleting to the end
  *     of the file is not a thing: D runs on its own and the period is left
  *     over as "Unknown command - .", which is how an unreadable character is
@@ -250,6 +259,7 @@ struct Edit
     BOOL shown_any;
     BOOL modified;
     BOOL verified;
+    BOOL aborted;
     BOOL trailing;
 
     UBYTE terminator[STRING_SIZE];
@@ -502,8 +512,11 @@ static void ver_newline(struct Edit *edit)
    under the character of the command line the editor had reached, then the
    message.  The pointer is under the last character consumed, so a command
    whose argument was read in full points at the end of that argument. */
+/* Reporting an error also abandons the rest of the command line: D.* runs the
+   D, reports the period, and never looks at the asterisk. */
 static void report(struct Edit *edit, const char *message)
 {
+    edit->aborted = TRUE;
     if (edit->active) {
         LONG column = edit->active->offset + edit->active->position - 1;
         LONG index;
@@ -775,9 +788,10 @@ static struct Line *source_line(struct Edit *edit, struct Source *source)
 /* ------------------------------------------------------------------ */
 /* Global changes, applied to every line as it becomes current. */
 
-static void apply_globals(struct Edit *edit, struct Line *line)
+static LONG apply_globals(struct Edit *edit, struct Line *line)
 {
     struct Global *global;
+    LONG changes = 0;
 
     for (global = edit->globals; global; global = global->next) {
         LONG at = 0;
@@ -792,27 +806,29 @@ static void apply_globals(struct Edit *edit, struct Line *line)
             case 'A':
                 if (!line_insert(edit, line, at + global->find_length,
                                  global->with, global->with_length))
-                    return;
+                    return changes;
                 resume = at + global->find_length + global->with_length;
                 break;
             case 'B':
                 if (!line_insert(edit, line, at, global->with,
                                  global->with_length))
-                    return;
+                    return changes;
                 resume = at + global->with_length + global->find_length;
                 break;
             default:
                 line_delete(line, at, global->find_length);
                 if (!line_insert(edit, line, at, global->with,
                                  global->with_length))
-                    return;
+                    return changes;
                 resume = at + global->with_length;
                 break;
             }
             global->count++;
+            changes++;
             at = resume;
         }
     }
+    return changes;
 }
 
 /* Everything a line goes through on becoming the current line: the line
@@ -1768,6 +1784,12 @@ static void command_delete(struct Edit *edit, struct Parser *parser)
     LONG first;
     LONG last;
 
+    if (parse_peek(parser) == '*') {
+        parser->position++;
+        while (!at_end(edit) && delete_current(edit))
+            ;
+        return;
+    }
     if (!parse_number(parser, &first)) {
         delete_current(edit);
         return;
@@ -1924,9 +1946,9 @@ static void command_global(struct Edit *edit, struct Parser *parser,
         struct Global *saved = edit->globals;
 
         edit->globals = global;
-        apply_globals(edit, edit->current);
+        if (apply_globals(edit, edit->current) > 0)
+            verify_current(edit);
         edit->globals = saved;
-        verify_current(edit);
     }
     /* The original announces a new global as G followed by its number. */
     ver_char(edit, 'G');
@@ -1981,8 +2003,6 @@ static void command_show_globals(struct Edit *edit)
         ver_text(edit, global->enabled ? " matched" : " matched, suspended");
         ver_newline(edit);
     }
-    if (!edit->globals)
-        report(edit, "No global commands");
 }
 
 static void command_show_state(struct Edit *edit)
@@ -2459,7 +2479,8 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
             report(edit, "Unmatched parenthesis");
             return;
         }
-        for (index = 0; index < count && !edit->finished; index++) {
+        for (index = 0; index < count && !edit->finished && !edit->aborted;
+             index++) {
             struct Parser body;
 
             parser_init(&body, parser->text + start, scan - 1 - start,
@@ -2644,23 +2665,25 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         return;
     }
     case CMD_Z: {
-        UBYTE text[STRING_SIZE];
-        LONG length;
+        /* The manual says Z changes the insert terminator, and the original
+           refuses every way of saying so: Z alone wants a context, Z with
+           letters after it is an unknown command, Z with punctuation is a bad
+           qualifier. Eight spellings were tried -- Z END, Z "END", Z .END.,
+           Z/END/, Z'END', Z,END, Z,E, ZEND -- and all of them were refused,
+           so the terminator is always Z. These are the refusals. */
+        LONG character = parse_peek(parser);
 
-        if (parse_string(parser, text, &length)) {
-            memcpy(edit->terminator, text, (size_t)length + 1);
-            edit->terminator_length = length;
-        } else {
-            UBYTE name[NAME_SIZE];
-
-            if (parse_file(parser, name)) {
-                LONG length2 = (LONG)strlen((const char *)name);
-
-                copy_name(edit->terminator, name, length2);
-                edit->terminator_length = length2;
-            } else
-                report(edit, "String needed");
+        if (character < 0 || character == ';') {
+            report(edit, "Null context after Z");
+            return;
         }
+        parser->position++;
+        if (is_letter((UBYTE)character))
+            report(edit, "Unknown command");
+        else if (character == ',' || character == '/' || character == '.')
+            report(edit, "Illegal qualifiers");
+        else
+            report(edit, "Unknown qualifier");
         return;
     }
     case CMD_SHD:
@@ -2807,7 +2830,7 @@ static void execute_commands(struct Edit *edit, struct Parser *parser)
     struct Parser *outer = edit->active;
 
     edit->active = parser;
-    while (!edit->finished) {
+    while (!edit->finished && !edit->aborted) {
         LONG before = parser->position;
 
         if (parse_peek(parser) < 0)
@@ -2834,6 +2857,7 @@ static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
     }
     edit->entry_serial = edit->current ? edit->current->serial : 0;
     edit->modified = FALSE;
+    edit->aborted = FALSE;
     edit->shown_serial = 0;
     edit->numbered_serial = 0;
     edit->shown_any = FALSE;

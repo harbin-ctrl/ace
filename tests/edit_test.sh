@@ -164,8 +164,8 @@ expect_file ten-b.txt B1 B2
 
 # A command file can call another one, and Q returns from it.
 printf 'k1\nk2\n' > "$work/eleven.txt"
-printf 'Z/END/\nR\nreplaced\nEND\nQ\nnot reached\n' > "$work/eleven-inner.cmd"
-printf 'V-\nC .SYS:C/eleven-inner.cmd.\nI*\ntail\nEND\nM*\nW\n' > "$work/eleven.cmd"
+printf 'R\nreplaced\nZ\nQ\nnot reached\n' > "$work/eleven-inner.cmd"
+printf 'V-\nC .SYS:C/eleven-inner.cmd.\nI*\ntail\nZ\nM*\nW\n' > "$work/eleven.cmd"
 edit SYS:C/eleven.txt WITH SYS:C/eleven.cmd > /dev/null ||
     fail 'nested command file failed'
 expect_file eleven.txt replaced k2 tail
@@ -371,6 +371,30 @@ window_delete 'M3;DTB/cat/;?' 'cat cat'
 window_delete 'M3;DFB/cat/;?' 'three '
 window_delete 'M3;DFA/cat/;?' 'three cat'
 window_delete 'M3;PB/cat/;?' 'three cat cat'
+
+# The asterisk is what the manual spells as a period: D* deletes to the end
+# of the file and I* inserts there. An error abandons the rest of the command
+# line, so D.* runs the D and never reaches the asterisk.
+printf 'D*\n?\nSTOP\n' > "$work/star.cmd"
+printf 'Editor\n7*\n\n7*\n\n' > "$test_dir/star.expected"
+transcript star "$test_dir/original6"
+
+printf 'I*\nx\nZ\n?\nSTOP\n' > "$work/append.cmd"
+printf 'Editor\n7*\n\n7*\n\n' > "$test_dir/append.expected"
+transcript append "$test_dir/original6"
+
+# The insert terminator cannot be changed: every spelling is refused, and one
+# error is reported for the line rather than one for each thing left on it.
+printf "Z'END'\nZ,END\nZ,E\nZEND\nSTOP\n" > "$work/term.cmd"
+printf 'Editor\n >\nUnknown qualifier\n >\nIllegal qualifiers\n >\nIllegal qualifiers\n >\nUnknown command\n' \
+    > "$test_dir/term.expected"
+transcript term "$test_dir/original6"
+
+# Creating a global announces it as G<n> and applies it to the line that is
+# current, which is shown only if it changed.
+printf 'GE/cat/CAT/\nGB/dog/X/\nSTOP\n' > "$work/globals.cmd"
+printf 'Editor\nG1\n1.\none CAT\nG2\n' > "$test_dir/globals.expected"
+transcript globals "$test_dir/original6"
 
 # A missing source file is a failure, not an empty edit.
 set +e
