@@ -326,6 +326,29 @@ printf 'Editor\n3.\nthree cat cat\n     >3.\nthree Cat cat\n      >3.\nthree C t
     > "$test_dir/window.expected"
 transcript window "$test_dir/original6"
 
+# The four window deletions, each run on a fresh copy of the file so that
+# nothing carries over between them, and each checked against the original.
+# D,T,A cuts through the first match rather than the last: with "cat" twice
+# in the line, "three cat cat" becomes " cat" and not an empty line.
+window_delete()
+{
+    command=$1
+    expected=$2
+    cp "$test_dir/original6" "$work/cut.txt"
+    printf '%s\nSTOP\n' "$command" > "$work/cut.cmd"
+    edit SYS:C/cut.txt WITH SYS:C/cut.cmd > "$test_dir/cut.out" 2>&1 || true
+    got=$(sed -n '3p' "$test_dir/cut.out")
+    [ "$got" = "$expected" ] ||
+        fail "$command gave [$got] instead of [$expected]"
+}
+
+window_delete 'M3;DTA/three/;?' ' cat cat'
+window_delete 'M3;DTA/cat/;?' ' cat'
+window_delete 'M3;DTB/cat/;?' 'cat cat'
+window_delete 'M3;DFB/cat/;?' 'three '
+window_delete 'M3;DFA/cat/;?' 'three cat'
+window_delete 'M3;PB/cat/;?' 'three cat cat'
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1

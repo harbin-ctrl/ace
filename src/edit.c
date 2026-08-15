@@ -57,6 +57,9 @@
  *     under the first character in it: PR shows no mark, one > puts it in
  *     column 0, two put it in column 1.
  *
+ *   - The window deletions cut to the first match, not the last: D,T,A on a
+ *     line holding "cat" twice leaves the text after the first one.
+ *
  *   - D takes a count or a range. The manual's "D .*" for deleting to the end
  *     of the file is not a thing: D runs on its own and the period is left
  *     over as "Unknown command - .", which is how an unreadable character is
