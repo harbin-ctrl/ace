@@ -77,6 +77,11 @@
  *   - W, Q and STOP all exit 0. Throwing an edit away is what STOP was asked
  *     to do, not a failure.
  *
+ *   - S,H,D shows three saved values, each introduced by the delimiter it
+ *     would be typed with: a ' cmd the manual never describes, the search
+ *     string, and the input terminator. S,G is not a command at all, though
+ *     E,G and C,G are, so a suspended global has some other spelling.
+ *
  *   - The insert terminator cannot be changed. Eight spellings of Z were
  *     refused; the terminator is always Z.
  *
@@ -351,7 +356,6 @@ static const struct CommandName command_names[] =
     { "TL",     CMD_TL },
     { "SB",     CMD_SB },
     { "SA",     CMD_SA },
-    { "SG",     CMD_SG },
     { "CL",     CMD_CL },
     { "CG",     CMD_CG },
     { "CF",     CMD_CF },
@@ -1370,6 +1374,7 @@ static enum Command parse_command(struct Parser *parser)
 static void report_unknown(struct Edit *edit, struct Parser *parser)
 {
     LONG at = parser->position;
+    LONG letters = 0;
 
     if (at < parser->length && !is_letter(parser->text[at])) {
         UBYTE message[32];
@@ -1380,6 +1385,13 @@ static void report_unknown(struct Edit *edit, struct Parser *parser)
         parser->position++;
         report(edit, (const char *)message);
         return;
+    }
+    /* A name is taken two letters deep before being given up on, so the
+       pointer lands under the second letter of SG or of "inserted". */
+    while (letters < 2 && parser->position < parser->length &&
+           is_letter(parser->text[parser->position])) {
+        parser->position++;
+        letters++;
     }
     report(edit, "Unknown command");
 }
@@ -2013,19 +2025,23 @@ static void command_show_globals(struct Edit *edit)
     }
 }
 
+/* S,H,D shows three saved values, each introduced by the delimiter it would
+   be typed with, and "unset" where there is nothing. The first is the ' cmd,
+   a saved command the manual never describes and nothing here ever sets, so
+   it is always unset -- the line is here because the original prints it. */
 static void command_show_state(struct Edit *edit)
 {
-    ver_text(edit, "search string: ");
-    ver_bytes(edit, edit->search, edit->search_length);
+    ver_text(edit, "' cmd: unset");
     ver_newline(edit);
-    ver_text(edit, "last command:  ");
-    ver_bytes(edit, edit->last_command, edit->last_command_length);
+    ver_text(edit, "Search string: ");
+    if (edit->search_length > 0) {
+        ver_char(edit, '/');
+        ver_bytes(edit, edit->search, edit->search_length);
+    } else
+        ver_text(edit, "unset");
     ver_newline(edit);
-    ver_text(edit, "terminator:    ");
+    ver_text(edit, "Input terminator: /");
     ver_bytes(edit, edit->terminator, edit->terminator_length);
-    ver_newline(edit);
-    ver_text(edit, "trailing spaces are ");
-    ver_text(edit, edit->trailing ? "kept" : "dropped");
     ver_newline(edit);
 }
 

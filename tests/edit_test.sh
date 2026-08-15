@@ -416,6 +416,16 @@ env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
     "$repo_dir/build/Type" T:EDIT-BACKUP > /dev/null ||
     fail 'Q kept no backup'
 
+# S,H,D's three saved values, each introduced by the delimiter it would be
+# typed with. S,G is not a command at all -- a name is read two letters deep
+# before being given up on, which is where the pointer lands. $ lowercases
+# the character at the window and steps past it, as % capitalises it.
+printf 'SHD\nF/dog/\nSHD\nSG\nSG 1\nM3;PA/three /;%%;?;<;$;?\nSTOP\n' \
+    > "$work/saved.cmd"
+printf "Editor\n' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntwo dog\n' cmd: unset\nSearch string: /dog\nInput terminator: /Z\n >\nUnknown command\n >\nUnknown command\n3.\nthree Cat cat\n      >3.\nthree cat cat\n      >" \
+    > "$test_dir/saved.expected"
+transcript saved "$test_dir/original6"
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1
