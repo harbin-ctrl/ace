@@ -5,17 +5,18 @@ is and how it is built; this file is only for outstanding items, with enough
 evidence attached that whoever picks one up does not have to rediscover why it
 matters.
 
-## Port List
-
-`List` is the AmigaDOS command that displays a file's comment, and the first
-consumer of the `fib_Comment` read path `Filenote` added -- until it lands,
-`tests/dos_comment_test.c` is the only thing that reads a comment back. It is
-1223 lines of AROS and wants `DateStamp()`, `DateToStr()` and `StrToDate()`,
-which ACE does not have yet; `Copy` wants the date calls too.
-
 ## Also open
 
 Smaller items found alongside the above, in rough order of value.
+
+**Make the Wayward beep transport backward-compatible.** ACE's new `Beep`
+command validates only that `LABWC_PID` names a labwc process, then sends
+`SIGUSR1`. New onscreen labwc installs a private handler, but Raspberry Pi's
+older labwc does not, so the default `SIGUSR1` action terminates the
+compositor. Replace the signal-only transport with a capability-safe channel,
+preferably a per-instance Unix `SOCK_SEQPACKET` endpoint under
+`XDG_RUNTIME_DIR`; an old compositor then has no endpoint and the command
+quietly does nothing.
 
 **Seven `rom/dos` functions ACE still hand-writes.** `AddPart`, `PathPart`,
 `FilePart`, `SplitName`, `SetVar`, `GetVar`, `DeleteVar` all exist as AROS
@@ -42,22 +43,6 @@ all. It was invisible for as long as only five commands used the real parser.
 **No regression test for that hang.** Nothing in the suite would catch a
 reintroduction. `tests/filesystem_translation_test.sh` is the natural home: a
 `CD A:` case asserting a prompt non-zero exit under a timeout.
-
-**Port `Path`, and give the CLI a command directory list.** `loadCommand()`
-searches `cli_CommandDir` between the current directory and `C:`, and ACE
-leaves that list empty, so `C:` is doing the whole job alone. `Path` is on the
-wrong side of the line for an unmodified port -- it writes the shell's own
-CLI, which an ACE command cannot do from its own process, the same wall
-`Execute` hit -- so it wants the list kept in the broker and rebuilt into
-`cli_CommandDir` by `Cli()`, plus an ACE-written `Path` that edits it there.
-Until then `Path` is missing from the Startup-Sequence, which is the one line
-of AROS's own that ACE cannot yet run.
-
-**Port `Copy`.** The Startup-Sequence's `Copy ENVARC: ENV: ALL` is done by the
-broker instead, which is the right effect at the wrong layer -- it is a script
-step, and ACE's script layer cannot express it. `Copy` is 2673 lines of AROS
-and wants `DateStamp()`, `DateToStr()` and `StrToDate()`, the same three
-`List` is waiting on.
 
 **Nothing owns `LIBS:`, `DEVS:`, `L:` or `FONTS:`.** They are established, and
 they all resolve to `SYS:` because ACE has nothing to put in them -- which is

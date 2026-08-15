@@ -146,8 +146,7 @@ static LONG executeLine(ShellState *ss, STRPTR command_args)
     int status;
     const char *command = ss->command + 2;
 
-    if (!strcasecmp(command, "ENDCLI") || !strcasecmp(command, "ENDSHELL") ||
-        !strcasecmp(command, "QUIT")) {
+    if (!strcasecmp(command, "ENDCLI") || !strcasecmp(command, "ENDSHELL")) {
         shell_done = 1;
         return 0;
     }

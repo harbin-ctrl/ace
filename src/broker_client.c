@@ -542,3 +542,17 @@ int native_broker_relabel(const char *drive, const char *name)
     return broker_request(AMIGA_BROKER_RELABEL, drive, name, 0,
                           ignored, sizeof(ignored));
 }
+
+int native_broker_listpath(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_LISTPATH, NULL, NULL, 0,
+                          result, result_size);
+}
+
+int native_broker_path(const char *path, uint32_t flags)
+{
+    char ignored[1];
+
+    return broker_request(AMIGA_BROKER_PATH, path, NULL, flags,
+                          ignored, sizeof(ignored));
+}

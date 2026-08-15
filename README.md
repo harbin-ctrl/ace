@@ -149,6 +149,13 @@ attributes at all -- VFAT has none, and ACE mounts VFAT -- reports
 `ERROR_ACTION_NOT_KNOWN`, AmigaDOS's own answer for a handler that does not
 implement an action.
 
+`List` reads the same comment through the normal `FileInfoBlock` path. Use
+`LFORMAT "%C"` when the comment is the field you want to display:
+
+```sh
+./build/List WORK:notes.txt LFORMAT "%C"
+```
+
 AmigaDOS's delete bit has no separate Unix permission -- on Unix it is the
 containing directory that governs removal -- so it shares the owner write bit
 with the write bit, which is the pairing ACE's `Examine()` already used in the
@@ -427,9 +434,23 @@ carries on.
 `C:` is not a search path. AROS's `loadCommand()` looks in the current
 directory, then the list the `Path` command sets, and only then in the `C:`
 multiassign, which is why `C:` finds everything without being consulted first.
-ACE runs that unmodified, so a command is found the way an Amiga finds one --
-and a failed `Open()` of a data file now reports a missing file rather than
+ACE runs that search unmodified. `Path` stores its directory locks in the
+broker-backed shell session, so a command running in a separate process can
+change the list and the next shell lookup sees it:
+
+```text
+Path SYS:Tools ADD
+Path SYS:Tools HEAD
+Path SYS:Tools REMOVE
+Path SHOW
+```
+
+A failed `Open()` of a data file still reports a missing file rather than
 quietly finding a command with that name.
+
+`Which` uses the same current-directory, `Path`, and `C:` search order and
+prints the location of a matching executable. It returns a warning without
+printing an error when no match exists, as AmigaDOS does.
 
 `If`, `Else` and `EndIf` are AROS's own, unmodified. They skip a block by
 reading the script and consuming the lines themselves, and an ACE command is a
@@ -440,6 +461,13 @@ shell's input from inside the command, which no separate process can do:
 running inside a script it writes the new script into the caller's own input
 ahead of the unread part, and typed at a prompt it runs the script in a nested
 shell in the same session, so directory changes and variables still persist.
+
+`Skip`, `Lab` and `EndSkip` provide the older AmigaDOS script-jump form. `Skip`
+searches the shared script input for a matching `Lab`, or for the next
+`EndSkip` when no label is given. `Quit` is the script-only command from
+AmigaDOS: it stops the current script and returns zero or the optional `RC`
+value. It is deliberately not an interactive synonym for `EndCLI` or
+`EndShell`.
 
 Global variables are files, as they are on an Amiga: one per variable in
 `ENV:`, and in `ENVARC:` too when `Setenv` is given `SAVE`. `Type ENV:Editor`

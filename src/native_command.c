@@ -96,6 +96,9 @@ static int named_through_command_drawer(const char *name)
 int native_command_path(const char *name, char *result, size_t result_size)
 {
     char resolved[PATH_MAX];
+    char paths[AMIGA_BROKER_MAX_PAYLOAD];
+    char *save = NULL;
+    char *path;
     char executable[PATH_MAX];
     char *slash;
     ssize_t length;
@@ -122,10 +125,18 @@ int native_command_path(const char *name, char *result, size_t result_size)
         return -1;
     }
     if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0 &&
-        companion_command(resolved) && executable_file(resolved) &&
-        strlen(resolved) < result_size) {
+        executable_file(resolved) && strlen(resolved) < result_size) {
         strcpy(result, resolved);
         return 0;
+    }
+
+    if (native_broker_listpath(paths, sizeof(paths)) == 0) {
+        path = strtok_r(paths, "\n", &save);
+        while (path) {
+            if (directory_command(path, name, result, result_size) == 0)
+                return 0;
+            path = strtok_r(NULL, "\n", &save);
+        }
     }
 
     length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);

@@ -30,5 +30,7 @@ int native_broker_getresult(char *result, size_t result_size);
 int native_broker_setresult(int32_t return_code, int32_t result2);
 int native_broker_listdos(char *result, size_t result_size);
 int native_broker_relabel(const char *drive, const char *name);
+int native_broker_listpath(char *result, size_t result_size);
+int native_broker_path(const char *path, uint32_t flags);
 
 #endif

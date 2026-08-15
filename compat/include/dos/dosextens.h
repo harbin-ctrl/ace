@@ -82,6 +82,7 @@ struct FileHandle {
 };
 
 #define CMD_INTERNAL (-2)
+#define CMD_DISABLED (-999)
 
 struct CommandLineInterface {
     LONG cli_Result2;

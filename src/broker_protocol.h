@@ -92,7 +92,11 @@ enum amiga_broker_operation {
      * performs component mapping and containment checks here. */
     AMIGA_BROKER_RESOLVE_BENEATH = 19,
     /* Change the filesystem label behind a DOS volume alias. */
-    AMIGA_BROKER_RELABEL = 20
+    AMIGA_BROKER_RELABEL = 20,
+    /* The shell's PATH list, kept in the broker because commands are
+     * separate processes from the shell that owns the CLI. */
+    AMIGA_BROKER_LISTPATH = 21,
+    AMIGA_BROKER_PATH = 22
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
@@ -101,6 +105,11 @@ enum amiga_broker_operation {
 #define AMIGA_BROKER_ASSIGN_PATH         0x0008u
 #define AMIGA_BROKER_ASSIGN_DEFER        0x0010u
 #define AMIGA_BROKER_ASSIGN_REMOVE_ITEM  0x0020u
+
+#define AMIGA_BROKER_PATH_ADD       0x0001u
+#define AMIGA_BROKER_PATH_PREPEND   0x0002u
+#define AMIGA_BROKER_PATH_REMOVE    0x0004u
+#define AMIGA_BROKER_PATH_RESET     0x0008u
 
 #define AMIGA_BROKER_VAR_LOCAL  0x0001u
 #define AMIGA_BROKER_VAR_GLOBAL 0x0002u

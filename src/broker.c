@@ -25,6 +25,7 @@
 #define MAX_SESSIONS 64
 #define MAX_ASSIGNS  64
 #define MAX_ASSIGN_TARGETS 16
+#define MAX_COMMAND_PATHS 32
 #define MAX_VARS     128
 #define MAX_NAME     64
 #define MAX_VALUE    4096
@@ -83,6 +84,8 @@ struct broker_session {
     uint32_t anchors;
     char id[128];
     char cwd[PATH_MAX];
+    char command_paths[MAX_COMMAND_PATHS][PATH_MAX];
+    size_t command_path_count;
     struct assign_entry assigns[MAX_ASSIGNS];
     struct variable_entry local_vars[MAX_VARS];
     int32_t return_code;
@@ -1315,6 +1318,47 @@ static int resolve_path(struct broker_session *session, const char *input,
     return normalize_amiga_path(session, relative, result, result_size);
 }
 
+static int canonical_command_path(struct broker_session *session,
+                                  const char *input, char *result,
+                                  size_t result_size)
+{
+    char resolved[PATH_MAX];
+    struct stat information;
+    char canonical[PATH_MAX];
+
+    if (!input || !*input ||
+        resolve_path(session, input, resolved, sizeof(resolved), false) != 0)
+        return -1;
+    if (stat(resolved, &information) != 0)
+        return -1;
+    if (!S_ISDIR(information.st_mode)) {
+        errno = ENOTDIR;
+        return -1;
+    }
+    if (realpath(resolved, canonical)) {
+        if (strlen(canonical) >= sizeof(resolved)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        strcpy(resolved, canonical);
+    }
+    if (strlen(resolved) >= result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    strcpy(result, resolved);
+    return 0;
+}
+
+static size_t find_command_path(struct broker_session *session,
+                                const char *path)
+{
+    for (size_t index = 0; index < session->command_path_count; index++)
+        if (strcmp(session->command_paths[index], path) == 0)
+            return index;
+    return session->command_path_count;
+}
+
 static int send_response(int fd, int status, const char *payload)
 {
     struct amiga_broker_response response;
@@ -1564,6 +1608,68 @@ static int handle_client(struct broker_connection *connection)
             status = errno;
         break;
 
+    case AMIGA_BROKER_LISTPATH: {
+        size_t used = 0;
+
+        result[0] = '\0';
+        for (size_t index = 0; index < session->command_path_count; index++) {
+            int written = snprintf(result + used, sizeof(result) - used,
+                                   "%s\n", session->command_paths[index]);
+
+            if (written < 0 || (size_t)written >= sizeof(result) - used) {
+                status = ENOSPC;
+                break;
+            }
+            used += (size_t)written;
+        }
+        break;
+    }
+
+    case AMIGA_BROKER_PATH: {
+        char canonical[PATH_MAX];
+
+        if (request.flags & AMIGA_BROKER_PATH_RESET)
+            session->command_path_count = 0;
+        if (!path[0])
+            break;
+        if (canonical_command_path(session, path, canonical,
+                                   sizeof(canonical)) != 0) {
+            status = errno;
+            break;
+        }
+        if (request.flags & AMIGA_BROKER_PATH_REMOVE) {
+            size_t index = find_command_path(session, canonical);
+
+            if (index == session->command_path_count) {
+                status = ENOENT;
+                break;
+            }
+            memmove(&session->command_paths[index],
+                    &session->command_paths[index + 1],
+                    (session->command_path_count - index - 1) *
+                    sizeof(session->command_paths[0]));
+            session->command_path_count--;
+        } else if (find_command_path(session, canonical) ==
+                   session->command_path_count) {
+            if (session->command_path_count >= MAX_COMMAND_PATHS) {
+                status = ENOSPC;
+                break;
+            }
+            if (request.flags & AMIGA_BROKER_PATH_PREPEND) {
+                memmove(&session->command_paths[1],
+                        &session->command_paths[0],
+                        session->command_path_count *
+                        sizeof(session->command_paths[0]));
+                strcpy(session->command_paths[0], canonical);
+            } else {
+                strcpy(session->command_paths[session->command_path_count],
+                       canonical);
+            }
+            session->command_path_count++;
+        }
+        break;
+    }
+
     /*
      * The shell claiming its session. From here the session's lifetime is
      * this connection's: it cannot be reclaimed while the connection is
@@ -1695,6 +1801,9 @@ static int handle_client(struct broker_connection *connection)
                 status = ENOSPC;
             else {
                 strcpy(child->cwd, session->cwd);
+                memcpy(child->command_paths, session->command_paths,
+                       sizeof(child->command_paths));
+                child->command_path_count = session->command_path_count;
                 memcpy(child->assigns, session->assigns, sizeof(child->assigns));
                 memcpy(child->local_vars, session->local_vars,
                        sizeof(child->local_vars));
@@ -1742,7 +1851,8 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_GETCLI ||
                request.operation == AMIGA_BROKER_GETRESULT ||
                request.operation == AMIGA_BROKER_LISTDOS ||
-               request.operation == AMIGA_BROKER_LISTASSIGNS) {
+               request.operation == AMIGA_BROKER_LISTASSIGNS ||
+               request.operation == AMIGA_BROKER_LISTPATH) {
         if (send_response(fd, 0, result) != 0)
             outcome = -1;
     } else {

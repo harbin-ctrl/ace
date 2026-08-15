@@ -21,10 +21,10 @@
 ; point at the host's own per-user runtime directory instead: tmpfs, private,
 ; and emptied between boots, which is what RAM: was being asked for.
 ;
-; Not here, because ACE has not ported the commands yet: Path (the search list
-; before C:), Copy (ENVARC: to ENV:, which the broker does instead), and the
-; Mount/Automount/SetPatch/IPrefs half of a real boot, none of which ACE has
-; anything to mount, patch or prefer.
+; Not here: the Mount/Automount/SetPatch/IPrefs half of a real boot, none of
+; which ACE has anything to mount, patch or prefer. Copy's ENVARC: to ENV:
+; step is performed by the broker during boot, and Path is available to the
+; scripts that need to extend command lookup.
 
 FailAt 21
 

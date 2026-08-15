@@ -307,8 +307,7 @@ int main(int argc, char **argv)
         if (!line[0])
             continue;
         if (strcasecmp(line, "ENDCLI") == 0 ||
-            strcasecmp(line, "ENDSHELL") == 0 ||
-            strcasecmp(line, "QUIT") == 0)
+            strcasecmp(line, "ENDSHELL") == 0)
             break;
 
         expanded = expand_alias(line, 0);

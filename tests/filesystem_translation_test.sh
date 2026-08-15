@@ -292,8 +292,8 @@ esac
 # check is the round trip rather than the xattr, because reading the attribute
 # back directly would prove only that setxattr ran: what has to hold is that
 # Examine() and ExNext() put the comment in a FileInfoBlock, which is where
-# every AmigaDOS caller looks for it. build/dos-comment-test is the reader,
-# since no ported command displays a comment yet.
+# every AmigaDOS caller looks for it. The command-level check below then proves
+# that List's %C formatter sees the same metadata.
 note_file_name=$(control name "$note_file")
 note_dir_name=$(control name "$note_dir")
 note_output=$(printf 'Filenote %s "kept on the inode"\nEndCLI\n' \
@@ -319,6 +319,13 @@ note_exnext=$(env ACE_BROKER_SOCKET="$socket_path" \
 case "$note_exnext" in
     *"kept on the inode"*) ;;
     *) echo "ExNext did not read the comment back: $note_exnext" >&2; exit 1 ;;
+esac
+note_list=$(printf 'List %s LFORMAT "%%C"\nEndCLI\n' "$note_file_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=shell-list-comment-test "$repo_dir/build/ace-user-shell")
+case "$note_list" in
+    *"kept on the inode"*) ;;
+    *) echo "List did not print the comment: $note_list" >&2; exit 1 ;;
 esac
 
 # An empty comment is how AmigaDOS clears one, and a comment past the 79

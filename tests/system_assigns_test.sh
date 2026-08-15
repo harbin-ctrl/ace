@@ -15,6 +15,9 @@ test_dir=$(mktemp -d "$repo_dir/.ace-assign-test.XXXXXX")
 sys_dir="$test_dir/sys"
 runtime_dir="$test_dir/run"
 socket_path="$test_dir/broker.sock"
+path_first="$sys_dir/S/path-first"
+path_second="$sys_dir/S/path-second"
+path_head="$sys_dir/S/path-head"
 broker_pid=""
 
 cleanup()
@@ -60,7 +63,10 @@ $1
 # A SYS: laid out the way the installer lays one out: the commands are
 # elsewhere and SYS:C holds links to them. L:, LIBS:, DEVS: and FONTS: are
 # deliberately absent, so the fallback in AddBootAssign() has something to do.
-mkdir -p "$sys_dir/C" "$sys_dir/S" "$sys_dir/Prefs/Env-Archive" "$runtime_dir"
+mkdir -p "$sys_dir/C" "$sys_dir/S" "$sys_dir/Prefs/Env-Archive" \
+         "$path_first" "$path_second" "$runtime_dir"
+mkdir "$path_head"
+cp "$repo_dir/build/Echo" "$path_first/PathEcho"
 for command in "$repo_dir"/build/*; do
     [ -f "$command" ] && [ -x "$command" ] || continue
     ln -s "$command" "$sys_dir/C/$(basename "$command")"
@@ -145,6 +151,29 @@ output=$(run_shell 'Type Echo
 expect_missing "$output" "found-through-c" "Type should not open a command as a file"
 expect_contains "$output" "can't open" "Type should report a missing file"
 
+# --- Path ------------------------------------------------------------------
+# Path changes the shell's command directory list, which has to survive the
+# separate process that runs Path and be visible to the next LoadCommand().
+output=$(run_shell 'Path SYS:S/path-first SYS:S/path-second RESET SHOW
+PathEcho before-head
+Which PathEcho
+Path SYS:S/path-head HEAD SHOW
+PathEcho after-head
+Path SYS:S/path-second REMOVE SHOW
+Path SYS:S/path-first REMOVE SHOW
+PathEcho after-remove
+Path SYS:S/path-first RESET SHOW
+PathEcho after-reset
+')
+expect_contains "$output" "before-head" "Path did not search its added directory"
+expect_contains "$output" "path-first/PathEcho" "Which did not search the Path directory"
+expect_contains "$output" "after-head" "Path HEAD did not preserve command lookup"
+expect_contains "$output" "after-reset" "Path RESET did not rebuild command lookup"
+expect_contains "$output" "path-first" "Path SHOW did not print its directory"
+expect_contains "$output" "path-second" "Path SHOW did not print all directories"
+expect_contains "$output" "path-head" "Path HEAD did not print its directory"
+expect_missing "$output" "after-remove" "Path REMOVE left a removed command directory active"
+
 # --- If, Else and EndIf ----------------------------------------------------
 cat > "$sys_dir/S/ACE-Startup" <<'EOF'
 Echo A-start
@@ -174,6 +203,50 @@ done
 for skipped in C-not-taken D-not-taken F-not-taken G-not-taken H-not-taken; do
     expect_missing "$output" "$skipped" "$skipped should have been skipped"
 done
+
+# --- Skip, Lab, EndSkip and Quit -------------------------------------------
+# Skip and Lab are script-control commands. EndSkip is their unlabeled
+# counterpart: it is the point at which a skipped block resumes.
+cat > "$sys_dir/S/Startup-Sequence" <<'EOF'
+Echo skip-before
+Skip Labeled
+Echo skip-body
+Lab Labeled
+Echo skip-after
+Skip
+Echo endskip-body
+EndSkip
+Echo endskip-after
+EOF
+rm -f "$sys_dir/S/Shell-Startup" "$sys_dir/S/ACE-Startup"
+output=$(run_shell '')
+expect_contains "$output" "skip-before" "Skip script did not start"
+expect_missing "$output" "skip-body" "Skip did not jump to Lab"
+expect_contains "$output" "skip-after" "Skip did not resume at Lab"
+expect_missing "$output" "endskip-body" "Skip without a label did not skip to EndSkip"
+expect_contains "$output" "endskip-after" "EndSkip did not resume the script"
+
+# Quit is script-only and returns its optional code while preventing the
+# remainder of the script from running.
+cat > "$sys_dir/S/Startup-Sequence" <<'EOF'
+Echo quit-before
+Quit 5
+Echo quit-after
+EOF
+output=$(run_shell 'Echo after-quit RC=$RC
+')
+expect_contains "$output" "quit-before" "Quit script did not start"
+expect_missing "$output" "quit-after" "Quit did not end the script"
+expect_contains "$output" "after-quit" "Quit did not return to the shell"
+expect_contains "$output" "RC 5" "Quit did not preserve its return code"
+
+# QUIT is not an interactive shell alias. It is the script command above;
+# typing it at a prompt must fail and leave the shell available.
+interactive_input=$(printf 'Quit\nEcho after-interactive-quit\n')
+rm -f "$sys_dir/S/Startup-Sequence"
+output=$(run_shell "$interactive_input")
+expect_contains "$output" "after-interactive-quit" \
+    "interactive Quit should not terminate the shell"
 
 # --- the startup scripts, in order -----------------------------------------
 printf 'Echo one-startup-sequence\n' > "$sys_dir/S/Startup-Sequence"

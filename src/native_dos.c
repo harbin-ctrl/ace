@@ -1223,6 +1223,63 @@ BPTR native_lock_host_path(const char *path)
     return lock;
 }
 
+static void free_cli_path_list(BPTR head)
+{
+    BPTR *entry = (BPTR *)BADDR(head);
+
+    while (entry) {
+        BPTR *next = (BPTR *)BADDR(entry[0]);
+
+        UnLock(entry[1]);
+        free(entry);
+        entry = next;
+    }
+}
+
+/* The real Shell walks cli_CommandDir after its current directory. ACE's
+ * commands are separate processes, so Path cannot mutate the shell's local
+ * list directly. Rebuild the small local view from the broker each time Cli()
+ * is requested; the locks remain ordinary native locks, exactly what the
+ * unmodified Shell expects to pass to CurrentDir(). */
+static void refresh_cli_path_list(void)
+{
+    char paths[AMIGA_BROKER_MAX_PAYLOAD];
+    char *save = NULL;
+    char *path;
+    BPTR head = BNULL;
+    BPTR *tail = NULL;
+
+    if (native_broker_listpath(paths, sizeof(paths)) != 0)
+        return;
+    path = strtok_r(paths, "\n", &save);
+    while (path) {
+        BPTR *entry;
+        BPTR lock;
+
+        if (!*path) {
+            path = strtok_r(NULL, "\n", &save);
+            continue;
+        }
+        lock = native_lock_host_path(path);
+        entry = lock ? calloc(2, sizeof(*entry)) : NULL;
+        if (!entry) {
+            if (lock)
+                UnLock(lock);
+            free_cli_path_list(head);
+            return;
+        }
+        entry[1] = lock;
+        if (tail)
+            tail[0] = MKBADDR(entry);
+        else
+            head = MKBADDR(entry);
+        tail = entry;
+        path = strtok_r(NULL, "\n", &save);
+    }
+    free_cli_path_list(native_cli.cli_CommandDir);
+    native_cli.cli_CommandDir = head;
+}
+
 LONG UnLock(BPTR handle)
 {
     struct native_lock *lock = handle;
@@ -2023,6 +2080,23 @@ FILE *native_cli_script_input(void)
     return native_script_input;
 }
 
+/* The AmigaDOS Quit command advances cli_CurrentInput beyond the end of the
+ * script. ACE's script input is a shared FILE description, so seeking this
+ * stream to EOF gives the parent shell the same observable result after the
+ * command process exits. */
+int native_quit_script(void)
+{
+    FILE *script = native_cli_script_input();
+
+    if (!script || fseeko(script, 0, SEEK_END) != 0) {
+        native_ioerr = errno ? errno : ERROR_OBJECT_NOT_FOUND;
+        return -1;
+    }
+    clearerr(script);
+    native_ioerr = 0;
+    return 0;
+}
+
 
 /* Streams and process links, which do not depend on the broker at all. */
 static void cli_attach_streams(void)
@@ -2133,6 +2207,7 @@ struct CommandLineInterface *Cli(void)
     }
     native_cli.cli_SetName = native_cli_set_name;
     cli_attach_streams();
+    refresh_cli_path_list();
     return &native_cli;
 }
 
