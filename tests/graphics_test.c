@@ -332,11 +332,10 @@ static void test_scroll_raster_direction(void)
     free(frame);
 }
 
-/* The cursor must redraw the remembered glyph with remembered colours. A
- * pixel-wise pen-index inversion would turn the solid background/foreground
- * into unrelated palette entries while leaving antialiased edge pixels on a
- * different colour ramp. With RGB XOR, every cursor pixel is the complement
- * of the corresponding ordinary glyph pixel. */
+/* The cursor redraws the remembered glyph after XORing its Amiga pen
+ * numbers. The glyph still gets Cairo antialiasing, but every solid cursor
+ * background pixel must come from the paired palette pen, never from an RGB
+ * complement that the theme did not define. */
 static void test_cursor_redraws_glyph(void)
 {
     Object *unit;
@@ -345,7 +344,9 @@ static void test_cursor_redraws_glyph(void)
     uint8_t *cursor;
     int cell_width = g_font->tf_XSize;
     int cell_height = g_font->tf_YSize;
-    int x, y, channel;
+    int x, y;
+    int background_pixels = 0;
+    int foreground_pixels = 0;
 
     SetDrMd(g_rp, JAM2);
     SetAPen(g_rp, 0);
@@ -364,23 +365,39 @@ static void test_cursor_redraws_glyph(void)
                 normal + ((size_t)y * WIN_WIDTH + x) * 3;
             const uint8_t *cursor_pixel =
                 cursor + ((size_t)y * WIN_WIDTH + x) * 3;
+            int coverage = ((int)normal_pixel[0] - 0x10) * 255 / 0xe0;
 
-            for (channel = 0; channel < 3; channel++)
-                assert(abs((int)cursor_pixel[channel] +
-                           (int)normal_pixel[channel] - 255) <= 1);
+            if (coverage < 0)
+                coverage = 0;
+            if (coverage > 255)
+                coverage = 255;
+            /* Normal pen 1 over pen 0 is grayscale, so its resulting value
+               exposes Cairo's glyph coverage. The cursor must reuse that
+               coverage between pen 6 (magenta) and pen 7 (cyan): no pixel
+               may retain the old gray blending background. */
+            assert(abs((int)cursor_pixel[0] - coverage) <= 2);
+            assert(abs((int)cursor_pixel[1] - (255 - coverage)) <= 2);
+            assert(abs((int)cursor_pixel[2] - 255) <= 1);
+            if (pixel_matches(normal, x, y, test_palette[0])) {
+                assert(pixel_matches(cursor, x, y, test_palette[7]));
+                background_pixels++;
+            }
+            if (pixel_matches(normal, x, y, test_palette[1])) {
+                assert(pixel_matches(cursor, x, y, test_palette[6]));
+                foreground_pixels++;
+            }
         }
     }
+    assert(background_pixels != 0);
+    assert(foreground_pixels != 0);
 
     Console_UnRenderCursor(unit);
     free(cursor);
     cursor = read_frame();
     for (y = 0; y < cell_height; y++)
         for (x = 0; x < cell_width; x++)
-            for (channel = 0; channel < 3; channel++)
-                assert(abs((int)cursor[((size_t)y * WIN_WIDTH + x) * 3 +
-                                       channel] -
-                           (int)normal[((size_t)y * WIN_WIDTH + x) * 3 +
-                                       channel]) <= 1);
+            assert(memcmp(cursor + ((size_t)y * WIN_WIDTH + x) * 3,
+                          normal + ((size_t)y * WIN_WIDTH + x) * 3, 3) == 0);
     free(cursor);
     free(normal);
     DisposeObject(unit);
@@ -396,7 +413,8 @@ static void test_cursor_redraws_transparent_glyph(void)
     uint8_t *cursor;
     int cell_width = g_font->tf_XSize;
     int cell_height = g_font->tf_YSize;
-    int x, y, channel;
+    int x, y;
+    int background_pixels = 0;
 
     SetDrMd(g_rp, JAM2);
     SetAPen(g_rp, 0);
@@ -417,17 +435,91 @@ static void test_cursor_redraws_transparent_glyph(void)
                 normal + ((size_t)y * WIN_WIDTH + x) * 3;
             const uint8_t *cursor_pixel =
                 cursor + ((size_t)y * WIN_WIDTH + x) * 3;
+            int coverage = ((int)normal_pixel[0] - 0x10) * 255 / 0xe0;
 
-            for (channel = 0; channel < 3; channel++)
-                assert(abs((int)cursor_pixel[channel] +
-                           (int)normal_pixel[channel] - 255) <= 1);
+            if (coverage < 0)
+                coverage = 0;
+            if (coverage > 255)
+                coverage = 255;
+            assert(abs((int)cursor_pixel[0] - coverage) <= 2);
+            assert(abs((int)cursor_pixel[1] - (255 - coverage)) <= 2);
+            assert(abs((int)cursor_pixel[2] - 255) <= 1);
+            if (pixel_matches(normal, x, y, test_palette[0])) {
+                assert(pixel_matches(cursor, x, y, test_palette[7]));
+                background_pixels++;
+            }
         }
     }
+    assert(background_pixels != 0);
     free(cursor);
     free(normal);
 
     /* Leave the shared rastport in its ordinary drawing mode. */
     RectFill(g_rp, 0, 0, cell_width - 1, cell_height - 1);
+    SetDrMd(g_rp, JAM2);
+}
+
+/* Vim and similar full-screen programs scroll the text-grid rectangle, not
+ * necessarily the window's fractional pixel margins. The logical cells must
+ * follow that partial ScrollRaster(), or the cursor falls back to XORing
+ * already-antialiased pixels and the old-background fringe returns. */
+static void test_cursor_after_partial_cell_scroll(void)
+{
+    uint8_t *normal;
+    uint8_t *cursor;
+    int cell_width = g_font->tf_XSize;
+    int cell_height = g_font->tf_YSize;
+    int x, y;
+    int edge_pixels = 0;
+
+    SetDrMd(g_rp, JAM2);
+    SetAPen(g_rp, 0);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, WIN_HEIGHT - 1);
+    SetAPen(g_rp, 1);
+    SetBPen(g_rp, 0);
+    Move(g_rp, cell_width, g_font->tf_Baseline);
+    Text(g_rp, (CONST_STRPTR)"A", 1);
+
+    /* Move columns 1..2 left into 0..1, leaving column 2 blank. This box is
+       deliberately smaller than the raster, as a terminal scroll region is. */
+    SetAPen(g_rp, 0);
+    ScrollRaster(g_rp, (WORD)cell_width, 0, 0, 0,
+                 cell_width * 3 - 1, cell_height - 1);
+    normal = read_frame();
+
+    SetDrMd(g_rp, COMPLEMENT);
+    RectFill(g_rp, 0, 0, cell_width - 1, cell_height - 1);
+    cursor = read_frame();
+    for (y = 0; y < cell_height; y++) {
+        for (x = 0; x < cell_width; x++) {
+            const uint8_t *normal_pixel =
+                normal + ((size_t)y * WIN_WIDTH + x) * 3;
+            const uint8_t *cursor_pixel =
+                cursor + ((size_t)y * WIN_WIDTH + x) * 3;
+            int coverage = ((int)normal_pixel[0] - 0x10) * 255 / 0xe0;
+
+            if (coverage < 0)
+                coverage = 0;
+            if (coverage > 255)
+                coverage = 255;
+            assert(abs((int)cursor_pixel[0] - coverage) <= 2);
+            assert(abs((int)cursor_pixel[1] - (255 - coverage)) <= 2);
+            assert(abs((int)cursor_pixel[2] - 255) <= 1);
+            if (coverage > 0 && coverage < 255)
+                edge_pixels++;
+        }
+    }
+    assert(edge_pixels != 0);
+
+    RectFill(g_rp, 0, 0, cell_width - 1, cell_height - 1);
+    free(cursor);
+    cursor = read_frame();
+    for (y = 0; y < cell_height; y++)
+        for (x = 0; x < cell_width; x++)
+            assert(memcmp(cursor + ((size_t)y * WIN_WIDTH + x) * 3,
+                          normal + ((size_t)y * WIN_WIDTH + x) * 3, 3) == 0);
+    free(cursor);
+    free(normal);
     SetDrMd(g_rp, JAM2);
 }
 
@@ -513,6 +605,7 @@ int main(void)
 
     test_cursor_redraws_glyph();
     test_cursor_redraws_transparent_glyph();
+    test_cursor_after_partial_cell_scroll();
     test_scroll_raster_direction();
     test_complement_inverts_pen_index();
 

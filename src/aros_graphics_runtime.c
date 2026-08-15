@@ -75,8 +75,11 @@ struct ace_gfx_cell {
     UBYTE algo_style;
     UBYTE opaque;
     UBYTE valid;
-    uint32_t foreground;
-    uint32_t background;
+    /* These are Amiga pen numbers, not resolved RGB values. Complement on
+       the original bitplanes was a pen-index XOR; retaining that operation
+       is what keeps the cursor inside the active eight-colour palette. */
+    UBYTE foreground_pen;
+    UBYTE background_pen;
 };
 
 /*
@@ -583,20 +586,20 @@ static struct ace_gfx_cell *cell_at(struct ace_gfx_rp_private *priv,
     return &priv->cells[(size_t)row * priv->cell_columns + column];
 }
 
-static void cell_set_blank(struct ace_gfx_cell *cell, uint32_t background,
-                           uint32_t foreground, UBYTE algo_style)
+static void cell_set_blank(struct ace_gfx_cell *cell, UBYTE background_pen,
+                           UBYTE foreground_pen, UBYTE algo_style)
 {
     cell->character = ' ';
     cell->algo_style = algo_style;
     cell->opaque = 1;
     cell->valid = 1;
-    cell->foreground = foreground;
-    cell->background = background;
+    cell->foreground_pen = foreground_pen;
+    cell->background_pen = background_pen;
 }
 
 static int cell_cache_resize(struct ace_gfx_rp_private *priv, int width,
                              int height, int cell_width, int cell_height,
-                             uint32_t foreground, uint32_t background)
+                             UBYTE foreground_pen, UBYTE background_pen)
 {
     struct ace_gfx_cell *cells;
     int columns;
@@ -615,7 +618,7 @@ static int cell_cache_resize(struct ace_gfx_rp_private *priv, int width,
     for (row = 0; row < rows; row++)
         for (column = 0; column < columns; column++)
             cell_set_blank(&cells[(size_t)row * columns + column],
-                           background, foreground, FS_NORMAL);
+                           background_pen, foreground_pen, FS_NORMAL);
 
     if (priv->cells) {
         int copy_columns = priv->cell_columns < columns
@@ -642,7 +645,7 @@ static int cell_cache_resize(struct ace_gfx_rp_private *priv, int width,
 
 static void cell_record(struct ace_gfx_rp_private *priv, int column, int row,
                         UBYTE character, UBYTE algo_style, UBYTE opaque,
-                        uint32_t foreground, uint32_t background)
+                        UBYTE foreground_pen, UBYTE background_pen)
 {
     struct ace_gfx_cell *cell = cell_at(priv, column, row);
 
@@ -652,13 +655,13 @@ static void cell_record(struct ace_gfx_rp_private *priv, int column, int row,
        already in this cell, so retaining it would make a later cursor
        redraw invent a background that was never displayed. */
     if (!opaque && cell->valid)
-        background = cell->background;
+        background_pen = cell->background_pen;
     cell->character = character;
     cell->algo_style = algo_style;
     cell->opaque = opaque;
     cell->valid = 1;
-    cell->foreground = foreground;
-    cell->background = background;
+    cell->foreground_pen = foreground_pen;
+    cell->background_pen = background_pen;
     if (priv->cursor_inverted && priv->cursor_column == column &&
         priv->cursor_row == row)
         priv->cursor_inverted = 0;
@@ -696,7 +699,7 @@ static void cell_invalidate_box(struct ace_gfx_rp_private *priv, int x0,
 }
 
 static void cell_fill_box(struct ace_gfx_rp_private *priv, int x0, int y0,
-                          int x1, int y1, uint32_t background,
+                          int x1, int y1, UBYTE background_pen,
                           UBYTE algo_style)
 {
     int first_column;
@@ -718,61 +721,74 @@ static void cell_fill_box(struct ace_gfx_rp_private *priv, int x0, int y0,
             struct ace_gfx_cell *cell = cell_at(priv, column, row);
 
             if (cell)
-                cell_set_blank(cell, background, cell->foreground,
+                cell_set_blank(cell, background_pen, cell->foreground_pen,
                                algo_style);
         }
     }
 }
 
-static void cell_scroll(struct ace_gfx_rp_private *priv, int dy,
-                        uint32_t background, UBYTE algo_style)
+/* Mirror a cell-aligned ScrollRaster() in the logical buffer. Console
+ * applications commonly scroll a text-grid rectangle that excludes the
+ * window's fractional right/bottom margins, so requiring the box to equal
+ * the entire pixel surface would discard perfectly recoverable cell state. */
+static int cell_scroll_box(struct ace_gfx_rp_private *priv, int dx, int dy,
+                           int x0, int y0, int x1, int y1,
+                           UBYTE background_pen, UBYTE algo_style)
 {
-    struct ace_gfx_cell *blank;
-    int shift;
+    struct ace_gfx_cell *saved;
+    int first_column;
+    int first_row;
+    int columns;
+    int rows;
+    int shift_columns;
+    int shift_rows;
     int row;
+    int column;
 
-    if (!priv->cells || priv->cell_height <= 0 ||
-        dy % priv->cell_height != 0)
-        return;
+    if (!priv->cells || priv->cell_width <= 0 || priv->cell_height <= 0 ||
+        x0 % priv->cell_width != 0 || y0 % priv->cell_height != 0 ||
+        (x1 + 1) % priv->cell_width != 0 ||
+        (y1 + 1) % priv->cell_height != 0 ||
+        dx % priv->cell_width != 0 || dy % priv->cell_height != 0)
+        return -1;
+    first_column = x0 / priv->cell_width;
+    first_row = y0 / priv->cell_height;
+    columns = (x1 + 1) / priv->cell_width - first_column;
+    rows = (y1 + 1) / priv->cell_height - first_row;
+    if (columns <= 0 || rows <= 0 ||
+        first_column < 0 || first_row < 0 ||
+        first_column + columns > priv->cell_columns ||
+        first_row + rows > priv->cell_rows)
+        return -1;
+
+    saved = malloc((size_t)columns * rows * sizeof(*saved));
+    if (!saved)
+        return -1;
+    for (row = 0; row < rows; row++)
+        memcpy(&saved[(size_t)row * columns],
+               cell_at(priv, first_column, first_row + row),
+               (size_t)columns * sizeof(*saved));
+
     priv->cursor_inverted = 0;
-    shift = dy / priv->cell_height;
-    if (shift == 0 || shift >= priv->cell_rows || shift <= -priv->cell_rows) {
-        for (row = 0; row < priv->cell_rows; row++)
-            for (int column = 0; column < priv->cell_columns; column++)
-                cell_set_blank(cell_at(priv, column, row), background,
-                               pen_rgb(priv, 1), algo_style);
-        return;
+    shift_columns = dx / priv->cell_width;
+    shift_rows = dy / priv->cell_height;
+    for (row = 0; row < rows; row++) {
+        for (column = 0; column < columns; column++) {
+            int source_column = column + shift_columns;
+            int source_row = row + shift_rows;
+            struct ace_gfx_cell *destination =
+                cell_at(priv, first_column + column, first_row + row);
+
+            if (source_column >= 0 && source_column < columns &&
+                source_row >= 0 && source_row < rows)
+                *destination = saved[(size_t)source_row * columns +
+                                     source_column];
+            else
+                cell_set_blank(destination, background_pen, 1, algo_style);
+        }
     }
-
-    blank = calloc((size_t)priv->cell_columns * abs(shift), sizeof(*blank));
-    if (!blank) {
-        for (row = 0; row < priv->cell_rows; row++)
-            for (int column = 0; column < priv->cell_columns; column++)
-                cell_at(priv, column, row)->valid = 0;
-        return;
-    }
-    for (row = 0; row < abs(shift); row++)
-        for (int column = 0; column < priv->cell_columns; column++)
-            cell_set_blank(&blank[(size_t)row * priv->cell_columns + column],
-                           background, pen_rgb(priv, 1), algo_style);
-
-    if (shift > 0) {
-        size_t rows = (size_t)(priv->cell_rows - shift);
-
-        memmove(priv->cells,
-                &priv->cells[(size_t)shift * priv->cell_columns],
-                rows * priv->cell_columns * sizeof(*priv->cells));
-        memcpy(&priv->cells[rows * priv->cell_columns], blank,
-               (size_t)shift * priv->cell_columns * sizeof(*blank));
-    } else {
-        size_t rows = (size_t)(priv->cell_rows + shift);
-
-        memmove(&priv->cells[(size_t)(-shift) * priv->cell_columns],
-                priv->cells, rows * priv->cell_columns * sizeof(*priv->cells));
-        memcpy(priv->cells, blank,
-               (size_t)(-shift) * priv->cell_columns * sizeof(*blank));
-    }
-    free(blank);
+    free(saved);
+    return 0;
 }
 
 static uint32_t *row_ptr(struct ace_gfx_rp_private *priv, int y)
@@ -991,8 +1007,7 @@ struct RastPort *ace_gfx_create_rastport(int width, int height,
     rp->RP_Extra = priv;
 
     if (cell_cache_resize(priv, width, height, font->tf_XSize,
-                          font->tf_YSize, pen_rgb(priv, rp->FgPen),
-                          pen_rgb(priv, rp->BgPen)) != 0) {
+                          font->tf_YSize, rp->FgPen, rp->BgPen) != 0) {
         cairo_destroy(priv->cr);
         cairo_surface_destroy(priv->surface);
         free(priv);
@@ -1081,8 +1096,7 @@ int ace_gfx_resize_rastport(struct RastPort *rp, int width, int height)
         rp->BitMap->BytesPerRow = (UWORD)((width + 15) & ~15) / 8;
         rp->BitMap->Rows = (UWORD)height;
         if (cell_cache_resize(priv, width, height, rp->Font->tf_XSize,
-                              rp->Font->tf_YSize, pen_rgb(priv, rp->FgPen),
-                              pen_rgb(priv, rp->BgPen)) != 0)
+                              rp->Font->tf_YSize, rp->FgPen, rp->BgPen) != 0)
             return -1;
         return 0;
     }
@@ -1114,8 +1128,7 @@ int ace_gfx_resize_rastport(struct RastPort *rp, int width, int height)
     rp->BitMap->BytesPerRow = (UWORD)((width + 15) & ~15) / 8;
     rp->BitMap->Rows = (UWORD)height;
     if (cell_cache_resize(priv, width, height, rp->Font->tf_XSize,
-                          rp->Font->tf_YSize, pen_rgb(priv, rp->FgPen),
-                          pen_rgb(priv, rp->BgPen)) != 0)
+                          rp->Font->tf_YSize, rp->FgPen, rp->BgPen) != 0)
         return -1;
     return 0;
 }
@@ -1281,7 +1294,7 @@ static uint32_t xor_rgb(uint32_t rgb)
  * pens; it deliberately never XORs antialiased pixels. */
 static void render_cell(struct ace_gfx_rp_private *priv, struct TextFont *font,
                         int column, int row, const struct ace_gfx_cell *cell,
-                        uint32_t foreground, uint32_t background)
+                        UBYTE foreground_pen, UBYTE background_pen)
 {
     struct ace_gfx_font_private *font_private;
     cairo_glyph_t glyph;
@@ -1304,7 +1317,7 @@ static void render_cell(struct ace_gfx_rp_private *priv, struct TextFont *font,
     fill_rect_raw(priv, x, top,
                   x + priv->cell_width - 1,
                   top + priv->cell_height - 1,
-                  0xff000000u | background);
+                  pen_pixel(priv, background_pen));
     cairo_surface_mark_dirty_rectangle(priv->surface, x,
                                        priv->origin_y + top,
                                        priv->cell_width,
@@ -1313,7 +1326,7 @@ static void render_cell(struct ace_gfx_rp_private *priv, struct TextFont *font,
     cairo_save(priv->cr);
     cairo_rectangle(priv->cr, x, top, priv->cell_width, priv->cell_height);
     cairo_clip(priv->cr);
-    rgb_components(foreground, &r, &g, &b);
+    rgb_components(pen_rgb(priv, foreground_pen), &r, &g, &b);
     cairo_set_source_rgb(priv->cr, r, g, b);
     cairo_set_scaled_font(priv->cr, font_private->scaled[style]);
     if (cell->character >= ACE_GFX_GLYPH_LO &&
@@ -1338,7 +1351,8 @@ static void render_cell(struct ace_gfx_rp_private *priv, struct TextFont *font,
  * one character cell. ACE cannot invert the resolved surface pixels because
  * cairo antialiasing has already mixed foreground and background into them.
  * When the rectangle is that cursor-shaped operation and the cell's logical
- * contents are known, redraw the character with both stored colours XORed.
+ * contents are known, redraw the character with both stored pen indices
+ * XORed, then look those pens up in the active palette.
  * Generic COMPLEMENT rectangles retain the pixel fallback because they have
  * no logical character to redraw.
  */
@@ -1364,10 +1378,10 @@ static void apply_complement(struct RastPort *rp, int x0, int y0, int x1,
         if (cell && cell->valid) {
             render_cell(priv, rp->Font, x0 / priv->cell_width,
                         y0 / priv->cell_height, cell,
-                        was_inverted ? cell->foreground
-                                     : xor_rgb(cell->foreground),
-                        was_inverted ? cell->background
-                                     : xor_rgb(cell->background));
+                        was_inverted ? cell->foreground_pen
+                                     : cell->foreground_pen ^ ACE_GFX_PEN_MASK,
+                        was_inverted ? cell->background_pen
+                                     : cell->background_pen ^ ACE_GFX_PEN_MASK);
             priv->cursor_column = x0 / priv->cell_width;
             priv->cursor_row = y0 / priv->cell_height;
             priv->cursor_inverted = !was_inverted;
@@ -1421,7 +1435,7 @@ void RectFill(struct RastPort *rp, WORD xMin, WORD yMin, WORD xMax, WORD yMax)
         apply_complement(rp, x0, y0, x1, y1);
     else {
         fill_rect_raw(priv, x0, y0, x1, y1, pen_pixel(priv, rp->FgPen));
-        cell_fill_box(priv, x0, y0, x1, y1, pen_rgb(priv, rp->FgPen),
+        cell_fill_box(priv, x0, y0, x1, y1, rp->FgPen,
                       rp->AlgoStyle);
     }
     raw_end(priv, x0, y0, x1, y1);
@@ -1482,15 +1496,12 @@ static int scroll_by_origin(struct ace_gfx_rp_private *priv, int dy,
 
 static void update_cells_after_scroll(struct ace_gfx_rp_private *priv, int dx,
                                       int dy, int x0, int y0, int x1, int y1,
-                                      uint32_t background, UBYTE algo_style)
+                                      UBYTE background_pen, UBYTE algo_style)
 {
-    if (dx == 0 && x0 == 0 && y0 == 0 && x1 == priv->width - 1 &&
-        y1 == priv->height - 1 && priv->cell_height > 0 &&
-        dy % priv->cell_height == 0) {
-        cell_scroll(priv, dy, background, algo_style);
+    if (cell_scroll_box(priv, dx, dy, x0, y0, x1, y1,
+                        background_pen, algo_style) == 0)
         return;
-    }
-    cell_invalidate_box(priv, 0, 0, priv->width - 1, priv->height - 1);
+    cell_invalidate_box(priv, x0, y0, x1, y1);
 }
 
 void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
@@ -1528,7 +1539,7 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
     if (dx == 0 && dy > 0 && dy < priv->height && x0 == 0 && y0 == 0 &&
         scroll_by_origin(priv, dy, x1, y1, fill)) {
         update_cells_after_scroll(priv, dx, dy, x0, y0, x1, y1,
-                                  fill & 0x00ffffffu, rp->AlgoStyle);
+                                  rp->FgPen, rp->AlgoStyle);
         return;
     }
 
@@ -1537,7 +1548,7 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
         fill_rect_raw(priv, x0, y0, x1, y1, fill);
         raw_end(priv, x0, y0, x1, y1);
         update_cells_after_scroll(priv, dx, dy, x0, y0, x1, y1,
-                                  fill & 0x00ffffffu, rp->AlgoStyle);
+                                  rp->FgPen, rp->AlgoStyle);
         return;
     }
 
@@ -1574,7 +1585,7 @@ void ScrollRaster(struct RastPort *rp, WORD dx, WORD dy, WORD xMin, WORD yMin,
 
     raw_end(priv, x0, y0, x1, y1);
     update_cells_after_scroll(priv, dx, dy, x0, y0, x1, y1,
-                              fill & 0x00ffffffu, rp->AlgoStyle);
+                              rp->FgPen, rp->AlgoStyle);
 }
 
 /*
@@ -1695,7 +1706,7 @@ void Text(struct RastPort *rp, CONST_STRPTR string, ULONG count)
         if (x % cell_w == 0 && top % cell_h == 0)
             cell_record(priv, x / cell_w, top / cell_h, code,
                         rp->AlgoStyle, (UBYTE)opaque,
-                        pen_rgb(priv, fg_pen), pen_rgb(priv, bg_pen));
+                        (UBYTE)fg_pen, (UBYTE)bg_pen);
     }
     damage_add(priv, pen_x, top, pen_x + run_w - 1, top + cell_h - 1);
     rp->cp_x = (WORD)(pen_x + (int)count * cell_w);
