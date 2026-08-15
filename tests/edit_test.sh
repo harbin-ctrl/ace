@@ -504,6 +504,25 @@ printf 'M3;SB/cat/;?\n?\nSTOP\n' > "$work/split.cmd"
 printf 'Editor\n3.\nthree \n+++.\ncat cat\n+++.\ncat cat\n' > "$test_dir/split.expected"
 transcript split "$test_dir/original6"
 
+# Qualified strings, which The AmigaDOS Manual's quick reference defines and
+# the chapter this was first written from does not: B pins the match to the
+# start, L takes the last match, U ignores case, E pins it to the end of the
+# line, and anything else is an unknown qualifier.
+printf 'M3;E B/three/THREE/;?\nM3;EL/cat/LAST/;?\nM1;EU/CAT/x/;?\nM3;E E/cat/END/;?\nF Q/x/\nSTOP\n' \
+    > "$work/qualified.cmd"
+printf 'Editor\n3.\nTHREE cat cat\n3.\nTHREE cat LAST\n1.\none x\n              >\nNo match\n3.\nTHREE cat LAST\n  >\nUnknown qualifier\n' \
+    > "$test_dir/qualified.expected"
+transcript qualified "$test_dir/original6"
+
+# Inserting takes its material from a file when one is named, which is what
+# the manual's "I2000 .XYZ." does.
+printf 'X1\nX2\n' > "$work/piece.txt"
+cp "$test_dir/original6" "$work/insfile.txt"
+printf 'V-\nI3 .SYS:C/piece.txt.\nM*\nW\n' > "$work/insfile.cmd"
+edit SYS:C/insfile.txt WITH SYS:C/insfile.cmd > /dev/null ||
+    fail 'inserting a file failed'
+expect_file insfile.txt 'one cat' 'two dog' X1 X2 'three cat cat' four five six
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1

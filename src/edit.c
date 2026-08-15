@@ -123,10 +123,24 @@
  *     first occurrence only. The original does change every occurrence in
  *     each line a global sees.
  *
- * The string qualifiers the manual mentions for the split and global commands
- * are not implemented, because the excerpt this was written from never
- * defines them; a qualifier is reported as an unknown command rather than
- * quietly ignored.
+ * The string qualifiers the chapter this was written from mentions but never
+ * defines are defined in The AmigaDOS Manual's own EDIT quick reference,
+ * which also documents several commands the chapter leaves out entirely:
+ *
+ *   qs  A string or a qualified string with delimiters. There are five
+ *       qualifiers: B (beginning), E (ending), L (last), P (precisely), and
+ *       U (upper case). For instance the qualified string "B/any string/"
+ *       matches "any string" if it occurs at the beginning of a line. The
+ *       qualified string U/x/ will match either upper or lowercase "x".
+ *
+ * B, E, L and U are implemented. P is accepted and does nothing, because
+ * "precisely" is not explained anywhere and guessing at it would be worse
+ * than leaving it inert.
+ *
+ * The same reference is where D,G comes from -- it lists D,G to disable a
+ * global and has no S,G at all, which is what the program does -- along with
+ * ' to repeat the previous A, B or E command, H to set a halt line, M+ and M-
+ * to reach the ends of the buffer, and the file-taking forms of I and R.
  */
 
 #include <exec/types.h>
@@ -167,6 +181,15 @@ enum {
 #define READ_BUFFER       512
 #define VERIFY_BUFFER     256
 #define COMMAND_DEPTH     8
+
+/* The qualifiers a string can be given: B/any string/ matches only at the
+   beginning, U/x/ matches either case. The manual this was first written
+   from never defines them; The AmigaDOS Manual's own quick reference does. */
+#define QUAL_BEGIN        1
+#define QUAL_END          2
+#define QUAL_LAST         4
+#define QUAL_PRECISE      8
+#define QUAL_UPPER        16
 
 /* One line of the file.  Non-original lines -- inserted, or made by
    splitting -- have number 0 and verify as ++++ the way the manual's T,L
@@ -228,6 +251,7 @@ struct Global
     UBYTE type;
     BOOL enabled;
     LONG count;
+    LONG qualifiers;
     UBYTE find[STRING_SIZE];
     LONG find_length;
     UBYTE with[STRING_SIZE];
@@ -292,6 +316,7 @@ struct Edit
     LONG terminator_length;
     UBYTE search[STRING_SIZE];
     LONG search_length;
+    LONG search_qualifiers;
     UBYTE last_command[COMMAND_SIZE];
     LONG last_command_length;
     /* The ' cmd: the last change command typed, kept so that ' can run it
@@ -653,17 +678,42 @@ static void line_delete(struct Line *line, LONG at, LONG count)
     line->text[line->length] = '\0';
 }
 
-static LONG line_find(const struct Line *line, LONG from, const UBYTE *text,
-                      LONG length)
+static BOOL text_at(const struct Line *line, LONG at, const UBYTE *text,
+                    LONG length, LONG qualifiers)
 {
     LONG index;
 
+    if (!(qualifiers & QUAL_UPPER))
+        return memcmp(line->text + at, text, (size_t)length) == 0;
+    for (index = 0; index < length; index++)
+        if (upper_case(line->text[at + index]) != upper_case(text[index]))
+            return FALSE;
+    return TRUE;
+}
+
+/* Finds a qualified string.  B pins the match to the start of the window, E
+   to the end of the line, L takes the last match rather than the first, and
+   U ignores case. */
+static LONG line_find(const struct Line *line, LONG from, const UBYTE *text,
+                      LONG length, LONG qualifiers)
+{
+    LONG index;
+    LONG found = -1;
+
     if (length <= 0 || from < 0)
         return -1;
-    for (index = from; index + length <= line->length; index++)
-        if (memcmp(line->text + index, text, (size_t)length) == 0)
+    for (index = from; index + length <= line->length; index++) {
+        if (!text_at(line, index, text, length, qualifiers))
+            continue;
+        if ((qualifiers & QUAL_BEGIN) && index != from)
+            break;
+        if ((qualifiers & QUAL_END) && index + length != line->length)
+            continue;
+        if (!(qualifiers & QUAL_LAST))
             return index;
-    return -1;
+        found = index;
+    }
+    return found;
 }
 
 /* ------------------------------------------------------------------ */
@@ -831,7 +881,8 @@ static LONG apply_globals(struct Edit *edit, struct Line *line)
         if (!global->enabled)
             continue;
         while ((at = line_find(line, at, global->find,
-                               global->find_length)) >= 0) {
+                               global->find_length,
+                               global->qualifiers)) >= 0) {
             LONG resume;
 
             switch (global->type) {
@@ -1243,6 +1294,34 @@ static BOOL read_delimited(struct Parser *parser, UBYTE delimiter,
     return closed;
 }
 
+static BOOL parse_qualifiers(struct Edit *edit, struct Parser *parser,
+                             LONG *qualifiers)
+{
+    LONG flags = 0;
+    BOOL bad = FALSE;
+
+    *qualifiers = 0;
+    parse_blanks(parser);
+    while (parser->position < parser->length &&
+           is_letter(parser->text[parser->position])) {
+        switch (upper_case(parser->text[parser->position])) {
+        case 'B': flags |= QUAL_BEGIN; break;
+        case 'E': flags |= QUAL_END; break;
+        case 'L': flags |= QUAL_LAST; break;
+        case 'P': flags |= QUAL_PRECISE; break;
+        case 'U': flags |= QUAL_UPPER; break;
+        default:  bad = TRUE; break;
+        }
+        parser->position++;
+    }
+    if (bad) {
+        report(edit, "Unknown qualifier");
+        return FALSE;
+    }
+    *qualifiers = flags;
+    return TRUE;
+}
+
 /* A string argument is bracketed by a delimiter character of the caller's
    choosing -- a slash by convention, a period for file names, because a
    slash is part of a path.  Two strings for one command share the delimiter
@@ -1512,6 +1591,43 @@ static void push_command_file(struct Edit *edit, const UBYTE *name)
 
 /* ------------------------------------------------------------------ */
 /* Insertion. */
+
+/* Inserts the contents of a file before the current line. */
+static void insert_file(struct Edit *edit, const UBYTE *name)
+{
+    struct Reader reader;
+    BPTR handle = Open((CONST_STRPTR)name, MODE_OLDFILE);
+    LONG character;
+
+    if (!handle) {
+        report_name(edit, "Can't open", name);
+        return;
+    }
+    reader_init(&reader, handle);
+    for (;;) {
+        struct Line *line = line_alloc(edit);
+
+        if (!line) {
+            report(edit, "Out of memory");
+            break;
+        }
+        character = reader_char(&reader);
+        if (character < 0) {
+            line_free(edit, line);
+            break;
+        }
+        while (character >= 0 && character != '\n') {
+            line->text[line->length++] = (UBYTE)character;
+            if (line->length == edit->capacity)
+                break;
+            character = reader_char(&reader);
+        }
+        line->text[line->length] = '\0';
+        line->processed = TRUE;
+        queue_push(edit, line);
+    }
+    Close(handle);
+}
 
 static void insert_lines(struct Edit *edit)
 {
@@ -1834,6 +1950,16 @@ static void command_move(struct Edit *edit, struct Parser *parser)
     if (character == '*') {
         parser->position++;
         move_to_end(edit);
+    } else if (character == '+') {
+        /* The highest line still in the buffer: forward over everything a P
+           moved back across, and no further. */
+        parser->position++;
+        while (edit->ahead && next_line(edit))
+            ;
+    } else if (character == '-') {
+        parser->position++;
+        while (edit->queue_count > 0 && previous_line(edit))
+            ;
     } else if (parse_number(parser, &number))
         move_to_number(edit, number);
     else {
@@ -1874,15 +2000,20 @@ static void command_delete_found(struct Edit *edit, struct Parser *parser)
 {
     UBYTE text[STRING_SIZE];
     LONG length;
+    LONG qualifiers;
 
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (parse_string(parser, text, &length)) {
         memcpy(edit->search, text, (size_t)length + 1);
         edit->search_length = length;
+        edit->search_qualifiers = qualifiers;
     } else if (edit->search_length == 0) {
         report(edit, "No search string");
         return;
     }
-    while (line_find(edit->current, 0, edit->search, edit->search_length) < 0) {
+    while (line_find(edit->current, 0, edit->search, edit->search_length,
+                     edit->search_qualifiers) < 0) {
         if (at_end(edit)) {
             report(edit, "No match");
             return;
@@ -1898,10 +2029,14 @@ static void command_find(struct Edit *edit, struct Parser *parser,
 {
     UBYTE text[STRING_SIZE];
     LONG length;
+    LONG qualifiers;
 
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (parse_string(parser, text, &length)) {
         memcpy(edit->search, text, (size_t)length + 1);
         edit->search_length = length;
+        edit->search_qualifiers = qualifiers;
     } else if (edit->search_length == 0) {
         report(edit, "No search string");
         return;
@@ -1912,7 +2047,8 @@ static void command_find(struct Edit *edit, struct Parser *parser,
                 return;
         } else if (!next_line(edit))
             return;
-        if (line_find(edit->current, 0, edit->search, edit->search_length) >= 0)
+        if (line_find(edit->current, 0, edit->search, edit->search_length,
+                      edit->search_qualifiers) >= 0)
             return;
         /* Searching off the end of the file is reported as running out of
            input, the same as any other move past the last line, and it leaves
@@ -1948,17 +2084,21 @@ static void command_change(struct Edit *edit, struct Parser *parser,
     UBYTE second[STRING_SIZE];
     LONG first_length = 0;
     LONG second_length = 0;
+    LONG qualifiers;
     LONG at;
 
     if (!edit->current) {
         report(edit, "No current line");
         return;
     }
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
         report(edit, "Two strings needed");
         return;
     }
-    at = line_find(edit->current, edit->pointer, first, first_length);
+    at = line_find(edit->current, edit->pointer, first, first_length,
+                   qualifiers);
     if (at < 0) {
         report(edit, "No match");
         return;
@@ -1974,8 +2114,10 @@ static void command_change(struct Edit *edit, struct Parser *parser,
     case 'B':
         if (!line_insert(edit, edit->current, at, second, second_length))
             return;
+        /* B,P positions after the string searched for, where A,P and E,P
+           position after the text just put in. */
         if (move_pointer)
-            edit->pointer = at + second_length;
+            edit->pointer = at + second_length + first_length;
         break;
     default:
         line_delete(edit->current, at, first_length);
@@ -1995,9 +2137,12 @@ static void command_global(struct Edit *edit, struct Parser *parser,
     UBYTE second[STRING_SIZE];
     LONG first_length = 0;
     LONG second_length = 0;
+    LONG qualifiers;
     struct Global *global;
     struct Global **link;
 
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (!parse_pair(parser, first, &first_length, second, &second_length)) {
         report(edit, "Two strings needed");
         return;
@@ -2014,6 +2159,7 @@ static void command_global(struct Edit *edit, struct Parser *parser,
     }
     global->id = edit->next_global++;
     global->type = type;
+    global->qualifiers = qualifiers;
     global->enabled = TRUE;
     memcpy(global->find, first, (size_t)first_length + 1);
     global->find_length = first_length;
@@ -2146,17 +2292,20 @@ static void command_delete_window(struct Edit *edit, struct Parser *parser,
 {
     UBYTE text[STRING_SIZE];
     LONG length;
+    LONG qualifiers;
     LONG at;
 
     if (!edit->current) {
         report(edit, "No current line");
         return;
     }
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
     }
-    at = line_find(edit->current, edit->pointer, text, length);
+    at = line_find(edit->current, edit->pointer, text, length, qualifiers);
     if (at < 0) {
         report(edit, "No match");
         return;
@@ -2174,6 +2323,7 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
 {
     UBYTE text[STRING_SIZE];
     LONG length;
+    LONG qualifiers;
     LONG at;
     struct Line *tail;
 
@@ -2181,11 +2331,13 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
         report(edit, "No current line");
         return;
     }
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
     }
-    at = line_find(edit->current, edit->pointer, text, length);
+    at = line_find(edit->current, edit->pointer, text, length, qualifiers);
     if (at < 0) {
         report(edit, "No match");
         return;
@@ -2358,17 +2510,20 @@ static void command_pointer_string(struct Edit *edit, struct Parser *parser,
 {
     UBYTE text[STRING_SIZE];
     LONG length;
+    LONG qualifiers;
     LONG at;
 
     if (!edit->current) {
         report(edit, "No current line");
         return;
     }
+    if (!parse_qualifiers(edit, parser, &qualifiers))
+        return;
     if (!parse_string(parser, text, &length)) {
         report(edit, "String needed");
         return;
     }
-    at = line_find(edit->current, edit->pointer, text, length);
+    at = line_find(edit->current, edit->pointer, text, length, qualifiers);
     if (at < 0) {
         report(edit, "No match");
         return;
@@ -2766,6 +2921,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
 
     case CMD_I: {
         LONG number;
+        UBYTE name[NAME_SIZE];
 
         if (parse_peek(parser) == '*') {
             parser->position++;
@@ -2776,7 +2932,10 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         /* Inserting does not change the current line, so it does not arm the
            end-of-line display: M2;I shows line 2 because M2 moved to it, and
            an insert below a line already shown adds no display at all. */
-        insert_lines(edit);
+        if (parse_file(parser, name))
+            insert_file(edit, name);
+        else
+            insert_lines(edit);
         return;
     }
     case CMD_D:
@@ -2787,12 +2946,30 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         return;
     case CMD_R: {
         LONG number;
+        LONG last;
+        UBYTE name[NAME_SIZE];
 
-        if (parse_number(parser, &number) && !move_to_number(edit, number))
-            return;
+        if (parse_number(parser, &number)) {
+            if (!move_to_number(edit, number))
+                return;
+            /* A second number replaces a range of lines. */
+            if (parse_number(parser, &last)) {
+                while (number <= last && delete_current(edit))
+                    number++;
+                if (parse_file(parser, name))
+                    insert_file(edit, name);
+                else
+                    insert_lines(edit);
+                verify_current(edit);
+                return;
+            }
+        }
         if (!delete_current(edit))
             return;
-        insert_lines(edit);
+        if (parse_file(parser, name))
+            insert_file(edit, name);
+        else
+            insert_lines(edit);
         verify_current(edit);
         return;
     }
