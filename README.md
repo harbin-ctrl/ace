@@ -447,7 +447,10 @@ still being read. `W` moves it into place and keeps the source as
 `T:EDIT-BACKUP`, so a session that fails partway through has not touched the
 original. Because `T:` is rarely on the same device as the file being edited
 and AmigaDOS cannot rename across devices, a move that fails is retried as a
-copy. `STOP` throws the edit away and exits with a warning code. `REWIND`
+copy. `STOP` throws the edit away and exits with a warning code, leaving the
+work file in `T:` -- the original does not clean up after itself, and this is
+a work-alike, so the two `WK` names are reused and overwritten by the next
+edit in the same process rather than probed for a free one. `REWIND`
 closes the destination, reopens it as the source, and starts a second pass,
 which is what turns inserted lines into numbered original ones.
 

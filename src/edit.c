@@ -1427,32 +1427,29 @@ static void append_number(UBYTE *buffer, LONG *at, LONG value, LONG digits)
 
 /* The work file, named the way the original names it: T:E<nn>-WK<n>, with the
    editing process's number in it.  A rewind needs a second one while the
-   first is still being read, which is what the WK number is for, and it is
-   also what keeps two editors in one process from colliding -- ACE gives
-   every command the same process number, so the name is probed rather than
-   trusted. */
+   first is still being read, so the WK number alternates between 1 and 2.
+   Both are opened with MODE_NEWFILE over whatever is already there.
+
+   The name is not probed for a free one, because the original does not clean
+   up after itself -- STOP leaves its work file in T: -- and probing would
+   turn that bounded pair of files into an unbounded pile. The process number
+   is what keeps two editors apart, so on a system that hands out the same
+   process number to everything (ACE does) two editors running at once would
+   share these files. That is the original's design and this is a work-alike,
+   so it is reproduced rather than fixed. */
 static void work_file_name(struct Edit *edit, UBYTE *buffer)
 {
     struct Process *process = (struct Process *)FindTask(NULL);
     LONG task = process ? process->pr_TaskNum : 0;
+    LONG at = 3;
 
-    for (;;) {
-        LONG at = 0;
-        BPTR lock;
-
-        memcpy(buffer, "T:E", 3);
-        at = 3;
-        append_number(buffer, &at, task, 2);
-        memcpy(buffer + at, "-WK", 3);
-        at += 3;
-        edit->temp_serial++;
-        append_number(buffer, &at, edit->temp_serial, 1);
-        buffer[at] = '\0';
-        lock = Lock((CONST_STRPTR)buffer, SHARED_LOCK);
-        if (!lock)
-            return;
-        UnLock(lock);
-    }
+    memcpy(buffer, "T:E", 3);
+    append_number(buffer, &at, task, 2);
+    memcpy(buffer + at, "-WK", 3);
+    at += 3;
+    edit->temp_serial = edit->temp_serial == 1 ? 2 : 1;
+    append_number(buffer, &at, edit->temp_serial, 1);
+    buffer[at] = '\0';
 }
 
 static void close_named_file(struct Edit *edit, const UBYTE *name)
@@ -2232,22 +2229,17 @@ static void make_backup(struct Edit *edit)
 static void finish_saving(struct Edit *edit)
 {
     UBYTE temporary[NAME_SIZE];
-    UBYTE stale[NAME_SIZE];
     BOOL rename_needed;
-    BOOL stale_temp;
 
     drain_source(edit);
     rename_needed = edit->primary_sink && edit->primary_sink->temporary;
     if (rename_needed)
         copy_name(temporary, edit->primary_sink->name,
                   (LONG)strlen((const char *)edit->primary_sink->name));
-    stale_temp = edit->primary_source && edit->primary_source->temporary;
-    if (stale_temp)
-        copy_name(stale, edit->primary_source->name,
-                  (LONG)strlen((const char *)edit->primary_source->name));
     close_files(edit);
-    if (stale_temp)
-        DeleteFile((CONST_STRPTR)stale);
+    /* A work file left over from a rewind stays in T:. The original does not
+       remove its work files; the next edit in the same process opens the same
+       names over the top of them. */
     if (!rename_needed)
         return;
     if (edit->backup_source)
@@ -2260,26 +2252,12 @@ static void finish_saving(struct Edit *edit)
     }
 }
 
-/* STOP.  Nothing is renamed and every temporary is removed, so the source
-   file is exactly as it was. */
+/* STOP.  Nothing is renamed, so the source file is exactly as it was.  The
+   work file stays in T: holding whatever had been written to it: that is what
+   the original leaves behind, and a work-alike leaves it too. */
 static void finish_stopping(struct Edit *edit)
 {
-    UBYTE temporary[NAME_SIZE];
-    UBYTE stale[NAME_SIZE];
-    BOOL remove_sink = edit->primary_sink && edit->primary_sink->temporary;
-    BOOL remove_source = edit->primary_source && edit->primary_source->temporary;
-
-    if (remove_sink)
-        copy_name(temporary, edit->primary_sink->name,
-                  (LONG)strlen((const char *)edit->primary_sink->name));
-    if (remove_source)
-        copy_name(stale, edit->primary_source->name,
-                  (LONG)strlen((const char *)edit->primary_source->name));
     close_files(edit);
-    if (remove_sink)
-        DeleteFile((CONST_STRPTR)temporary);
-    if (remove_source)
-        DeleteFile((CONST_STRPTR)stale);
 }
 
 /* ------------------------------------------------------------------ */

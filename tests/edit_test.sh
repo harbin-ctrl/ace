@@ -81,7 +81,9 @@ printf 'M2\nD\nM*\nW\n' | edit SYS:C/two.txt TO SYS:C/two.out > /dev/null ||
 expect_file two.txt a b c
 expect_file two.out a c
 
-# STOP discards the edit, and says so with a warning exit code.
+# STOP discards the edit, and says so with a warning exit code. It also
+# leaves its work file in T:, which is what the original does -- the next
+# edit in the same process opens the same name over the top of it.
 printf 'a\nb\nc\n' > "$work/three.txt"
 set +e
 printf 'D\nSTOP\n' | edit SYS:C/three.txt > /dev/null
@@ -89,6 +91,8 @@ status=$?
 set -e
 [ "$status" -eq 5 ] || fail "STOP exited $status instead of 5"
 expect_file three.txt a b c
+find "$runtime_dir" -name 'E*-WK1' | grep -q . ||
+    fail 'STOP did not leave its work file behind'
 
 # Global changes reach every line and every occurrence, as the manual's own
 # DF0: example does.
@@ -138,11 +142,16 @@ edit SYS:C/nine.txt WITH SYS:C/nine.cmd > "$test_dir/output" ||
 grep -A1 '^2\.$' "$test_dir/output" | grep -q '^new$' ||
     fail 'rewind did not renumber the inserted line'
 expect_file nine.txt one new two three
-# The work files live in T: and are named as the original names them, so a
-# rewind's second one must not be left there either.
-if find "$runtime_dir" -name 'E*-WK*' | grep -q .; then
-    fail 'rewind left a work file behind'
-fi
+# The work files live in T: and are named as the original names them. The
+# original does not clean them up, and neither does this, so what matters is
+# that a rewind alternates between two names rather than making a new one each
+# time: at most E<nn>-WK1 and E<nn>-WK2 exist however many rewinds ran.
+work_files=$(find "$runtime_dir" -name 'E*-WK*' | wc -l)
+[ "$work_files" -le 2 ] ||
+    fail "rewind left $work_files work files instead of reusing two"
+find "$runtime_dir" -name 'E*-WK*' | grep -qv 'WK[12]$' &&
+    fail 'a work file was named outside the WK1/WK2 pair'
+true
 
 # FROM switches the input file without closing the one it leaves, exactly as
 # the worked example in the manual does.
