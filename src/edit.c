@@ -86,7 +86,10 @@
  *     deleting and creating a global do not.
  *
  *   - An argument line it cannot read, no arguments at all included, is
- *     "bad args".
+ *     "Bad args"; a file that is not there is "Can't open <name>".
+ *
+ *   - Splitting a line verifies the part it sends out, before the remainder
+ *     becomes the current line.
  *
  *   - Suspending a global is D,G, for disable, not the S,G the manual gives:
  *     S,G is not a command at all. S,H,G shows a D against a disabled one.
@@ -2202,8 +2205,11 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
     edit->current->length = at;
     edit->current->text[at] = '\0';
     edit->current->newline = TRUE;
-    /* The first part is finished with: it goes to the output queue, and the
-       remainder becomes a new non-original current line. */
+    /* The first part is finished with: it is shown as it goes -- the split
+       verifies the part it sends out -- and then the remainder becomes a new
+       non-original current line. */
+    if (edit->verify)
+        verify_line(edit, edit->current, TRUE);
     queue_push(edit, edit->current);
     edit->current = tail;
     edit->pointer = 0;

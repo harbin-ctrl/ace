@@ -498,6 +498,12 @@ set -e
 grep -q "^Can't open SYS:C/nosuchfile$" "$test_dir/output" ||
     fail 'a missing file was not named in the refusal'
 
+# Splitting shows the part it sends out, and makes the remainder a new line
+# with no number of its own.
+printf 'M3;SB/cat/;?\n?\nSTOP\n' > "$work/split.cmd"
+printf 'Editor\n3.\nthree \n+++.\ncat cat\n+++.\ncat cat\n' > "$test_dir/split.expected"
+transcript split "$test_dir/original6"
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1
