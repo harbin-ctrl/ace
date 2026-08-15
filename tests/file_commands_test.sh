@@ -53,9 +53,30 @@ cmp "$sys_dir/C/source.txt" "$sys_dir/C/copied.txt" || fail 'Copy made the wrong
 run_command Touch SYS:C/touched.txt
 [ -f "$sys_dir/C/touched.txt" ] || fail 'Touch did not create a missing file'
 
+run_command MakeLink SYS:C/soft-link SYS:C/source.txt
+[ -L "$sys_dir/C/soft-link" ] || fail 'MakeLink did not create a soft link'
+[ "$(readlink "$sys_dir/C/soft-link")" = "$sys_dir/C/source.txt" ] || \
+    fail 'MakeLink soft link points at the wrong target'
+
+run_command MakeLink SYS:C/dangling-link SYS:C/missing-target
+[ -L "$sys_dir/C/dangling-link" ] || \
+    fail 'MakeLink did not create a dangling soft link'
+
+run_command MakeLink SYS:C/hard-link SYS:C/source.txt HARD
+[ -f "$sys_dir/C/hard-link" ] || fail 'MakeLink did not create a hard link'
+[ "$(stat -c '%i' "$sys_dir/C/hard-link")" = \
+  "$(stat -c '%i' "$sys_dir/C/source.txt")" ] || \
+    fail 'MakeLink hard link does not share the source inode'
+
+printf 'second line\n' > "$sys_dir/C/second.txt"
+run_command Join SYS:C/source.txt SYS:C/second.txt AS SYS:C/joined.txt
+printf 'ACE file-command test\nsecond line\n' > "$sys_dir/C/expected-joined.txt"
+cmp "$sys_dir/C/expected-joined.txt" "$sys_dir/C/joined.txt" || \
+    fail 'Join produced the wrong contents'
+
 list_output=$(run_command List SYS:C NOHEAD FILES)
 printf '%s\n' "$list_output" | grep -q 'source.txt' || fail 'List omitted source.txt'
 printf '%s\n' "$list_output" | grep -q 'copied.txt' || fail 'List omitted copied.txt'
 printf '%s\n' "$list_output" | grep -q 'touched.txt' || fail 'List omitted touched.txt'
 
-printf '%s\n' 'Copy, List, and Touch file-command test passed'
+printf '%s\n' 'Copy, List, Touch, MakeLink, and Join file-command test passed'
