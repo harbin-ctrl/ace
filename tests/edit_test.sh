@@ -81,15 +81,16 @@ printf 'M2\nD\nM*\nW\n' | edit SYS:C/two.txt TO SYS:C/two.out > /dev/null ||
 expect_file two.txt a b c
 expect_file two.out a c
 
-# STOP discards the edit, and says so with a warning exit code. It also
-# leaves its work file in T:, which is what the original does -- the next
-# edit in the same process opens the same name over the top of it.
+# STOP discards the edit and exits 0: throwing the edit away is what was
+# asked for, not a failure. It leaves its work file in T:, which is what the
+# original does -- the next edit in the same process opens the same name over
+# the top of it.
 printf 'a\nb\nc\n' > "$work/three.txt"
 set +e
 printf 'D\nSTOP\n' | edit SYS:C/three.txt > /dev/null
 status=$?
 set -e
-[ "$status" -eq 5 ] || fail "STOP exited $status instead of 5"
+[ "$status" -eq 0 ] || fail "STOP exited $status instead of 0"
 expect_file three.txt a b c
 find "$runtime_dir" -name 'E*-WK1' | grep -q . ||
     fail 'STOP did not leave its work file behind'
@@ -248,7 +249,7 @@ transcript()
     source=${2:-"$test_dir/original"}
     cp "$source" "$work/$name.txt"
     edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" > "$test_dir/$name.out" 2>&1 ||
-        true
+        fail "$name exited non-zero"
     cmp -s "$test_dir/$name.out" "$test_dir/$name.expected" || {
         printf 'edit test: %s does not match the Amiga transcript:\n' "$name" >&2
         diff "$test_dir/$name.expected" "$test_dir/$name.out" >&2 || true
@@ -395,6 +396,25 @@ transcript term "$test_dir/original6"
 printf 'GE/cat/CAT/\nGB/dog/X/\nSTOP\n' > "$work/globals.cmd"
 printf 'Editor\nG1\n1.\none CAT\nG2\n' > "$test_dir/globals.expected"
 transcript globals "$test_dir/original6"
+
+# Renumbering and rewinding. = sets the current line's number and the lines
+# after it follow on, and REWIND repositions silently -- it shows nothing at
+# all -- with the numbering starting again from 1.
+printf '=100\n?\nN;?\nREWIND\n?\nTL3\nSTOP\n' > "$work/renumber.cmd"
+printf 'Editor\n100.\none cat\n101.\ntwo dog\n1.\none cat\n    1  one cat\n    2  two dog\n    3  three cat cat\n4.\nfour\n' \
+    > "$test_dir/renumber.expected"
+transcript renumber "$test_dir/original6"
+cmp -s "$work/renumber.txt" "$test_dir/original6" ||
+    fail 'REWIND changed the file it was editing'
+
+# Q at the outermost level is W: it saves and exits 0, keeping the backup.
+cp "$test_dir/original6" "$work/quit.txt"
+printf 'Q\n' | edit SYS:C/quit.txt > /dev/null || fail 'Q did not exit cleanly'
+cmp -s "$work/quit.txt" "$test_dir/original6" ||
+    fail 'Q changed a file nothing had edited'
+env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
+    "$repo_dir/build/Type" T:EDIT-BACKUP > /dev/null ||
+    fail 'Q kept no backup'
 
 # A missing source file is a failure, not an empty edit.
 set +e

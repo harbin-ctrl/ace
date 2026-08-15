@@ -71,6 +71,12 @@
  *
  *   - An error abandons the rest of the command line.
  *
+ *   - REWIND repositions silently, showing nothing until asked, and = shows
+ *     nothing either: renumbering is not a change to the line's text.
+ *
+ *   - W, Q and STOP all exit 0. Throwing an edit away is what STOP was asked
+ *     to do, not a failure.
+ *
  *   - The insert terminator cannot be changed. Eight spellings of Z were
  *     refused; the terminator is always Z.
  *
@@ -1753,7 +1759,9 @@ static void rewind_file(struct Edit *edit)
     }
     edit->primary_sink = edit->sink;
     next_line(edit);
-    verify_current(edit);
+    /* Rewinding shows nothing. Taking the line it lands on as where the
+       command line started keeps the end-of-line verification quiet. */
+    edit->entry_serial = edit->current ? edit->current->serial : 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2817,7 +2825,6 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     case CMD_STOP:
         edit->finished = TRUE;
         edit->saving = FALSE;
-        edit->result = RETURN_WARN;
         return;
     }
 }
