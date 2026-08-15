@@ -130,6 +130,14 @@ struct console_window {
     gboolean menu_type_hint_restored;
     gboolean menu_wayland_live;
     gboolean fullscreen;
+    gboolean selection_dragging;
+    gboolean selection_valid;
+    int selection_start_column;
+    int selection_start_row;
+    int selection_end_column;
+    int selection_end_row;
+    guint copy_status_source;
+    char copy_status[128];
     GDBusConnection *menu_bus;
     GMenu *menu_model;
     GSimpleActionGroup *menu_actions;
@@ -145,6 +153,9 @@ struct console_window {
      */
     struct ace_console_device *device;
 };
+
+static void clear_selection(struct console_window *console);
+static void copy_selection(struct console_window *console);
 
 static char *config_path(void)
 {
@@ -795,10 +806,10 @@ static void queue_console_damage(struct console_window *console)
         gtk_widget_queue_draw_area(console->drawing_area, x, y, width, height);
 }
 
-static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
-                                    int width)
+static void draw_text_overlay(struct console_window *console, cairo_t *cr,
+                              int width, int height, const char *text,
+                              gboolean bottom)
 {
-    char text[128];
     PangoLayout *layout;
     PangoFontDescription *font;
     GdkRGBA background = palette_rgba(console->palette[1]);
@@ -806,9 +817,8 @@ static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
     int text_width;
     int text_height;
     int overlay_height;
+    int y;
 
-    snprintf(text, sizeof(text), "SCROLLBACK: %d lines back  (press a key to return)",
-             ace_console_device_scrollback_lines(console->device));
     layout = pango_cairo_create_layout(cr);
     font = pango_font_description_new();
     pango_font_description_set_family(font,
@@ -823,17 +833,91 @@ static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
     pango_layout_get_pixel_size(layout, &text_width, &text_height);
     overlay_height = text_height + 8;
+    y = bottom ? height - overlay_height : 0;
+    if (y < 0)
+        y = 0;
 
     gdk_cairo_set_source_rgba(cr, &background);
-    cairo_rectangle(cr, 0, 0, width, overlay_height);
+    cairo_rectangle(cr, 0, y, width, overlay_height);
     cairo_fill(cr);
     gdk_cairo_set_source_rgba(cr, &foreground);
-    cairo_move_to(cr, 6, 4);
+    cairo_move_to(cr, 6, y + 4);
     pango_cairo_show_layout(cr, layout);
 
     (void)text_width;
     pango_font_description_free(font);
     g_object_unref(layout);
+}
+
+static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
+                                    int width, int height)
+{
+    char text[128];
+
+    snprintf(text, sizeof(text),
+             "SCROLLBACK: %d lines back  (press a key to return)",
+             ace_console_device_scrollback_lines(console->device));
+    draw_text_overlay(console, cr, width, height, text, FALSE);
+}
+
+static void draw_selection(struct console_window *console, cairo_t *cr,
+                           int width, int height)
+{
+    GdkRGBA color = palette_rgba(console->palette[7]);
+    int cell_width;
+    int cell_height;
+    int columns;
+    int rows;
+    int start_column;
+    int start_row;
+    int end_column;
+    int end_row;
+
+    if (!console->selection_valid ||
+        ace_console_device_scrollback_lines(console->device) == 0 ||
+        ace_console_device_cell_size(console->device, &cell_width,
+                                     &cell_height) != 0)
+        return;
+    columns = width / cell_width;
+    rows = height / cell_height;
+    if (columns < 1 || rows < 1)
+        return;
+
+    start_column = console->selection_start_column;
+    start_row = console->selection_start_row;
+    end_column = console->selection_end_column;
+    end_row = console->selection_end_row;
+    if (start_row > end_row ||
+        (start_row == end_row && start_column > end_column)) {
+        int temporary = start_column;
+
+        start_column = end_column;
+        end_column = temporary;
+        temporary = start_row;
+        start_row = end_row;
+        end_row = temporary;
+    }
+    if (start_column < 0)
+        start_column = 0;
+    if (end_column >= columns)
+        end_column = columns - 1;
+    if (start_row < 0)
+        start_row = 0;
+    if (end_row >= rows)
+        end_row = rows - 1;
+    if (start_row > end_row || start_column > end_column)
+        return;
+
+    color.alpha = 0.45;
+    gdk_cairo_set_source_rgba(cr, &color);
+    for (int row = start_row; row <= end_row; row++) {
+        int first = row == start_row ? start_column : 0;
+        int last = row == end_row ? end_column : columns - 1;
+
+        cairo_rectangle(cr, first * cell_width, row * cell_height,
+                        (last - first + 1) * cell_width, cell_height);
+    }
+    cairo_fill(cr);
 }
 
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
@@ -882,8 +966,12 @@ static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
     cairo_set_source_surface(cr, surface, 0, -origin_y);
     cairo_paint(cr);
     cairo_restore(cr);
+    draw_selection(console, cr, width, height);
     if (scrollback_lines != 0)
-        draw_scrollback_overlay(console, cr, width);
+        draw_scrollback_overlay(console, cr, width, height);
+    if (console->copy_status[0] != '\0')
+        draw_text_overlay(console, cr, width, height, console->copy_status,
+                          TRUE);
     return FALSE;
 }
 
@@ -1049,8 +1137,90 @@ static int send_input(struct console_window *console, const void *data,
     return 0;
 }
 
+static void clear_selection(struct console_window *console)
+{
+    console->selection_dragging = FALSE;
+    console->selection_valid = FALSE;
+}
+
+static gboolean clear_copy_status(gpointer data)
+{
+    struct console_window *console = data;
+
+    console->copy_status_source = 0;
+    console->copy_status[0] = '\0';
+    gtk_widget_queue_draw(console->drawing_area);
+    return G_SOURCE_REMOVE;
+}
+
+static void show_copy_status(struct console_window *console,
+                             const char *text, size_t length)
+{
+    size_t characters = length;
+
+    if (g_utf8_validate(text, (gssize)length, NULL))
+        characters = (size_t)g_utf8_strlen(text, (gssize)length);
+    if (console->copy_status_source != 0)
+        g_source_remove(console->copy_status_source);
+    snprintf(console->copy_status, sizeof(console->copy_status),
+             "%zu characters copied to buffer", characters);
+    console->copy_status_source = g_timeout_add(2500, clear_copy_status,
+                                                console);
+    gtk_widget_queue_draw(console->drawing_area);
+}
+
+static void put_clipboard(struct console_window *console, char *text,
+                          size_t length)
+{
+    GtkClipboard *clipboard;
+
+    if (!text)
+        return;
+    clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(clipboard, text, (gint)length);
+    gtk_clipboard_store(clipboard);
+    show_copy_status(console, text, length);
+    free(text);
+}
+
+static void copy_all(struct console_window *console)
+{
+    size_t length = 0;
+
+    put_clipboard(console,
+                  ace_console_device_copy_all(console->device, &length),
+                  length);
+}
+
+static void copy_selection(struct console_window *console)
+{
+    size_t length = 0;
+
+    if (!console->selection_valid)
+        return;
+    put_clipboard(
+        console,
+        ace_console_device_copy_selection(
+            console->device, console->selection_start_column,
+            console->selection_start_row, console->selection_end_column,
+            console->selection_end_row, &length),
+        length);
+}
+
+static void paste_clipboard(struct console_window *console)
+{
+    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gchar *text = gtk_clipboard_wait_for_text(clipboard);
+
+    if (!text)
+        return;
+    (void)send_input(console, text, strlen(text));
+    g_free(text);
+}
+
 static void leave_scrollback(struct console_window *console)
 {
+    clear_selection(console);
     if (ace_console_device_scrollback_lines(console->device) == 0)
         return;
     ace_console_device_clear_scrollback(console->device);
@@ -1182,6 +1352,21 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
     gunichar unicode;
 
     (void)widget;
+    if ((modifiers & GDK_CONTROL_MASK) &&
+        (key == GDK_KEY_c || key == GDK_KEY_C) &&
+        ace_console_device_scrollback_lines(console->device) != 0) {
+        if (console->selection_valid)
+            copy_selection(console);
+        else
+            copy_all(console);
+        return TRUE;
+    }
+    if ((modifiers & GDK_CONTROL_MASK) &&
+        (key == GDK_KEY_v || key == GDK_KEY_V)) {
+        leave_scrollback(console);
+        paste_clipboard(console);
+        return TRUE;
+    }
     leave_scrollback(console);
     if (key == GDK_KEY_F11 && modifiers == 0) {
         toggle_fullscreen(console);
@@ -1240,6 +1425,7 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
     if (direction == 0)
         return TRUE;
 
+    clear_selection(console);
     current = ace_console_device_scrollback_lines(console->device);
     requested = current + direction * SCROLLBACK_LINES_PER_WHEEL;
     if (requested <= 0)
@@ -1247,6 +1433,94 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
     else
         (void)ace_console_device_set_scrollback(console->device, requested);
     gtk_widget_queue_draw(console->drawing_area);
+    return TRUE;
+}
+
+static void pointer_cell(struct console_window *console, gdouble x, gdouble y,
+                         int *column_out, int *row_out)
+{
+    int cell_width;
+    int cell_height;
+    int columns;
+    int rows;
+
+    if (ace_console_device_cell_size(console->device, &cell_width,
+                                     &cell_height) != 0) {
+        *column_out = 0;
+        *row_out = 0;
+        return;
+    }
+    columns = gtk_widget_get_allocated_width(console->drawing_area) / cell_width;
+    rows = gtk_widget_get_allocated_height(console->drawing_area) / cell_height;
+    if (columns < 1)
+        columns = 1;
+    if (rows < 1)
+        rows = 1;
+    *column_out = x < 0 ? 0 : (int)(x / cell_width);
+    *row_out = y < 0 ? 0 : (int)(y / cell_height);
+    if (*column_out >= columns)
+        *column_out = columns - 1;
+    if (*row_out >= rows)
+        *row_out = rows - 1;
+}
+
+static gboolean button_press(GtkWidget *widget, GdkEventButton *event,
+                             gpointer data)
+{
+    struct console_window *console = data;
+
+    if (event->button != 1 ||
+        ace_console_device_scrollback_lines(console->device) == 0)
+        return FALSE;
+    pointer_cell(console, event->x, event->y,
+                 &console->selection_start_column,
+                 &console->selection_start_row);
+    console->selection_end_column = console->selection_start_column;
+    console->selection_end_row = console->selection_start_row;
+    console->selection_dragging = TRUE;
+    console->selection_valid = FALSE;
+    gtk_widget_grab_focus(widget);
+    return TRUE;
+}
+
+static gboolean motion_notify(GtkWidget *widget, GdkEventMotion *event,
+                              gpointer data)
+{
+    struct console_window *console = data;
+    int column;
+    int row;
+
+    if (!console->selection_dragging)
+        return FALSE;
+    pointer_cell(console, event->x, event->y, &column, &row);
+    console->selection_end_column = column;
+    console->selection_end_row = row;
+    console->selection_valid =
+        column != console->selection_start_column ||
+        row != console->selection_start_row;
+    gtk_widget_queue_draw(widget);
+    return TRUE;
+}
+
+static gboolean button_release(GtkWidget *widget, GdkEventButton *event,
+                               gpointer data)
+{
+    struct console_window *console = data;
+    int column;
+    int row;
+
+    if (event->button != 1 || !console->selection_dragging)
+        return FALSE;
+    pointer_cell(console, event->x, event->y, &column, &row);
+    console->selection_end_column = column;
+    console->selection_end_row = row;
+    console->selection_valid =
+        column != console->selection_start_column ||
+        row != console->selection_start_row;
+    console->selection_dragging = FALSE;
+    if (console->selection_valid)
+        copy_selection(console);
+    gtk_widget_queue_draw(widget);
     return TRUE;
 }
 
@@ -1328,6 +1602,10 @@ static void console_destroy(GtkWidget *widget, gpointer data)
     if (console->resize_source != 0) {
         g_source_remove(console->resize_source);
         console->resize_source = 0;
+    }
+    if (console->copy_status_source != 0) {
+        g_source_remove(console->copy_status_source);
+        console->copy_status_source = 0;
     }
     ace_appmenu_wayland_forget();
     if (console->child_pid > 0) {
@@ -1468,11 +1746,19 @@ int main(int argc, char **argv)
     console.drawing_area = gtk_drawing_area_new();
     gtk_widget_set_can_focus(console.drawing_area, TRUE);
     gtk_widget_add_events(console.drawing_area,
-                          GDK_KEY_PRESS_MASK | GDK_SCROLL_MASK);
+                          GDK_KEY_PRESS_MASK | GDK_SCROLL_MASK |
+                          GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+                          GDK_POINTER_MOTION_MASK);
     g_signal_connect(console.drawing_area, "draw", G_CALLBACK(draw_console), &console);
     g_signal_connect(console.drawing_area, "key-press-event", G_CALLBACK(key_press), &console);
     g_signal_connect(console.drawing_area, "scroll-event", G_CALLBACK(scroll_event),
                      &console);
+    g_signal_connect(console.drawing_area, "button-press-event",
+                     G_CALLBACK(button_press), &console);
+    g_signal_connect(console.drawing_area, "motion-notify-event",
+                     G_CALLBACK(motion_notify), &console);
+    g_signal_connect(console.drawing_area, "button-release-event",
+                     G_CALLBACK(button_release), &console);
     g_signal_connect(console.drawing_area, "size-allocate",
                      G_CALLBACK(drawing_area_size_allocate), &console);
     box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);

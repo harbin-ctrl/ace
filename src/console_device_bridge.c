@@ -1,6 +1,7 @@
 #include "console_device_bridge.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,6 +89,8 @@ struct ace_console_device {
     struct RastPort *scrollback_rp;
     Object *scrollback_unit;
     int scrollback_lines;
+    size_t scrollback_start;
+    size_t scrollback_end;
     uint32_t palette[ACE_GFX_PEN_COUNT];
     unsigned char *history;
     size_t history_length;
@@ -380,6 +383,8 @@ static void destroy_scrollback_view(struct ace_console_device *device)
     device->scrollback_unit = NULL;
     device->scrollback_rp = NULL;
     device->scrollback_lines = 0;
+    device->scrollback_start = 0;
+    device->scrollback_end = 0;
 }
 
 /* Return the byte position at which a historical view should stop after
@@ -417,6 +422,7 @@ static int create_scrollback_view(struct ace_console_device *device,
 {
     struct RastPort *rp;
     Object *unit;
+    size_t start;
     struct TagItem tags[] = {
         { A_Console_Window, 0 },
         { TAG_DONE, 0 },
@@ -439,15 +445,14 @@ static int create_scrollback_view(struct ace_console_device *device,
 
     Console_NewWindowSize(unit);
     console_replaying++;
-    {
-        size_t start = replay_start_for_end(device, end);
-
-        if (end > start)
-            write_direct(device, unit, device->history + start, end - start);
-    }
+    start = replay_start_for_end(device, end);
+    if (end > start)
+        write_direct(device, unit, device->history + start, end - start);
     console_replaying--;
     device->scrollback_rp = rp;
     device->scrollback_unit = unit;
+    device->scrollback_start = start;
+    device->scrollback_end = end;
     return 0;
 }
 
@@ -494,6 +499,520 @@ static void replay_history(struct ace_console_device *device, Object *unit)
         write_direct(device, unit, device->history + start,
                      device->history_length - start);
     console_replaying--;
+}
+
+struct console_text_line {
+    unsigned char *data;
+    size_t length;
+    size_t capacity;
+};
+
+struct console_text_document {
+    struct console_text_line *lines;
+    size_t line_count;
+    size_t line_capacity;
+    int columns;
+    size_t cursor_x;
+    size_t cursor_y;
+    size_t saved_x;
+    size_t saved_y;
+};
+
+static void free_text_document(struct console_text_document *document)
+{
+    for (size_t index = 0; index < document->line_count; index++)
+        free(document->lines[index].data);
+    free(document->lines);
+    memset(document, 0, sizeof(*document));
+}
+
+static int ensure_text_line(struct console_text_document *document,
+                            size_t index)
+{
+    size_t capacity;
+    struct console_text_line *lines;
+
+    if (index < document->line_count)
+        return 0;
+    if (index < document->line_capacity) {
+        document->line_count = index + 1;
+        return 0;
+    }
+    capacity = document->line_capacity ? document->line_capacity : 16;
+    while (capacity <= index) {
+        if (capacity > (size_t)-1 / 2)
+            return -1;
+        capacity *= 2;
+    }
+    lines = realloc(document->lines, capacity * sizeof(*lines));
+    if (!lines)
+        return -1;
+    memset(lines + document->line_capacity, 0,
+           (capacity - document->line_capacity) * sizeof(*lines));
+    document->lines = lines;
+    document->line_capacity = capacity;
+    document->line_count = index + 1;
+    return 0;
+}
+
+static int ensure_text_cell(struct console_text_document *document,
+                            size_t x)
+{
+    struct console_text_line *line;
+    size_t capacity;
+    unsigned char *data;
+
+    if (ensure_text_line(document, document->cursor_y) != 0)
+        return -1;
+    line = &document->lines[document->cursor_y];
+    if (x < line->capacity) {
+        if (x >= line->length) {
+            memset(line->data + line->length, ' ', x - line->length + 1);
+            line->length = x + 1;
+        }
+        return 0;
+    }
+    capacity = line->capacity ? line->capacity : 32;
+    while (capacity <= x) {
+        if (capacity > (size_t)-1 / 2)
+            return -1;
+        capacity *= 2;
+    }
+    data = realloc(line->data, capacity);
+    if (!data)
+        return -1;
+    memset(data + line->length, ' ', x - line->length + 1);
+    line->data = data;
+    line->capacity = capacity;
+    line->length = x + 1;
+    return 0;
+}
+
+static int text_document_init(struct console_text_document *document,
+                              int columns)
+{
+    memset(document, 0, sizeof(*document));
+    document->columns = columns > 0 ? columns : 1;
+    return ensure_text_line(document, 0);
+}
+
+static int text_put(struct console_text_document *document, unsigned char byte)
+{
+    if (document->cursor_x >= (size_t)document->columns) {
+        document->cursor_x = 0;
+        document->cursor_y++;
+    }
+    if (ensure_text_cell(document, document->cursor_x) != 0)
+        return -1;
+    document->lines[document->cursor_y].data[document->cursor_x] = byte;
+    document->cursor_x++;
+    return 0;
+}
+
+static int text_newline(struct console_text_document *document)
+{
+    document->cursor_x = 0;
+    document->cursor_y++;
+    return ensure_text_line(document, document->cursor_y);
+}
+
+static void text_clear_all(struct console_text_document *document)
+{
+    for (size_t index = 0; index < document->line_count; index++)
+        document->lines[index].length = 0;
+    document->cursor_x = 0;
+    document->cursor_y = 0;
+}
+
+static int csi_argument(const int *parameters, int count, int index, int value)
+{
+    if (index >= count || parameters[index] <= 0)
+        return value;
+    return parameters[index];
+}
+
+static void text_erase_line(struct console_text_document *document, int mode)
+{
+    struct console_text_line *line;
+
+    if (ensure_text_line(document, document->cursor_y) != 0)
+        return;
+    line = &document->lines[document->cursor_y];
+    if (mode == 2)
+        line->length = 0;
+    else if (mode == 1) {
+        if (ensure_text_cell(document, document->cursor_x) != 0)
+            return;
+        memset(line->data, ' ', document->cursor_x + 1);
+    } else if (document->cursor_x < line->length) {
+        line->length = document->cursor_x;
+    }
+}
+
+static void text_csi(struct console_text_document *document, int final,
+                     const int *parameters, int count)
+{
+    int amount;
+
+    switch (final) {
+    case 'A':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_y = document->cursor_y > (size_t)amount
+                                  ? document->cursor_y - amount
+                                  : 0;
+        break;
+    case 'B':
+    case 'e':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_y += (size_t)amount;
+        (void)ensure_text_line(document, document->cursor_y);
+        break;
+    case 'C':
+    case 'a':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_x += (size_t)amount;
+        break;
+    case 'D':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_x = document->cursor_x > (size_t)amount
+                                  ? document->cursor_x - amount
+                                  : 0;
+        break;
+    case 'E':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_y += (size_t)amount;
+        document->cursor_x = 0;
+        (void)ensure_text_line(document, document->cursor_y);
+        break;
+    case 'F':
+        amount = csi_argument(parameters, count, 0, 1);
+        document->cursor_y = document->cursor_y > (size_t)amount
+                                  ? document->cursor_y - amount
+                                  : 0;
+        document->cursor_x = 0;
+        break;
+    case 'G':
+    case '`':
+        document->cursor_x = (size_t)(csi_argument(parameters, count, 0, 1) - 1);
+        break;
+    case 'd':
+        document->cursor_y = (size_t)(csi_argument(parameters, count, 0, 1) - 1);
+        (void)ensure_text_line(document, document->cursor_y);
+        break;
+    case 'H':
+    case 'f':
+        document->cursor_y = (size_t)(csi_argument(parameters, count, 0, 1) - 1);
+        document->cursor_x = (size_t)(csi_argument(parameters, count, 1, 1) - 1);
+        (void)ensure_text_line(document, document->cursor_y);
+        break;
+    case 'J':
+        if (csi_argument(parameters, count, 0, 0) == 2)
+            text_clear_all(document);
+        break;
+    case 'K':
+        text_erase_line(document, csi_argument(parameters, count, 0, 0));
+        break;
+    case 's':
+        document->saved_x = document->cursor_x;
+        document->saved_y = document->cursor_y;
+        break;
+    case 'u':
+        document->cursor_x = document->saved_x;
+        document->cursor_y = document->saved_y;
+        (void)ensure_text_line(document, document->cursor_y);
+        break;
+    default:
+        break;
+    }
+}
+
+static size_t text_skip_escape(struct console_text_document *document,
+                               const unsigned char *data, size_t length,
+                               size_t position)
+{
+    size_t index = position + 1;
+
+    if (index >= length)
+        return length;
+    if (data[index] == '[') {
+        int parameters[16] = {0};
+        int count = 0;
+        int value = -1;
+
+        for (index++; index < length; index++) {
+            unsigned char byte = data[index];
+
+            if (byte >= '0' && byte <= '9') {
+                if (value < 0)
+                    value = 0;
+                if (value <= (INT_MAX - (byte - '0')) / 10)
+                    value = value * 10 + (byte - '0');
+            } else if (byte == ';') {
+                if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
+                    parameters[count++] = value;
+                value = -1;
+            } else if (byte >= 0x40 && byte <= 0x7e) {
+                if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
+                    parameters[count++] = value;
+                text_csi(document, byte, parameters, count);
+                return index + 1;
+            }
+        }
+        return length;
+    }
+    if (data[index] == ']') {
+        for (index++; index < length; index++) {
+            if (data[index] == '\a')
+                return index + 1;
+            if (data[index] == '\033' && index + 1 < length &&
+                data[index + 1] == '\\')
+                return index + 2;
+        }
+        return length;
+    }
+    if (data[index] == '7') {
+        document->saved_x = document->cursor_x;
+        document->saved_y = document->cursor_y;
+    } else if (data[index] == '8') {
+        document->cursor_x = document->saved_x;
+        document->cursor_y = document->saved_y;
+        (void)ensure_text_line(document, document->cursor_y);
+    }
+    return index + 1;
+}
+
+static int build_text_document(struct ace_console_device *device,
+                               size_t start, size_t end,
+                               struct console_text_document *document)
+{
+    int columns = device->font && device->font->tf_XSize
+                      ? device->amiga_window.Width / device->font->tf_XSize
+                      : 1;
+
+    if (text_document_init(document, columns) != 0)
+        return -1;
+    for (size_t index = start; index < end; index++) {
+        unsigned char byte = device->history[index];
+
+        if (byte == '\033') {
+            index = text_skip_escape(document, device->history, end, index);
+            if (index == 0)
+                break;
+            index--;
+        } else if (byte == '\n') {
+            if (text_newline(document) != 0)
+                goto fail;
+        } else if (byte == '\r') {
+            document->cursor_x = 0;
+        } else if (byte == '\b') {
+            if (document->cursor_x != 0)
+                document->cursor_x--;
+        } else if (byte == '\t') {
+            do {
+                if (text_put(document, ' ') != 0)
+                    goto fail;
+            } while (document->cursor_x % 8 != 0);
+        } else if (byte >= 0x20 && byte != 0x7f) {
+            if (text_put(document, byte) != 0)
+                goto fail;
+        }
+    }
+    return 0;
+
+fail:
+    free_text_document(document);
+    return -1;
+}
+
+static int append_copy_bytes(char **result, size_t *length, size_t *capacity,
+                             const unsigned char *data, size_t amount)
+{
+    char *next;
+    size_t needed;
+
+    if (amount == 0)
+        return 0;
+    if (amount > (size_t)-1 - *length - 1)
+        return -1;
+    needed = *length + amount + 1;
+    if (needed > *capacity) {
+        size_t next_capacity = *capacity ? *capacity : 128;
+
+        while (next_capacity < needed) {
+            if (next_capacity > (size_t)-1 / 2)
+                next_capacity = needed;
+            else
+                next_capacity *= 2;
+        }
+        next = realloc(*result, next_capacity);
+        if (!next)
+            return -1;
+        *result = next;
+        *capacity = next_capacity;
+    }
+    memcpy(*result + *length, data, amount);
+    *length += amount;
+    (*result)[*length] = '\0';
+    return 0;
+}
+
+static int append_text_line(char **result, size_t *length, size_t *capacity,
+                            const struct console_text_line *line,
+                            size_t start, size_t end)
+{
+    if (start >= line->length || start >= end)
+        return 0;
+    if (end > line->length)
+        end = line->length;
+    while (end > start && line->data[end - 1] == ' ')
+        end--;
+    return append_copy_bytes(result, length, capacity, line->data + start,
+                             end - start);
+}
+
+static char *document_to_text(const struct console_text_document *document,
+                              size_t first, size_t last, int start_column,
+                              int end_column, size_t *length_out)
+{
+    char *result = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+
+    if (document->line_count == 0)
+        first = last = 0;
+    for (size_t index = first; index <= last && index < document->line_count;
+         index++) {
+        size_t start = index == first ? (size_t)start_column : 0;
+        size_t end = index == last ? (size_t)end_column + 1
+                                   : (size_t)document->columns;
+
+        if (append_text_line(&result, &length, &capacity,
+                             &document->lines[index], start, end) != 0)
+            goto fail;
+        if (index != last &&
+            append_copy_bytes(&result, &length, &capacity,
+                              (const unsigned char *)"\n", 1) != 0)
+            goto fail;
+    }
+    if (!result) {
+        result = malloc(1);
+        if (!result)
+            return NULL;
+        result[0] = '\0';
+    }
+    if (length_out)
+        *length_out = length;
+    return result;
+
+fail:
+    free(result);
+    return NULL;
+}
+
+static char *copy_document_all(const struct console_text_document *document,
+                               size_t *length_out)
+{
+    if (document->line_count == 0)
+        return document_to_text(document, 0, 0, 0, 0, length_out);
+    return document_to_text(document, 0, document->line_count - 1, 0,
+                            document->columns - 1, length_out);
+}
+
+static int device_cell_size(struct ace_console_device *device,
+                            int *width_out, int *height_out)
+{
+    if (!device || !device->font || device->font->tf_XSize == 0 ||
+        device->font->tf_YSize == 0)
+        return -1;
+    if (width_out)
+        *width_out = device->font->tf_XSize;
+    if (height_out)
+        *height_out = device->font->tf_YSize;
+    return 0;
+}
+
+int ace_console_device_cell_size(struct ace_console_device *device,
+                                 int *width_out, int *height_out)
+{
+    return device_cell_size(device, width_out, height_out);
+}
+
+char *ace_console_device_copy_all(struct ace_console_device *device,
+                                   size_t *length_out)
+{
+    struct console_text_document document;
+    char *result;
+
+    if (!device || !device->history_valid ||
+        build_text_document(device, 0, device->history_length, &document) != 0)
+        return NULL;
+    result = copy_document_all(&document, length_out);
+    free_text_document(&document);
+    return result;
+}
+
+char *ace_console_device_copy_selection(struct ace_console_device *device,
+                                        int start_column, int start_row,
+                                        int end_column, int end_row,
+                                        size_t *length_out)
+{
+    struct console_text_document document;
+    size_t start;
+    size_t end;
+    size_t first_line;
+    int cell_width;
+    int cell_height;
+    int columns;
+    int rows;
+    int temporary;
+    char *result;
+
+    if (!device || !device->history_valid ||
+        device_cell_size(device, &cell_width, &cell_height) != 0)
+        return NULL;
+    if (start_row > end_row ||
+        (start_row == end_row && start_column > end_column)) {
+        temporary = start_column;
+        start_column = end_column;
+        end_column = temporary;
+        temporary = start_row;
+        start_row = end_row;
+        end_row = temporary;
+    }
+    columns = device->amiga_window.Width / cell_width;
+    rows = device->amiga_window.Height / cell_height;
+    if (columns < 1)
+        columns = 1;
+    if (rows < 1)
+        rows = 1;
+    if (start_column < 0)
+        start_column = 0;
+    if (end_column >= columns)
+        end_column = columns - 1;
+    if (start_row < 0)
+        start_row = 0;
+    if (end_row >= rows)
+        end_row = rows - 1;
+    if (start_row > end_row || start_column > end_column)
+        return NULL;
+
+    if (device->scrollback_lines != 0) {
+        start = device->scrollback_start;
+        end = device->scrollback_end;
+    } else {
+        start = replay_start_for_end(device, device->history_length);
+        end = device->history_length;
+    }
+    if (build_text_document(device, start, end, &document) != 0)
+        return NULL;
+    first_line = document.line_count > (size_t)rows
+                     ? document.line_count - (size_t)rows
+                     : 0;
+    result = document_to_text(&document, first_line + (size_t)start_row,
+                              first_line + (size_t)end_row, start_column,
+                              end_column, length_out);
+    free_text_document(&document);
+    return result;
 }
 
 /*

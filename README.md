@@ -406,7 +406,11 @@ chord, the arrows and their shifted forms, the 101-key block, and F1-F10, all
 as the console.device sequences an Amiga program's own key table is written
 against. Closing the window hangs up on the shell and everything it is
 running, so a program the shell is waiting on is not left reading a console
-that no longer exists.
+that no longer exists. While in scrollback, Ctrl-C copies the retained output
+to the Linux clipboard, or copies a mouse-selected region; the selection is
+disabled in the live console. Ctrl-V pastes the Linux clipboard into the shell
+from either mode, and copy operations briefly report their character count at
+the bottom of the console.
 
 ## The standard assigns, and who makes them
 

@@ -140,6 +140,8 @@ int main(void)
      * again without requiring a replay of the shell. */
     {
         cairo_surface_t *live = ace_console_device_surface(device);
+        char *copied;
+        size_t copied_length;
 
         assert(ace_console_device_set_scrollback(device, 1) == 1);
         assert(ace_console_device_scrollback_lines(device) == 1);
@@ -150,6 +152,16 @@ int main(void)
                              width, height);
         assert(band_has_ink(frame, width, 0, height / 2, 0x000000u));
         free(frame);
+        copied = ace_console_device_copy_all(device, &copied_length);
+        assert(copied != NULL && copied_length > 0);
+        assert(strstr(copied, "retained screen") != NULL);
+        assert(strstr(copied, "newer screen") != NULL);
+        free(copied);
+        copied = ace_console_device_copy_selection(device, 0, 0, 20, 1,
+                                                   &copied_length);
+        assert(copied != NULL);
+        assert(strcmp(copied, "retained screen\nolder screen") == 0);
+        free(copied);
         ace_console_device_write(device, "output while scrolled\n", 22);
         assert(ace_console_device_scrollback_lines(device) == 1);
         ace_console_device_clear_scrollback(device);

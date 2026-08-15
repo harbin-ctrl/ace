@@ -78,6 +78,19 @@ int ace_console_device_set_scrollback(struct ace_console_device *device,
 void ace_console_device_clear_scrollback(struct ace_console_device *device);
 int ace_console_device_scrollback_lines(struct ace_console_device *device);
 
+/* Returns the exact pixel dimensions of one console character cell. */
+int ace_console_device_cell_size(struct ace_console_device *device,
+                                 int *width_out, int *height_out);
+
+/* Returned strings are heap allocated and must be freed by the caller. They
+   contain terminal control sequences translated to selectable text. */
+char *ace_console_device_copy_all(struct ace_console_device *device,
+                                  size_t *length_out);
+char *ace_console_device_copy_selection(struct ace_console_device *device,
+                                        int start_column, int start_row,
+                                        int end_column, int end_row,
+                                        size_t *length_out);
+
 /* Updates the AROS Window dimensions, sends M_Console_NewWindowSize through
    the real class chain by rebuilding the unit, and repaints the saved stream. */
 int ace_console_device_resize(struct ace_console_device *device,
