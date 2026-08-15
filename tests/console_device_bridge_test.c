@@ -25,11 +25,9 @@ static const char *const font_candidates[] = {
  * ace_console_device_origin_y() and run for the window's height, not the
  * surface's.
  */
-static uint8_t *read_frame(struct ace_console_device *device,
-                           int width, int height)
+static uint8_t *read_surface(cairo_surface_t *surface, int origin_y,
+                             int width, int height)
 {
-    cairo_surface_t *surface = ace_console_device_surface(device);
-    int origin_y = ace_console_device_origin_y(device);
     uint8_t *frame;
 
     assert(surface != NULL);
@@ -57,6 +55,13 @@ static uint8_t *read_frame(struct ace_console_device *device,
         }
     }
     return frame;
+}
+
+static uint8_t *read_frame(struct ace_console_device *device,
+                           int width, int height)
+{
+    return read_surface(ace_console_device_surface(device),
+                        ace_console_device_origin_y(device), width, height);
 }
 
 static uint32_t frame_pixel(const uint8_t *frame, int width, int x, int y)
@@ -120,6 +125,7 @@ int main(void)
     assert(ace_console_device_take_damage(device, &x, &y, &w, &h) == 0);
 
     ace_console_device_write(device, "retained screen\n", 16);
+    write_text(device, "older screen\nnewer screen\n");
     assert(ace_console_device_take_damage(device, &x, &y, &w, &h) == 1);
     assert(x >= 0 && y >= 0 && w > 0 && h > 0);
     assert(x + w <= width && y + h <= height);
@@ -128,6 +134,28 @@ int main(void)
     assert(frame_has_ink(frame, width, height, 0x000000u));
     assert(frame_pixel(frame, width, width - 2, height - 2) == 0x000000u);
     free(frame);
+
+    /* Scrollback is a second render state: creating it must leave the live
+     * surface available for output, and clearing it must expose that surface
+     * again without requiring a replay of the shell. */
+    {
+        cairo_surface_t *live = ace_console_device_surface(device);
+
+        assert(ace_console_device_set_scrollback(device, 1) == 1);
+        assert(ace_console_device_scrollback_lines(device) == 1);
+        assert(ace_console_device_scrollback_surface(device) != NULL);
+        assert(ace_console_device_scrollback_surface(device) != live);
+        frame = read_surface(ace_console_device_scrollback_surface(device),
+                             ace_console_device_scrollback_origin_y(device),
+                             width, height);
+        assert(frame_has_ink(frame, width, height, 0x000000u));
+        free(frame);
+        ace_console_device_write(device, "output while scrolled\n", 22);
+        assert(ace_console_device_scrollback_lines(device) == 1);
+        ace_console_device_clear_scrollback(device);
+        assert(ace_console_device_scrollback_lines(device) == 0);
+        assert(ace_console_device_scrollback_surface(device) == NULL);
+    }
 
     /*
      * Scroll far past the surface's scroll headroom, so the viewing origin

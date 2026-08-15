@@ -84,6 +84,9 @@ struct ace_console_device {
     struct TextFont *font;
     struct RastPort *rp;
     Object *unit;
+    struct RastPort *scrollback_rp;
+    Object *scrollback_unit;
+    int scrollback_lines;
     uint32_t palette[ACE_GFX_PEN_COUNT];
     unsigned char *history;
     size_t history_length;
@@ -215,6 +218,10 @@ void ace_console_device_close(struct ace_console_device *device)
 {
     if (!device)
         return;
+    if (device->scrollback_unit)
+        DisposeObject(device->scrollback_unit);
+    if (device->scrollback_rp)
+        ace_gfx_destroy_rastport(device->scrollback_rp);
     if (device->unit)
         DisposeObject(device->unit);
     if (device->rp)
@@ -227,22 +234,22 @@ void ace_console_device_close(struct ace_console_device *device)
 }
 
 /*
- * The retained stream only exists to repaint the console after a font or
- * palette change, so it needs to hold what is still on screen, not the whole
- * session. Left unbounded it made those two operations cost time
- * proportional to how long the shell had been running -- the console had to
- * re-render, and re-scroll past, every line ever written.
+ * The retained stream repaints the console after a font, palette, or geometry
+ * change and supplies modal scrollback. Left unbounded it would make those
+ * operations cost time proportional to how long the shell had been running --
+ * the console would have to re-render, and re-scroll past, every line ever
+ * written.
  *
  * What is kept is sized from the console's own grid -- several screenfuls of
- * text, so a repaint reproduces every visible line and a good deal of what
- * preceded it -- with a floor for tiny windows and a ceiling so a very large
- * one cannot make the repaint slow again. Older bytes are dropped from the
- * front at a line boundary: a partial escape sequence at the cut would
- * otherwise be replayed as stray text.
+ * text, so a repaint reproduces every visible line and scrollback has a useful
+ * tail -- with a floor for tiny windows and a ceiling so a very large one
+ * cannot make a rebuild slow again. Older bytes are dropped from the front at
+ * a line boundary: a partial escape sequence at the cut would otherwise be
+ * replayed as stray text.
  */
-#define ACE_CONSOLE_HISTORY_SCREENS 8
-#define ACE_CONSOLE_HISTORY_MIN (32u * 1024u)
-#define ACE_CONSOLE_HISTORY_MAX (256u * 1024u)
+#define ACE_CONSOLE_HISTORY_SCREENS 64
+#define ACE_CONSOLE_HISTORY_MIN (128u * 1024u)
+#define ACE_CONSOLE_HISTORY_MAX (4u * 1024u * 1024u)
 
 /*
  * A repaint only has to reproduce what ends up visible, so it replays a few
@@ -363,6 +370,88 @@ static void write_direct(struct ace_console_device *device, Object *unit,
     }
 }
 
+static void destroy_scrollback_view(struct ace_console_device *device)
+{
+    if (device->scrollback_unit)
+        DisposeObject(device->scrollback_unit);
+    if (device->scrollback_rp)
+        ace_gfx_destroy_rastport(device->scrollback_rp);
+    device->scrollback_unit = NULL;
+    device->scrollback_rp = NULL;
+    device->scrollback_lines = 0;
+}
+
+/* Return the byte position at which a historical view should stop after
+ * moving back by visual newline-sized lines. The AROS console remains the
+ * authority for wrapping and escape sequences; this boundary only chooses a
+ * replay endpoint, and starting at a line boundary keeps the retained stream
+ * useful after it has been trimmed. */
+static size_t history_end_for_lines(struct ace_console_device *device,
+                                    int lines, int *actual)
+{
+    size_t end = device->history_length;
+    int moved = 0;
+
+    while (moved < lines && end != 0) {
+        size_t position = end - 1;
+
+        while (position != 0 && device->history[position - 1] != '\n')
+            position--;
+        end = position;
+        moved++;
+    }
+    if (actual)
+        *actual = moved;
+    return end;
+}
+
+static size_t replay_start_for_end(struct ace_console_device *device,
+                                   size_t end);
+
+/* Build a second AROS console unit from the retained stream. The live unit
+ * continues to receive output while this one remains unchanged, which is what
+ * makes scrollback modal without suspending the program in the shell. */
+static int create_scrollback_view(struct ace_console_device *device,
+                                  size_t end)
+{
+    struct RastPort *rp;
+    Object *unit;
+    struct RastPort *saved_rp;
+    struct TagItem tags[] = {
+        { A_Console_Window, 0 },
+        { TAG_DONE, 0 },
+    };
+
+    rp = ace_gfx_create_rastport(device->amiga_window.Width,
+                                 device->amiga_window.Height, device->font,
+                                 device->palette);
+    if (!rp)
+        return -1;
+
+    saved_rp = device->amiga_window.RPort;
+    device->amiga_window.RPort = rp;
+    tags[0].ti_Data = (IPTR)&device->amiga_window;
+    unit = NewObjectA(device->std_class, NULL, tags);
+    device->amiga_window.RPort = saved_rp;
+    if (!unit) {
+        ace_gfx_destroy_rastport(rp);
+        return -1;
+    }
+
+    Console_NewWindowSize(unit);
+    console_replaying++;
+    {
+        size_t start = replay_start_for_end(device, end);
+
+        if (end > start)
+            write_direct(device, unit, device->history + start, end - start);
+    }
+    console_replaying--;
+    device->scrollback_rp = rp;
+    device->scrollback_unit = unit;
+    return 0;
+}
+
 /*
  * Where in the retained stream a repaint should start: far enough back to
  * fill the console several times over, cut at a line boundary so a partial
@@ -370,7 +459,8 @@ static void write_direct(struct ace_console_device *device, Object *unit,
  * that would only scroll off the top again, and re-rendering it is the whole
  * cost of a repaint.
  */
-static size_t replay_start(struct ace_console_device *device)
+static size_t replay_start_for_end(struct ace_console_device *device,
+                                   size_t end)
 {
     size_t screenful = console_screenful(device);
     size_t want;
@@ -379,16 +469,21 @@ static size_t replay_start(struct ace_console_device *device)
     if (screenful == 0)
         return 0;
     want = ACE_CONSOLE_REPLAY_SCREENS * screenful;
-    if (device->history_length <= want)
+    if (end <= want)
         return 0;
 
-    cut = device->history_length - want;
-    while (cut < device->history_length && device->history[cut] != '\n')
+    cut = end - want;
+    while (cut < end && device->history[cut] != '\n')
         cut++;
-    if (cut < device->history_length)
+    if (cut < end)
         cut++; /* start just after the newline, not on it */
     /* No line boundary in the tail: replaying all of it is still correct. */
-    return cut < device->history_length ? cut : 0;
+    return cut < end ? cut : 0;
+}
+
+static size_t replay_start(struct ace_console_device *device)
+{
+    return replay_start_for_end(device, device->history_length);
 }
 
 static void replay_history(struct ace_console_device *device, Object *unit)
@@ -427,6 +522,7 @@ static int replace_render_state(struct ace_console_device *device,
 
     if (!device || !font || !device->history_valid)
         return -1;
+    destroy_scrollback_view(device);
     clamp_to_cell(font, &width, &height);
     if (width > 65535)
         width = 65535;
@@ -467,6 +563,52 @@ static int replace_render_state(struct ace_console_device *device,
         DisposeObject(old_unit);
     ace_gfx_destroy_rastport(old_rp);
     return 0;
+}
+
+int ace_console_device_set_scrollback(struct ace_console_device *device,
+                                      int lines)
+{
+    size_t end;
+    int actual;
+
+    if (!device || lines <= 0 || !device->history_valid ||
+        device->history_length == 0) {
+        if (device)
+            destroy_scrollback_view(device);
+        return 0;
+    }
+    end = history_end_for_lines(device, lines, &actual);
+    destroy_scrollback_view(device);
+    if (actual == 0 || create_scrollback_view(device, end) != 0)
+        return 0;
+    device->scrollback_lines = actual;
+    return actual;
+}
+
+void ace_console_device_clear_scrollback(struct ace_console_device *device)
+{
+    if (device)
+        destroy_scrollback_view(device);
+}
+
+int ace_console_device_scrollback_lines(struct ace_console_device *device)
+{
+    return device ? device->scrollback_lines : 0;
+}
+
+cairo_surface_t *ace_console_device_scrollback_surface(
+    struct ace_console_device *device)
+{
+    return device && device->scrollback_rp
+               ? ace_gfx_rastport_surface(device->scrollback_rp)
+               : NULL;
+}
+
+int ace_console_device_scrollback_origin_y(struct ace_console_device *device)
+{
+    return device && device->scrollback_rp
+               ? ace_gfx_rastport_origin_y(device->scrollback_rp)
+               : 0;
 }
 
 void ace_console_device_write(struct ace_console_device *device,
@@ -544,6 +686,7 @@ int ace_console_device_resize(struct ace_console_device *device,
     if (width == device->amiga_window.Width &&
         height == device->amiga_window.Height)
         return 0;
+    destroy_scrollback_view(device);
     if (ace_gfx_resize_rastport(device->rp, width, height) != 0)
         return -1;
     device->amiga_window.Width = (UWORD)width;

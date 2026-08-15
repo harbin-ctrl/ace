@@ -70,6 +70,14 @@ int ace_console_device_set_palette(
 void ace_console_device_set_pen_rgb(struct ace_console_device *device,
                                     int pen, uint32_t rgb);
 
+/* Builds a frozen historical view at the requested number of lines back.
+   Returns the actual offset, clamped to the retained history, or zero when
+   no historical view could be built. */
+int ace_console_device_set_scrollback(struct ace_console_device *device,
+                                      int lines);
+void ace_console_device_clear_scrollback(struct ace_console_device *device);
+int ace_console_device_scrollback_lines(struct ace_console_device *device);
+
 /* Updates the AROS Window dimensions, sends M_Console_NewWindowSize through
    the real class chain by rebuilding the unit, and repaints the saved stream. */
 int ace_console_device_resize(struct ace_console_device *device,
@@ -86,6 +94,9 @@ int ace_console_device_resize(struct ace_console_device *device,
  */
 cairo_surface_t *ace_console_device_surface(struct ace_console_device *device);
 int ace_console_device_origin_y(struct ace_console_device *device);
+cairo_surface_t *ace_console_device_scrollback_surface(
+    struct ace_console_device *device);
+int ace_console_device_scrollback_origin_y(struct ace_console_device *device);
 
 /* The console's own pixel extent, which is smaller than the surface's. */
 void ace_console_device_size(struct ace_console_device *device,

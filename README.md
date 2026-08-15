@@ -369,7 +369,11 @@ layer launches the ACE console and clones the broker session.
 The ACE Shell window has a GTK menu with typeface and eight-pen palette
 dialogs. The console retains a bounded tail of its output stream, so applying
 a new typeface or palette rebuilds the AROS console and repaints it
-immediately. The drawing-area size allocation follows window resizes and
+immediately. The mouse wheel opens modal scrollback: the live console keeps
+processing output in the background while a separate historical render stays
+at the selected line offset. A top-of-console overlay reports the distance
+back, and any key returns to the live view; output by itself does not. The
+drawing-area size allocation follows window resizes and
 updates the real AROS window geometry. A resize smaller than one character
 cell keeps the pixels already on screen rather than re-rendering anything,
 and the console's background pen fills whatever the window has gained until
