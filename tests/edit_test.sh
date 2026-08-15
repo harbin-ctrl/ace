@@ -256,10 +256,14 @@ edit SYS:C/queue.txt WITH SYS:C/queue.cmd > "$test_dir/queue.out" 2>&1 || true
 } > "$test_dir/queue.expected"
 cmp -s "$test_dir/queue.out" "$test_dir/queue.expected" ||
     fail 'T,P did not type the queue and re-show the current line'
+# STOP writes the lines already passed before it closes, so a session that
+# walked the file to its end and stopped leaves a work file the size of the
+# file it was editing -- 3301 bytes for 3301 on the original.
 work_file=$(find "$runtime_dir" -name 'E*-WK1' | head -n 1)
-[ -s "$work_file" ] &&
-    fail 'lines spilled to the work file before the queue was full'
-true
+cmp -s "$work_file" "$test_dir/queue.original" ||
+    fail 'the abandoned work file does not hold the lines that were passed'
+cmp -s "$work/queue.txt" "$test_dir/queue.original" ||
+    fail 'STOP changed the file it was editing'
 
 # An inserted line has no number of its own and verifies as +++, and the
 # insertion does not re-display the line it was inserted before.

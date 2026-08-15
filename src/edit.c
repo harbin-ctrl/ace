@@ -2256,11 +2256,15 @@ static void finish_saving(struct Edit *edit)
     }
 }
 
-/* STOP.  Nothing is renamed, so the source file is exactly as it was.  The
-   work file stays in T: holding whatever had been written to it: that is what
-   the original leaves behind, and a work-alike leaves it too. */
+/* STOP.  Nothing is renamed, so the source file is exactly as it was, but the
+   lines already passed are written out before the files are closed, and the
+   work file is left in T: holding them.  On the original, a session that had
+   walked a file to its end and then stopped left a work file exactly the size
+   of the file it was editing.  The current line and everything after it never
+   reach the work file, and the source is untouched either way. */
 static void finish_stopping(struct Edit *edit)
 {
+    queue_flush(edit);
     close_files(edit);
 }
 
