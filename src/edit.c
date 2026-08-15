@@ -86,7 +86,22 @@
  *     deleting and creating a global do not.
  *
  *   - An argument line it cannot read, no arguments at all included, is
- *     "Bad args"; a file that is not there is "Can't open <name>".
+ *     "Bad args"; a file that is not there is "Can't open <name>", and so is
+ *     a directory, a missing WITH file, and a TO that names the FROM file.
+ *
+ *   - The banner is printed only to a keyboard session. Driven by a WITH file
+ *     the editor says nothing on its way in, and VER never carries it.
+ *
+ *   - A line longer than WIDTH is truncated, not carried in two, and reports
+ *     "****** Line <n> truncated" naming the line before it. WIDTH has a
+ *     floor at its own default of 120: WIDTH 20 leaves a 36 character line
+ *     alone and the default truncates at 120.
+ *
+ *   - A line number behind what is still reachable is "Line number <n> too
+ *     small" -- M 0, and the second number of a reversed range like D 4 2.
+ *
+ *   - The character pointer runs past the end of the line: 99> on a three
+ *     character line puts the mark 98 columns out.
  *
  *   - Splitting a line verifies the part it sends out, before the remainder
  *     becomes the current line.
@@ -879,9 +894,24 @@ static struct Line *source_line(struct Edit *edit, struct Source *source)
             line->newline = TRUE;
             break;
         }
-        line->text[line->length++] = (UBYTE)character;
-        if (line->length == edit->capacity)
+        if (line->length == edit->width) {
+            /* Past the width the rest of the line is thrown away, with a
+               warning naming the line before this one. */
+            UBYTE message[48];
+            LONG at = 0;
+
+            memcpy(message, "****** Line ", 12);
+            at = 12;
+            append_number(message, &at, line->number - 1, 1);
+            memcpy(message + at, " truncated", 11);
+            ver_text(edit, (const char *)message);
+            ver_newline(edit);
+            while (character >= 0 && character != '\n')
+                character = reader_char(&source->reader);
+            line->newline = character == '\n';
             break;
+        }
+        line->text[line->length++] = (UBYTE)character;
         character = reader_char(&source->reader);
     }
     line->text[line->length] = '\0';
@@ -1046,6 +1076,17 @@ static void move_to_end(struct Edit *edit)
             return;
 }
 
+static void report_too_small(struct Edit *edit, LONG number)
+{
+    UBYTE message[48];
+    LONG at = 12;
+
+    memcpy(message, "Line number ", 12);
+    append_number(message, &at, number, 1);
+    memcpy(message + at, " too small", 11);
+    report(edit, (const char *)message);
+}
+
 /* Moves to an original line by number.  The direction is decided once, before
    the first step: a search that changed its mind on the way would never stop,
    because the extra line past the end of the file and every non-original line
@@ -1080,6 +1121,10 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
     }
     while (edit->current->number != number) {
         if (backward) {
+            if (edit->queue_count == 0) {
+                report_too_small(edit, number);
+                return FALSE;
+            }
             if (!previous_line(edit))
                 return FALSE;
         } else {
@@ -1087,14 +1132,7 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
                file any more -- deleted, or renumbered away -- and there is no
                going back for it once its place has been passed. */
             if (edit->current->number > number) {
-                UBYTE message[48];
-                LONG at = 0;
-
-                memcpy(message, "Line number ", 12);
-                at = 12;
-                append_number(message, &at, number, 1);
-                memcpy(message + at, " too small", 11);
-                report(edit, (const char *)message);
+                report_too_small(edit, number);
                 return FALSE;
             }
             if (!next_line(edit))
@@ -2062,6 +2100,10 @@ static void command_delete(struct Edit *edit, struct Parser *parser)
     if (!move_to_number(edit, first))
         return;
     if (parse_number(parser, &last)) {
+        if (last < first) {
+            report_too_small(edit, last);
+            return;
+        }
         while (first <= last && delete_current(edit))
             first++;
     } else
@@ -2886,20 +2928,16 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         }
         return;
     case '>':
+        /* The window runs on past the end of the line without complaint:
+           99> on a three character line leaves the mark 98 columns out. */
         parser->position++;
-        if (edit->current) {
-            edit->pointer += count;
-            if (edit->pointer > edit->current->length)
-                edit->pointer = edit->current->length;
-        }
-        verify_current(edit);
+        edit->pointer += count;
         return;
     case '<':
         parser->position++;
         edit->pointer -= count;
         if (edit->pointer < 0)
             edit->pointer = 0;
-        verify_current(edit);
         return;
     case '$':
     case '%':
@@ -3347,7 +3385,7 @@ int main(void)
         edit.width = *(LONG *)args[ARG_WIDTH];
     if (args[ARG_PREVIOUS])
         edit.previous = *(LONG *)args[ARG_PREVIOUS];
-    edit.width = clamp(edit.width, MINIMUM_WIDTH, MAXIMUM_WIDTH);
+    edit.width = clamp(edit.width, DEFAULT_WIDTH, MAXIMUM_WIDTH);
     edit.previous = clamp(edit.previous, MINIMUM_PREVIOUS, MAXIMUM_PREVIOUS);
     /* WIDTH sizes the memory the queue of previous lines needs, which is what
        the manual's PREVIOUS * WIDTH describes, but it does not limit a line:
@@ -3387,15 +3425,17 @@ int main(void)
     /* With no TO file the editing goes to a temporary and the source becomes
        the backup at the end, which is what makes an edit of a file in place
        survive a failure partway through. */
-    if (args[ARG_TO] &&
-        !same_name((const UBYTE *)args[ARG_TO], edit.source_name)) {
+    if (args[ARG_TO] && same_name((const UBYTE *)args[ARG_TO],
+                                  edit.source_name)) {
+        report_name(&edit, "Can't open", edit.source_name);
+        goto fail;
+    }
+    if (args[ARG_TO]) {
         copy_name(edit.final_name, (const UBYTE *)args[ARG_TO],
                   (LONG)strlen((const char *)args[ARG_TO]));
         if (!open_sink(&edit, edit.final_name, FALSE))
             goto fail;
     } else {
-        /* Naming the source as the destination is the in-place edit: opening
-           it for output would truncate the file being read. */
         copy_name(edit.final_name, edit.source_name,
                   (LONG)strlen((const char *)edit.source_name));
         edit.backup_source = TRUE;
@@ -3419,9 +3459,12 @@ int main(void)
     /* The first line becomes current without being shown: the original
        announces itself and then waits for a command. */
     next_line(&edit);
-    /* The banner goes to the screen, not to the VER file: that file gets the
-       line verifications and the errors, and nothing else. */
-    Write(Output(), (APTR)"Editor\n", 7);
+    /* The banner goes to the screen, not to the VER file, and only when the
+       commands are being typed: a session driven by a WITH file prints
+       nothing at all on its way in. */
+    if (edit.depth >= 0 &&
+        IsInteractive(edit.commands[edit.depth].reader.handle))
+        Write(Output(), (APTR)"Editor\n", 7);
 
     while (!edit.finished && command_line(&edit, command, &length))
         execute_line(&edit, command, length);

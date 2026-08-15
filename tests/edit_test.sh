@@ -180,7 +180,7 @@ printf 'abcdefghijklmnopqrstuvwxyz0123456789\n' > "$work/twelve.txt"
 printf '?\nN\nSTOP\n' > "$work/twelve.cmd"
 edit SYS:C/twelve.txt WIDTH 20 WITH SYS:C/twelve.cmd > "$test_dir/output" 2>&1 ||
     true
-printf 'Editor\n1.\nabcdefghijklmnopqrstuvwxyz0123456789\n2*\n\n' \
+printf '1.\nabcdefghijklmnopqrstuvwxyz0123456789\n2*\n\n' \
     > "$test_dir/expected"
 cmp -s "$test_dir/output" "$test_dir/expected" ||
     fail 'WIDTH chopped a line instead of sizing memory'
@@ -246,6 +246,9 @@ grep -q 'Line number 3 too small' "$test_dir/output" ||
 printf 'one cat\ntwo dog\nthree cat cat\nfour\nfive\nsix\n\n' > "$test_dir/original"
 printf 'one cat\ntwo dog\nthree cat cat\nfour\nfive\nsix\n' > "$test_dir/original6"
 
+# The banner is printed only to a keyboard session, so none of these
+# expectations carry it: replayed from a WITH file the editor says nothing on
+# its way in.
 transcript()
 {
     name=$1
@@ -278,7 +281,7 @@ transcript()
 # extra line past the end as 8* -- numbered, but marked as having no number
 # of its own.
 printf '?\n3(N)\n2(N;?)\n(N)\n3N\nSTOP\n' > "$work/groups.cmd"
-printf 'Editor\n1.\none cat\n4.\nfour\n5.\nfive\n6.\nsix\n7.\n\n >\nInput exhausted\n8*\n\n' \
+printf '1.\none cat\n4.\nfour\n5.\nfive\n6.\nsix\n7.\n\n >\nInput exhausted\n8*\n\n' \
     > "$test_dir/groups.expected"
 transcript groups
 
@@ -295,7 +298,7 @@ printf 'M1;E/cat/dog/;A/dog/X/;B/dog/Y/;?\nM3;GE/cat/CAT/;PB/CAT;?\nI\nx\nZ\n?\n
 # before the window. The six was a slip of the pen.
 # The trailing newline is grep's, from filtering the echo lines out; the
 # original leaves the cursor sitting after the marker with none.
-printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >\n' \
+printf '1.\none YdogX\nG1\n3.\nthree CAT CAT\n     >3.\nthree CAT CAT\n     >\n' \
     > "$test_dir/change.expected"
 transcript change
 
@@ -314,7 +317,7 @@ printf 'M*\nTP\nSTOP\n' > "$work/queue.cmd"
 edit SYS:C/queue.txt PREVIOUS 100 WITH SYS:C/queue.cmd > "$test_dir/queue.out" \
     2>&1 || true
 {
-    printf 'Editor\n56*\n\n'
+    printf '56*\n\n'
     i=1
     while [ "$i" -le "$lines" ]; do
         printf 'line %s\n' "$i"
@@ -336,14 +339,14 @@ cmp -s "$work/queue.txt" "$test_dir/queue.original" ||
 # An inserted line has no number of its own and verifies as +++, and the
 # insertion does not re-display the line it was inserted before.
 printf 'M2;I\nx\nZ\nP;?\nSTOP\n' > "$work/insert.cmd"
-printf 'Editor\n2.\ntwo dog\n+++.\nx\n' > "$test_dir/insert.expected"
+printf '2.\ntwo dog\n+++.\nx\n' > "$test_dir/insert.expected"
 transcript insert
 
 # More transcripts from the original. Delete with a range, insert before a
 # numbered line, replace, and the period that is not an argument to D.
 printf 'D2 3\n?\nI4\ninserted\nZ\n?\nR\nreplaced\nZ\n?\nD.*\n?\nSTOP\n' \
     > "$work/edits.cmd"
-printf 'Editor\n4.\nfour\n4.\nfour\n4.\nfour\n5.\nfive\n5.\nfive\n >\nUnknown command - .\n6.\nsix\n6.\nsix\n' \
+printf '4.\nfour\n4.\nfour\n4.\nfour\n5.\nfive\n5.\nfive\n >\nUnknown command - .\n6.\nsix\n6.\nsix\n' \
     > "$test_dir/edits.expected"
 transcript edits "$test_dir/original6"
 
@@ -351,13 +354,13 @@ transcript edits "$test_dir/original6"
 # verifies it, because typing shows text without a number and only a numbered
 # display satisfies the pending verification.
 printf 'M*\nT\nSTOP\n' > "$work/typeend.cmd"
-printf 'Editor\n7*\n\n\n7*\n\n' > "$test_dir/typeend.expected"
+printf '7*\n\n\n7*\n\n' > "$test_dir/typeend.expected"
 transcript typeend "$test_dir/original6"
 
 # ! heads its two rows with the line number, and marks capitals underneath
 # with underscores.
 printf 'M1;E/one/ONE/\n!\nSTOP\n' > "$work/hex.cmd"
-printf 'Editor\n1.\nONE cat\n1.\nONE cat\n___\n' > "$test_dir/hex.expected"
+printf '1.\nONE cat\n1.\nONE cat\n___\n' > "$test_dir/hex.expected"
 transcript hex "$test_dir/original6"
 
 # The line window. The mark sits under the character before the window, so
@@ -365,7 +368,7 @@ transcript hex "$test_dir/original6"
 # D,F,A cuts from after the string to the end of the line.
 printf 'M3;PA/three /;?;%%;?;_;?;2#;?\nPR;?;>;>;?;<;?\nM2;DFA/two/;?\nSTOP\n' \
     > "$work/window.cmd"
-printf 'Editor\n3.\nthree cat cat\n     >3.\nthree Cat cat\n      >3.\nthree C t cat\n       >3.\nthree C cat\n       >3.\nthree C cat\n3.\nthree C cat\n >3.\nthree C cat\n>2.\ntwo\n' \
+printf '3.\nthree cat cat\n     >3.\nthree Cat cat\n      >3.\nthree C t cat\n       >3.\nthree C cat\n       >3.\nthree C cat\n3.\nthree C cat\n >3.\nthree C cat\n>2.\ntwo\n' \
     > "$test_dir/window.expected"
 transcript window "$test_dir/original6"
 
@@ -380,7 +383,7 @@ window_delete()
     cp "$test_dir/original6" "$work/cut.txt"
     printf '%s\nSTOP\n' "$command" > "$work/cut.cmd"
     edit SYS:C/cut.txt WITH SYS:C/cut.cmd > "$test_dir/cut.out" 2>&1 || true
-    got=$(sed -n '3p' "$test_dir/cut.out")
+    got=$(sed -n '2p' "$test_dir/cut.out")
     [ "$got" = "$expected" ] ||
         fail "$command gave [$got] instead of [$expected]"
 }
@@ -396,11 +399,11 @@ window_delete 'M3;PB/cat/;?' 'three cat cat'
 # of the file and I* inserts there. An error abandons the rest of the command
 # line, so D.* runs the D and never reaches the asterisk.
 printf 'D*\n?\nSTOP\n' > "$work/star.cmd"
-printf 'Editor\n7*\n\n7*\n\n' > "$test_dir/star.expected"
+printf '7*\n\n7*\n\n' > "$test_dir/star.expected"
 transcript star "$test_dir/original6"
 
 printf 'I*\nx\nZ\n?\nSTOP\n' > "$work/append.cmd"
-printf 'Editor\n7*\n\n7*\n\n' > "$test_dir/append.expected"
+printf '7*\n\n7*\n\n' > "$test_dir/append.expected"
 transcript append "$test_dir/original6"
 
 # Logs taken from the original by pointing VER at a file on a shared drive:
@@ -465,14 +468,14 @@ probe pq11 'M9;?'
 # Creating a global announces it as G<n> and applies it to the line that is
 # current, which is shown only if it changed.
 printf 'GE/cat/CAT/\nGB/dog/X/\nSTOP\n' > "$work/globals.cmd"
-printf 'Editor\nG1\n1.\none CAT\nG2\n' > "$test_dir/globals.expected"
+printf 'G1\n1.\none CAT\nG2\n' > "$test_dir/globals.expected"
 transcript globals "$test_dir/original6"
 
 # Renumbering and rewinding. = sets the current line's number and the lines
 # after it follow on, and REWIND repositions silently -- it shows nothing at
 # all -- with the numbering starting again from 1.
 printf '=100\n?\nN;?\nREWIND\n?\nTL3\nSTOP\n' > "$work/renumber.cmd"
-printf 'Editor\n100.\none cat\n101.\ntwo dog\n1.\none cat\n    1  one cat\n    2  two dog\n    3  three cat cat\n4.\nfour\n' \
+printf '100.\none cat\n101.\ntwo dog\n1.\none cat\n    1  one cat\n    2  two dog\n    3  three cat cat\n4.\nfour\n' \
     > "$test_dir/renumber.expected"
 transcript renumber "$test_dir/original6"
 cmp -s "$work/renumber.txt" "$test_dir/original6" ||
@@ -493,7 +496,7 @@ env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=edit-test \
 # the character at the window and steps past it, as % capitalises it.
 printf 'SHD\nF/dog/\nSHD\nSG\nSG 1\nM3;PA/three /;%%;?;<;$;?\nSTOP\n' \
     > "$work/saved.cmd"
-printf "Editor\n' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntwo dog\n' cmd: unset\nSearch string: /dog\nInput terminator: /Z\n >\nUnknown command\n >\nUnknown command\n3.\nthree Cat cat\n      >3.\nthree cat cat\n      >\n" \
+printf "' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntwo dog\n' cmd: unset\nSearch string: /dog\nInput terminator: /Z\n >\nUnknown command\n >\nUnknown command\n3.\nthree Cat cat\n      >3.\nthree cat cat\n      >\n" \
     > "$test_dir/saved.expected"
 transcript saved "$test_dir/original6"
 
@@ -514,7 +517,7 @@ edit SYS:C/positional.txt SYS:C/positional.out 40 5 \
 # ' repeats a saved command and there is never one saved, because what sets
 # it on the original is not known.
 printf "GE/cat/CAT/\nSHG\nDG;SHG\nEG;SHG\n';SHD\nSTOP\n" > "$work/suspend.cmd"
-printf 'Editor\nG1\n1.\none CAT\n 1     1 GE/cat/CAT\n 1 D   1 GE/cat/CAT\n 1     1 GE/cat/CAT\n>\nNothing to repeat\n' \
+printf 'G1\n1.\none CAT\n 1     1 GE/cat/CAT\n 1 D   1 GE/cat/CAT\n 1     1 GE/cat/CAT\n>\nNothing to repeat\n' \
     > "$test_dir/suspend.expected"
 transcript suspend "$test_dir/original6"
 
@@ -522,7 +525,7 @@ transcript suspend "$test_dir/original6"
 # space, and its arguments without the closing delimiter. ' runs it again,
 # and anything it reports points at the ' rather than into the saved text.
 printf "E/one/ONE/\nSHD\n'\nSTOP\n" > "$work/repeat.cmd"
-printf "Editor\n1.\nONE cat\n' cmd: E /one/ONE\nSearch string: unset\nInput terminator: /Z\n>\nNo match\n" \
+printf "1.\nONE cat\n' cmd: E /one/ONE\nSearch string: unset\nInput terminator: /Z\n>\nNo match\n" \
     > "$test_dir/repeat.expected"
 transcript repeat "$test_dir/original6"
 
@@ -572,7 +575,7 @@ grep -q "^Can't open SYS:C/nosuchfile$" "$test_dir/output" ||
 # Splitting shows the part it sends out, and makes the remainder a new line
 # with no number of its own.
 printf 'M3;SB/cat/;?\n?\nSTOP\n' > "$work/split.cmd"
-printf 'Editor\n3.\nthree \n+++.\ncat cat\n+++.\ncat cat\n' > "$test_dir/split.expected"
+printf '3.\nthree \n+++.\ncat cat\n+++.\ncat cat\n' > "$test_dir/split.expected"
 transcript split "$test_dir/original6"
 
 # Qualifiers belong to the line searches alone -- the change commands, the
@@ -594,7 +597,7 @@ printf 'one cat\ntwo dog\nCAT cat pig\nfour\n' > "$test_dir/ceiling.original"
 printf 'Z /END/\nM1;CL / /;?\nH 3\nM*\nSTOP\n' > "$work/ceiling.cmd"
 # Recorded at the keyboard; read from a file, an error also shows the line it
 # left, which is the "1." here that the keyboard session did not print.
-printf 'Editor\n  >\nIllegal qualifiers\n1.\none cat\n      >\nIllegal qualifiers\n >\nCeiling reached\n3.\nCAT cat pig\n' \
+printf '  >\nIllegal qualifiers\n1.\none cat\n      >\nIllegal qualifiers\n >\nCeiling reached\n3.\nCAT cat pig\n' \
     > "$test_dir/ceiling.expected"
 transcript ceiling "$test_dir/ceiling.original"
 
