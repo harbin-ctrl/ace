@@ -232,6 +232,35 @@ printf 'Editor\n1.\none YdogX\nG1\n3.\nthree CAT CAT\n      >3.\nthree CAT CAT\n
     > "$test_dir/change.expected"
 transcript change
 
+# Typing the output queue shows the lines held in memory -- everything passed
+# so far, since nothing spills to the work file until the queue is full -- and
+# then shows the current line again, because the queue listing left something
+# other than the current line last on the screen. Both are the original's.
+lines=55
+i=1
+while [ "$i" -le "$lines" ]; do
+    printf 'line %s\n' "$i"
+    i=$((i + 1))
+done > "$test_dir/queue.original"
+cp "$test_dir/queue.original" "$work/queue.txt"
+printf 'M*\nTP\nSTOP\n' > "$work/queue.cmd"
+edit SYS:C/queue.txt WITH SYS:C/queue.cmd > "$test_dir/queue.out" 2>&1 || true
+{
+    printf 'Editor\n56*\n\n'
+    i=1
+    while [ "$i" -le "$lines" ]; do
+        printf '%s.\nline %s\n' "$i" "$i"
+        i=$((i + 1))
+    done
+    printf '56*\n\n'
+} > "$test_dir/queue.expected"
+cmp -s "$test_dir/queue.out" "$test_dir/queue.expected" ||
+    fail 'T,P did not type the queue and re-show the current line'
+work_file=$(find "$runtime_dir" -name 'E*-WK1' | head -n 1)
+[ -s "$work_file" ] &&
+    fail 'lines spilled to the work file before the queue was full'
+true
+
 # An inserted line has no number of its own and verifies as +++, and the
 # insertion does not re-display the line it was inserted before.
 printf 'M2;I\nx\nZ\nP;?\nSTOP\n' > "$work/insert.cmd"

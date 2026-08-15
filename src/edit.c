@@ -934,8 +934,12 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
     for (index = 0; index < line->length; index++)
         ver_char(edit, is_graphic(line->text[index]) ? line->text[index] : '?');
     ver_newline(edit);
-    if (line == edit->current)
-        edit->shown = TRUE;
+    /* Showing the current line satisfies the end-of-line verification;
+       showing any other line un-satisfies it, because the current line is no
+       longer the last thing on the screen.  That is why T,P ends by showing
+       the current line again after typing the output queue, while T, which
+       ends on the current line, does not repeat it. */
+    edit->shown = (line == edit->current);
     if (edit->pointer > 0 && line == edit->current) {
         for (index = 0; index < edit->pointer; index++)
             ver_char(edit, ' ');
