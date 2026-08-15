@@ -480,7 +480,10 @@ global forms is always the one searched for -- chaining them turns `one cat`
 into `one YdogX` on the Amiga and here alike -- and a global change acts on
 every occurrence in a line where the single-line commands act on the first.
 The string qualifiers the manual mentions but never defines are not
-implemented, and are reported as unknown commands rather than ignored.
+implemented, and are reported as unknown commands rather than ignored. Two
+commands turned out to be spelled differently than the manual says: a global
+is suspended with `DG`, not `SG`, and the manual's `D.*` and `I.*` are `D*`
+and `I*`. The insert terminator cannot be changed at all.
 
 `make test-edit` runs the editor against a broker of its own. Three of its
 cases are transcripts taken from the original under emulation, replayed and

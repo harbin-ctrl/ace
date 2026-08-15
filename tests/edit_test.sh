@@ -437,6 +437,16 @@ edit SYS:C/positional.txt SYS:C/positional.out 40 5 \
     WITH SYS:C/positional.cmd > /dev/null ||
     fail 'positional WIDTH and PREVIOUS were refused'
 
+# Suspending a global is D,G -- disable -- not the S,G the manual gives, and
+# S,H,G shows a D against a disabled one. The disabled line pins the column
+# widths: id in two, the flag, the match count in four. E,G puts it back.
+# ' repeats a saved command and there is never one saved, because what sets
+# it on the original is not known.
+printf "GE/cat/CAT/\nSHG\nDG;SHG\nEG;SHG\n';SHD\nSTOP\n" > "$work/suspend.cmd"
+printf 'Editor\nG1\n1.\none CAT\n 1     1 GE/cat/CAT\n 1 D   1 GE/cat/CAT\n 1     1 GE/cat/CAT\n>\nNothing to repeat\n' \
+    > "$test_dir/suspend.expected"
+transcript suspend "$test_dir/original6"
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1

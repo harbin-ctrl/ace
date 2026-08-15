@@ -79,8 +79,12 @@
  *
  *   - S,H,D shows three saved values, each introduced by the delimiter it
  *     would be typed with: a ' cmd the manual never describes, the search
- *     string, and the input terminator. S,G is not a command at all, though
- *     E,G and C,G are, so a suspended global has some other spelling.
+ *     string, and the input terminator. The ' cmd is a saved command that '
+ *     repeats; what sets one is not known, so here there is never one and '
+ *     always answers "Nothing to repeat", as the original does with none.
+ *
+ *   - Suspending a global is D,G, for disable, not the S,G the manual gives:
+ *     S,G is not a command at all. S,H,G shows a D against a disabled one.
  *
  *   - The insert terminator cannot be changed. Eight spellings of Z were
  *     refused; the terminator is always Z.
@@ -320,7 +324,7 @@ enum Command
     CMD_DTA, CMD_DTB, CMD_DFA, CMD_DFB,
     CMD_SB, CMD_SA, CMD_CL,
     CMD_REWIND, CMD_V, CMD_T, CMD_TP, CMD_TN, CMD_TL,
-    CMD_GA, CMD_GB, CMD_GE, CMD_CG, CMD_SG, CMD_EG, CMD_SHG,
+    CMD_GA, CMD_GB, CMD_GE, CMD_CG, CMD_DG, CMD_EG, CMD_SHG,
     CMD_C, CMD_FROM, CMD_CF, CMD_TO, CMD_Q, CMD_W, CMD_STOP
 };
 
@@ -362,6 +366,7 @@ static const struct CommandName command_names[] =
     { "CL",     CMD_CL },
     { "CG",     CMD_CG },
     { "CF",     CMD_CF },
+    { "DG",     CMD_DG },
     { "GA",     CMD_GA },
     { "GB",     CMD_GB },
     { "GE",     CMD_GE },
@@ -2014,16 +2019,33 @@ static void command_show_globals(struct Edit *edit)
     struct Global *global;
 
     for (global = edit->globals; global; global = global->next) {
-        ver_number(edit, global->id);
-        ver_text(edit, ": G");
+        UBYTE field[16];
+        LONG at = 0;
+
+        append_number(field, &at, global->id, 1);
+        while (at < 2) {
+            memmove(field + 1, field, (size_t)at);
+            field[0] = ' ';
+            at++;
+        }
+        ver_bytes(edit, field, at);
+        ver_char(edit, ' ');
+        ver_char(edit, global->enabled ? ' ' : 'D');
+        at = 0;
+        append_number(field, &at, global->count, 1);
+        while (at < 4) {
+            memmove(field + 1, field, (size_t)at);
+            field[0] = ' ';
+            at++;
+        }
+        ver_bytes(edit, field, at);
+        ver_char(edit, ' ');
+        ver_char(edit, 'G');
         ver_char(edit, global->type);
-        ver_text(edit, " /");
+        ver_char(edit, '/');
         ver_bytes(edit, global->find, global->find_length);
         ver_char(edit, '/');
         ver_bytes(edit, global->with, global->with_length);
-        ver_text(edit, "/ ");
-        ver_number(edit, global->count);
-        ver_text(edit, global->enabled ? " matched" : " matched, suspended");
         ver_newline(edit);
     }
 }
@@ -2524,6 +2546,10 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         parser->position++;
         report(edit, "Unmatched parenthesis");
         return;
+    case '\'':
+        parser->position++;
+        report(edit, "Nothing to repeat");
+        return;
     case ';':
         parser->position++;
         return;
@@ -2791,7 +2817,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     case CMD_CG:
         command_global_state(edit, parser, TRUE, FALSE);
         return;
-    case CMD_SG:
+    case CMD_DG:
         command_global_state(edit, parser, FALSE, FALSE);
         return;
     case CMD_EG:
