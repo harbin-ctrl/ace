@@ -10,3 +10,5 @@
    the one Intuition call this translation unit does reach. */
 
 #endif
+
+struct Screen;

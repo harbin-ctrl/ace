@@ -13,8 +13,10 @@
 #include <exec/types.h>
 
 struct Window;
+struct Screen;
 
 void SetWindowTitles(struct Window *window, CONST_STRPTR title,
                      CONST_STRPTR screen_title);
+void DisplayBeep(struct Screen *screen);
 
 #endif

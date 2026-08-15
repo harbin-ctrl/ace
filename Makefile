@@ -89,6 +89,7 @@ AROS_FILENOTE_SRC := $(AROS_ROOT)/workbench/c/Filenote.c
 AROS_COPY_SRC := $(AROS_ROOT)/workbench/c/Copy.c
 AROS_LIST_SRC := $(AROS_ROOT)/workbench/c/List.c
 AROS_TOUCH_SRC := $(AROS_ROOT)/workbench/c/Touch.c
+AROS_BEEP_SRC := $(AROS_ROOT)/workbench/c/Beep.c
 LHA_AROS_VERSION := 1.14i.1
 LHA_AROS_URL := https://github.com/sodero/lha/archive/refs/tags/$(LHA_AROS_VERSION).tar.gz
 LHA_AROS_SHA256 := 6776004c56c5fcbbed746517ecf4882e6170d1e5ee553ef228f0e6ff5e4f304b
@@ -245,7 +246,7 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
 # The AmigaDOS commands: what a user types at the shell, and what SYS:C is a
 # drawer of. C: is the loader's last resort, so a command reachable by name
 # and nothing else has to be in here.
-AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias \
+AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias Beep \
                   FailAt Why Prompt MakeDir Copy List Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
                   If Else EndIf Execute Setenv Unsetenv LhA
 # The host side: a launcher, the console, the shell the console starts, and
@@ -254,7 +255,7 @@ AMIGA_COMMANDS := Echo CD PathPart Dir Delete Protect Filenote Fault Ask Get Get
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/PathPart $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD):
 	mkdir -p $@
@@ -334,6 +335,18 @@ $(BUILD)/List.o: $(AROS_LIST_SRC) | $(BUILD)
 
 $(BUILD)/Touch.o: $(AROS_TOUCH_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Beep.o: $(AROS_BEEP_SRC) src/assign_compat.h \
+                 compat/include/intuition/intuitionbase.h | $(BUILD)
+	$(CC) $(CFLAGS) -D__AROS__ -I$(COMPAT) \
+	    -I$(AROS_ROOT)/compiler/include -include src/assign_compat.h \
+	    -c $< -o $@
+
+$(BUILD)/beep_entry.o: src/beep_entry.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+$(BUILD)/wayward_beep.o: src/wayward_beep.c src/wayward_beep.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/native_command_entry.o: src/native_command_entry.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
@@ -696,6 +709,10 @@ $(BUILD)/Touch: $(BUILD)/Touch.o $(BUILD)/native_command_entry.o \
 	              $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
 	              $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
 	              $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Beep: $(BUILD)/Beep.o $(BUILD)/beep_entry.o \
+               $(BUILD)/wayward_beep.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/EndCLI: $(BUILD)/endcli.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
