@@ -37,7 +37,7 @@ static int examine_one(const char *name)
     return 0;
 }
 
-static int examine_children(const char *name)
+static int examine_children(const char *name, int types)
 {
     struct FileInfoBlock fib;
     BPTR lock = Lock((CONST_STRPTR)name, SHARED_LOCK);
@@ -53,9 +53,14 @@ static int examine_children(const char *name)
         UnLock(lock);
         return 1;
     }
-    while (ExNext(lock, &fib))
-        printf("%s\t%s\n", (const char *)fib.fib_FileName,
-               (const char *)fib.fib_Comment);
+    while (ExNext(lock, &fib)) {
+        if (types)
+            printf("%s\t%ld\n", (const char *)fib.fib_FileName,
+                   (long)fib.fib_DirEntryType);
+        else
+            printf("%s\t%s\n", (const char *)fib.fib_FileName,
+                   (const char *)fib.fib_Comment);
+    }
     UnLock(lock);
     return 0;
 }
@@ -63,10 +68,12 @@ static int examine_children(const char *name)
 int main(int argc, char **argv)
 {
     if (argc != 3 ||
-        (strcmp(argv[1], "examine") != 0 && strcmp(argv[1], "exnext") != 0)) {
-        fprintf(stderr, "usage: dos-comment-test examine|exnext NAME\n");
+        (strcmp(argv[1], "examine") != 0 && strcmp(argv[1], "exnext") != 0 &&
+         strcmp(argv[1], "exnext-types") != 0)) {
+        fprintf(stderr, "usage: dos-comment-test examine|exnext|exnext-types NAME\n");
         return 2;
     }
-    return strcmp(argv[1], "examine") == 0 ? examine_one(argv[2]) :
-                                             examine_children(argv[2]);
+    if (strcmp(argv[1], "examine") == 0)
+        return examine_one(argv[2]);
+    return examine_children(argv[2], strcmp(argv[1], "exnext-types") == 0);
 }

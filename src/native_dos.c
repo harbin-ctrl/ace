@@ -664,7 +664,12 @@ static int native_fill_fib(const char *path, const char *name,
     const char *fib_name = name;
     char mapped_path[PATH_MAX];
 
-    if (stat(path, &information) != 0) {
+    /* A Linux symbolic link maps directly to AmigaDOS's ST_SOFTLINK.  Use
+       lstat(), not stat(): a directory listing must report the link object
+       even when its target has gone away.  Normal Lock()/Open() resolution
+       still follows a link, so operating on a dangling softlink retains the
+       genuine AmigaDOS ERROR_OBJECT_NOT_FOUND behaviour. */
+    if (lstat(path, &information) != 0) {
         native_ioerr = errno;
         return -1;
     }
@@ -680,7 +685,8 @@ static int native_fill_fib(const char *path, const char *name,
         fib_name = last ? last + 1 : mapped_path;
     }
     memset(fib, 0, sizeof(*fib));
-    fib->fib_DirEntryType = S_ISDIR(information.st_mode) ? ST_USERDIR : ST_FILE;
+    fib->fib_DirEntryType = S_ISLNK(information.st_mode) ? ST_SOFTLINK :
+                            (S_ISDIR(information.st_mode) ? ST_USERDIR : ST_FILE);
     fib->fib_EntryType = fib->fib_DirEntryType;
     if (strlen(fib_name) >= sizeof(fib->fib_FileName)) {
         native_ioerr = ERROR_LINE_TOO_LONG;

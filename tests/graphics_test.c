@@ -332,6 +332,60 @@ static void test_scroll_raster_direction(void)
     free(frame);
 }
 
+/* The cursor must redraw the remembered glyph with remembered colours. A
+ * pixel-wise pen-index inversion would turn the solid background/foreground
+ * into unrelated palette entries while leaving antialiased edge pixels on a
+ * different colour ramp. With RGB XOR, every cursor pixel is the complement
+ * of the corresponding ordinary glyph pixel. */
+static void test_cursor_redraws_glyph(void)
+{
+    Object *unit;
+    IPTR position[2] = { 1, 1 };
+    uint8_t *normal;
+    uint8_t *cursor;
+    int cell_width = g_font->tf_XSize;
+    int cell_height = g_font->tf_YSize;
+    int x, y, channel;
+
+    SetDrMd(g_rp, JAM2);
+    SetAPen(g_rp, 0);
+    RectFill(g_rp, 0, 0, WIN_WIDTH - 1, WIN_HEIGHT - 1);
+
+    unit = test_unit_construction();
+    write_text(unit, "A");
+
+    normal = read_frame();
+    Console_DoCommand(unit, C_CURSOR_POS, 2, position);
+    cursor = read_frame();
+
+    for (y = 0; y < cell_height; y++) {
+        for (x = 0; x < cell_width; x++) {
+            const uint8_t *normal_pixel =
+                normal + ((size_t)y * WIN_WIDTH + x) * 3;
+            const uint8_t *cursor_pixel =
+                cursor + ((size_t)y * WIN_WIDTH + x) * 3;
+
+            for (channel = 0; channel < 3; channel++)
+                assert(abs((int)cursor_pixel[channel] +
+                           (int)normal_pixel[channel] - 255) <= 1);
+        }
+    }
+
+    Console_UnRenderCursor(unit);
+    free(cursor);
+    cursor = read_frame();
+    for (y = 0; y < cell_height; y++)
+        for (x = 0; x < cell_width; x++)
+            for (channel = 0; channel < 3; channel++)
+                assert(abs((int)cursor[((size_t)y * WIN_WIDTH + x) * 3 +
+                                       channel] -
+                           (int)normal[((size_t)y * WIN_WIDTH + x) * 3 +
+                                       channel]) <= 1);
+    free(cursor);
+    free(normal);
+    DisposeObject(unit);
+}
+
 /*
  * A COMPLEMENT RectFill is how stdconclass.c draws and erases its cursor, and
  * on planar hardware it inverts the pen index rather than the colour: pen n
@@ -412,6 +466,7 @@ int main(void)
         DisposeObject(unit);
     }
 
+    test_cursor_redraws_glyph();
     test_scroll_raster_direction();
     test_complement_inverts_pen_index();
 

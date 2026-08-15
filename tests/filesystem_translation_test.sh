@@ -24,10 +24,12 @@ delete_dir="$mapping_test_dir/delete-tree"
 delete_protected="$mapping_test_dir/delete-protected"
 note_dir="$mapping_test_dir/filenote"
 note_file="$note_dir/noted.txt"
+softlink_dir="$mapping_test_dir/softlinks"
+softlink_name="$softlink_dir/dangling"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_dot_dir" \
       "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
-      "$delete_dir" "$delete_dir/nested" "$note_dir"
+      "$delete_dir" "$delete_dir/nested" "$note_dir" "$softlink_dir"
 touch "$rename_source"
 touch "$rename_question_source"
 touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
@@ -65,11 +67,13 @@ cleanup()
     [ -e "$run_created_dir" ] && rmdir "$run_created_dir" 2>/dev/null || true
     chmod u+w "$delete_protected" 2>/dev/null || true
     rm -rf "$delete_dir" "$delete_protected" "$note_dir" 2>/dev/null || true
+    [ -L "$softlink_name" ] && unlink "$softlink_name" 2>/dev/null || true
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_dot_create_dir" "$mapping_dotdot_create_dir" \
           "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
           "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
           "$mapping_long_dir" "$mapping_dot_dir" "$mapping_dotdot_dir" \
+          "$softlink_dir" \
           "$mapping_test_dir" \
           2>/dev/null || true
 }
@@ -151,6 +155,37 @@ case "$mapped_dir_output" in
         exit 1
         ;;
 esac
+
+# A softlink is itself a directory entry, even if its target is gone.  This
+# is the AmigaDOS distinction between examining a link and following it:
+# ExNext reports ST_SOFTLINK, while a subsequent Lock on the name fails.
+ln -s "$softlink_dir/missing-target" "$softlink_name"
+softlink_dir_name=$(control name "$softlink_dir")
+softlink_types=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" exnext-types "$softlink_dir_name")
+case "$softlink_types" in
+    *"dangling$(printf '\t')3"*) ;;
+    *) echo "ExNext did not report dangling link as ST_SOFTLINK: $softlink_types" >&2; exit 1 ;;
+esac
+softlink_dir_output=$(printf 'DIR %s\nEndCLI\n' "$softlink_dir_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=filesystem-test "$repo_dir/build/ace-user-shell")
+case "$softlink_dir_output" in
+    *"dangling"*) ;;
+    *) echo "DIR did not list dangling softlink: $softlink_dir_output" >&2; exit 1 ;;
+esac
+case "$softlink_dir_output" in
+    *"Could not get information for $softlink_dir_name"*)
+        echo "DIR failed while listing dangling softlink" >&2
+        exit 1
+        ;;
+esac
+if env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" examine "$softlink_dir_name/dangling" \
+    >/dev/null 2>&1; then
+    echo "Lock followed a dangling softlink successfully" >&2
+    exit 1
+fi
 
 # Assign is a true multi-directory union. The AROS GetDeviceProc() iterator
 # must advance from the first AssignList target to the second when the object
