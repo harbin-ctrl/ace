@@ -213,12 +213,17 @@ grep -q 'Line number 3 too small' "$test_dir/output" ||
 # trailing empty one, replayed here and compared byte for byte. The only
 # things left out are the ":" prompt, which appears when commands are typed
 # rather than read from a file, and the echo of the typed commands.
+# Two files, because the transcripts were taken on two of them: the earlier
+# session's file ended with a blank line, which is why its extra line is 8,
+# and the later one does not, which is why its extra line is 7.
 printf 'one cat\ntwo dog\nthree cat cat\nfour\nfive\nsix\n\n' > "$test_dir/original"
+printf 'one cat\ntwo dog\nthree cat cat\nfour\nfive\nsix\n' > "$test_dir/original6"
 
 transcript()
 {
     name=$1
-    cp "$test_dir/original" "$work/$name.txt"
+    source=${2:-"$test_dir/original"}
+    cp "$source" "$work/$name.txt"
     edit "SYS:C/$name.txt" WITH "SYS:C/$name.cmd" > "$test_dir/$name.out" 2>&1 ||
         true
     cmp -s "$test_dir/$name.out" "$test_dir/$name.expected" || {
@@ -286,6 +291,27 @@ cmp -s "$work/queue.txt" "$test_dir/queue.original" ||
 printf 'M2;I\nx\nZ\nP;?\nSTOP\n' > "$work/insert.cmd"
 printf 'Editor\n2.\ntwo dog\n+++.\nx\n' > "$test_dir/insert.expected"
 transcript insert
+
+# More transcripts from the original. Delete with a range, insert before a
+# numbered line, replace, and the period that is not an argument to D.
+printf 'D2 3\n?\nI4\ninserted\nZ\n?\nR\nreplaced\nZ\n?\nD.*\n?\nSTOP\n' \
+    > "$work/edits.cmd"
+printf 'Editor\n4.\nfour\n4.\nfour\n4.\nfour\n5.\nfive\n5.\nfive\n >\nUnknown command - .\n6.\nsix\n6.\nsix\n' \
+    > "$test_dir/edits.expected"
+transcript edits "$test_dir/original6"
+
+# T on the extra line past the end types it -- an empty line -- and then
+# verifies it, because typing shows text without a number and only a numbered
+# display satisfies the pending verification.
+printf 'M*\nT\nSTOP\n' > "$work/typeend.cmd"
+printf 'Editor\n7*\n\n\n7*\n\n' > "$test_dir/typeend.expected"
+transcript typeend "$test_dir/original6"
+
+# ! heads its two rows with the line number, and marks capitals underneath
+# with underscores.
+printf 'M1;E/one/ONE/\n!\nSTOP\n' > "$work/hex.cmd"
+printf 'Editor\n1.\nONE cat\n1.\nONE cat\n___\n' > "$test_dir/hex.expected"
+transcript hex "$test_dir/original6"
 
 # A missing source file is a failure, not an empty edit.
 set +e

@@ -47,7 +47,16 @@
  *   - T,L has a one-line format of its own -- the number right-aligned in
  *     five columns, two spaces, the text -- while T and T,P and T,N type the
  *     text alone. Only ? and ! and the end-of-line verification use the
- *     two-line form.
+ *     two-line form, and only those satisfy a pending verification: T ending
+ *     on the current line still leaves it to be verified afterwards.
+ *
+ *   - ! heads its two rows with the line number and marks capitals with
+ *     underscores, not the minus signs the manual describes.
+ *
+ *   - D takes a count or a range. The manual's "D .*" for deleting to the end
+ *     of the file is not a thing: D runs on its own and the period is left
+ *     over as "Unknown command - .", which is how an unreadable character is
+ *     reported where an unknown name is only "Unknown command".
  *
  *   - M takes a number or an asterisk. A period is "Number expected after M",
  *     and the offending character is consumed with the command rather than
@@ -224,6 +233,7 @@ struct Edit
        prompt. */
     LONG entry_serial;
     LONG shown_serial;
+    LONG numbered_serial;
     BOOL shown_any;
     BOOL modified;
     BOOL verified;
@@ -342,6 +352,7 @@ static const struct CommandName command_names[] =
 
 static void execute_line(struct Edit *edit, UBYTE *text, LONG length);
 static void execute_commands(struct Edit *edit, struct Parser *parser);
+static void report_unknown(struct Edit *edit, struct Parser *parser);
 
 /* ------------------------------------------------------------------ */
 /* Small character and string helpers, written out rather than taken from
@@ -956,6 +967,20 @@ static BOOL move_to_number(struct Edit *edit, LONG number)
    the number is on the line above -- and the original leaves the cursor
    sitting after that pointer rather than ending the line, which is why a
    command typed next appears alongside it. */
+/* The number, or +++ for a line that has none of its own because it was
+   inserted or split.  The terminator is a period, except on the extra line
+   past the end of the file, which shows the number it would have and an
+   asterisk. */
+static void verify_header(struct Edit *edit, struct Line *line)
+{
+    if (line->number > 0)
+        ver_number(edit, line->number);
+    else
+        ver_text(edit, "+++");
+    ver_char(edit, line->phantom ? '*' : '.');
+    ver_newline(edit);
+}
+
 static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
 {
     LONG index;
@@ -979,8 +1004,10 @@ static void verify_line(struct Edit *edit, struct Line *line, BOOL numbered)
     ver_newline(edit);
     edit->shown_serial = line->serial;
     edit->shown_any = TRUE;
-    if (numbered)
+    if (numbered) {
+        edit->numbered_serial = line->serial;
         edit->verified = TRUE;
+    }
     if (edit->pointer > 0 && line == edit->current) {
         for (index = 0; index < edit->pointer; index++)
             ver_char(edit, ' ');
@@ -1015,9 +1042,12 @@ static void verify_pending(struct Edit *edit)
        on the screen. */
     if (!moved && !edit->modified && !edit->shown_any)
         return;
-    /* Something already left the current line on the screen -- an explicit ?,
-       or a T that ended on it. */
-    if (edit->shown_serial == serial)
+    /* Only a numbered display satisfies the pending verification.  The typing
+       commands show text without numbers, so T ending on the current line
+       still leaves it to be verified -- which is what T on the extra line
+       past the end does, typing its empty text and then showing 7* after
+       it. */
+    if (edit->numbered_serial == serial)
         return;
     verify_line(edit, edit->current, TRUE);
 }
@@ -1039,6 +1069,7 @@ static void verify_hex(struct Edit *edit)
 
     if (!line)
         return;
+    verify_header(edit, line);
     for (index = 0; index < line->length; index++) {
         UBYTE character = line->text[index];
 
@@ -1046,17 +1077,32 @@ static void verify_hex(struct Edit *edit)
                        hex_digit((UBYTE)(character >> 4)));
     }
     ver_newline(edit);
-    for (index = 0; index < line->length; index++) {
-        UBYTE character = line->text[index];
+    {
+        LONG last = -1;
 
-        if (!is_graphic(character))
-            ver_char(edit, hex_digit(character));
-        else if (character >= 'A' && character <= 'Z')
-            ver_char(edit, '-');
-        else
-            ver_char(edit, ' ');
+        for (index = 0; index < line->length; index++) {
+            UBYTE character = line->text[index];
+
+            if (!is_graphic(character) ||
+                (character >= 'A' && character <= 'Z'))
+                last = index;
+        }
+        for (index = 0; index <= last; index++) {
+            UBYTE character = line->text[index];
+
+            if (!is_graphic(character))
+                ver_char(edit, hex_digit(character));
+            else if (character >= 'A' && character <= 'Z')
+                ver_char(edit, '_');
+            else
+                ver_char(edit, ' ');
+        }
     }
     ver_newline(edit);
+    edit->shown_serial = line->serial;
+    edit->numbered_serial = line->serial;
+    edit->shown_any = TRUE;
+    edit->verified = TRUE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1278,6 +1324,26 @@ static enum Command parse_command(struct Parser *parser)
         }
     }
     return CMD_NONE;
+}
+
+/* A command that could not be read.  A name made of letters is simply
+   unknown; anything else is named in the message, as D.* gets for its period
+   once the D has been taken as a command of its own. */
+static void report_unknown(struct Edit *edit, struct Parser *parser)
+{
+    LONG at = parser->position;
+
+    if (at < parser->length && !is_letter(parser->text[at])) {
+        UBYTE message[32];
+
+        memcpy(message, "Unknown command - ", 18);
+        message[18] = parser->text[at];
+        message[19] = '\0';
+        parser->position++;
+        report(edit, (const char *)message);
+        return;
+    }
+    report(edit, "Unknown command");
 }
 
 /* ------------------------------------------------------------------ */
@@ -1685,24 +1751,9 @@ static void command_delete(struct Edit *edit, struct Parser *parser)
 {
     LONG first;
     LONG last;
-    LONG character = parse_peek(parser);
 
-    if (character == '.') {
-        parser->position++;
-        if (parse_peek(parser) == '*') {
-            parser->position++;
-            while (!at_end(edit) && delete_current(edit))
-                ;
-            verify_current(edit);
-            return;
-        }
-        delete_current(edit);
-        verify_current(edit);
-        return;
-    }
     if (!parse_number(parser, &first)) {
         delete_current(edit);
-        verify_current(edit);
         return;
     }
     if (!move_to_number(edit, first))
@@ -1712,7 +1763,6 @@ static void command_delete(struct Edit *edit, struct Parser *parser)
             first++;
     } else
         delete_current(edit);
-    verify_current(edit);
 }
 
 static void command_delete_found(struct Edit *edit, struct Parser *parser)
@@ -2085,6 +2135,7 @@ static void type_numbered(struct Edit *edit, struct Line *line)
         ver_char(edit, is_graphic(line->text[index]) ? line->text[index] : '?');
     ver_newline(edit);
     edit->shown_serial = line->serial;
+    edit->numbered_serial = line->serial;
     edit->shown_any = TRUE;
     edit->verified = TRUE;
 }
@@ -2102,15 +2153,16 @@ static void command_type(struct Edit *edit, struct Parser *parser,
         }
         if (limited && count-- <= 0)
             return;
-        /* The extra line past the end of the source is not part of the file,
-           so typing stops before it rather than showing a line that is not
-           there. */
-        if (!edit->current || at_end(edit))
+        if (!edit->current)
             return;
         if (numbered)
             type_numbered(edit, edit->current);
         else
             verify_line(edit, edit->current, FALSE);
+        /* The first line typed is the current line, the extra line past the
+           end of the file included, and typing stops there. */
+        if (at_end(edit))
+            return;
         if (!next_line(edit))
             return;
     }
@@ -2488,7 +2540,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     command = parse_command(parser);
     switch (command) {
     case CMD_NONE:
-        report(edit, "Unknown command");
+        report_unknown(edit, parser);
         parser->position = parser->length;
         return;
 
@@ -2746,7 +2798,7 @@ static void execute_commands(struct Edit *edit, struct Parser *parser)
             break;
         execute_one(edit, parser);
         if (parser->position == before) {
-            report(edit, "Unknown command");
+            report_unknown(edit, parser);
             break;
         }
     }
@@ -2767,6 +2819,7 @@ static void execute_line(struct Edit *edit, UBYTE *text, LONG length)
     edit->entry_serial = edit->current ? edit->current->serial : 0;
     edit->modified = FALSE;
     edit->shown_serial = 0;
+    edit->numbered_serial = 0;
     edit->shown_any = FALSE;
     edit->verified = FALSE;
     parser_init(&parser, text, length, 0);
