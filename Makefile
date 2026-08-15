@@ -277,7 +277,7 @@ all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(
 # TINE is a guest program, so its build is deliberately separate from the
 # core command graph.  Install invokes it after ACE itself is built; this
 # avoids two make processes racing to build ACE's shared broker objects.
-TINE_DIR ?= $(CURDIR)/../tools/tine
+TINE_DIR ?= $(CURDIR)/tools/tine
 .PHONY: tine
 tine:
 	$(MAKE) -C "$(TINE_DIR)" ACE_DIR="$(CURDIR)" tine
