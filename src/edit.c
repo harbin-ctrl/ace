@@ -141,6 +141,11 @@
  * global and has no S,G at all, which is what the program does -- along with
  * ' to repeat the previous A, B or E command, H to set a halt line, M+ and M-
  * to reach the ends of the buffer, and the file-taking forms of I and R.
+ *
+ * H sets a halt line -- moving forward stops on it and reports "Ceiling
+ * reached" -- and H * takes it off again. Two of the quick reference's own
+ * entries are wrong about the program, though: "Z t" and "CL t" both take no
+ * argument at all, refusing every spelling tried with "Illegal qualifiers".
  */
 
 #include <exec/types.h>
@@ -293,6 +298,9 @@ struct Edit
 
     LONG pointer;
     LONG renumber;
+    /* The halt line set by H: moving forward stops when the line with this
+       number is current, and says so. */
+    LONG ceiling;
 
     BPTR ver;
     BOOL ver_close;
@@ -361,7 +369,7 @@ enum Command
     CMD_PR, CMD_PA, CMD_PB,
     CMD_DTA, CMD_DTB, CMD_DFA, CMD_DFB,
     CMD_SB, CMD_SA, CMD_CL,
-    CMD_REWIND, CMD_V, CMD_T, CMD_TP, CMD_TN, CMD_TL,
+    CMD_REWIND, CMD_V, CMD_T, CMD_TP, CMD_TN, CMD_TL, CMD_H,
     CMD_GA, CMD_GB, CMD_GE, CMD_CG, CMD_DG, CMD_EG, CMD_SHG,
     CMD_C, CMD_FROM, CMD_CF, CMD_TO, CMD_Q, CMD_W, CMD_STOP
 };
@@ -416,6 +424,7 @@ static const struct CommandName command_names[] =
     { "D",      CMD_D },
     { "E",      CMD_E },
     { "F",      CMD_F },
+    { "H",      CMD_H },
     { "I",      CMD_I },
     { "M",      CMD_M },
     { "N",      CMD_N },
@@ -948,7 +957,16 @@ static struct Line *pull_line(struct Edit *edit)
 
 static BOOL next_line(struct Edit *edit)
 {
-    struct Line *line = pull_line(edit);
+    struct Line *line;
+
+    /* The halt line stops everything that moves forward, once it is the line
+       being stood on. */
+    if (edit->ceiling > 0 && edit->current && edit->current->number > 0 &&
+        edit->current->number >= edit->ceiling) {
+        report(edit, "Ceiling reached");
+        return FALSE;
+    }
+    line = pull_line(edit);
 
     if (!line) {
         report(edit, "Input exhausted");
@@ -2368,20 +2386,25 @@ static void command_split(struct Edit *edit, struct Parser *parser, BOOL after)
     verify_current(edit);
 }
 
+/* C,L joins the current line with the next one.  The quick reference gives it
+   a string to put between them -- "CL t" -- and the program refuses one, in
+   both the spellings tried: CL/ / and CL / / are each "Illegal qualifiers".
+   So it joins and takes nothing, the same story as Z. */
 static void command_join(struct Edit *edit, struct Parser *parser)
 {
-    UBYTE text[STRING_SIZE];
-    LONG length = 0;
     struct Line *next;
+    LONG character = parse_peek(parser);
 
+    if (character >= 0 && character != ';' && !is_letter((UBYTE)character) &&
+        !is_digit((UBYTE)character)) {
+        parser->position++;
+        report(edit, "Illegal qualifiers");
+        return;
+    }
     if (!edit->current || edit->current->phantom) {
         report(edit, "Input exhausted");
         return;
     }
-    if (parse_string(parser, text, &length))
-        if (!line_insert(edit, edit->current, edit->current->length, text,
-                         length))
-            return;
     next = pull_line(edit);
     if (!next) {
         report(edit, "Input exhausted");
@@ -3039,6 +3062,19 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         command_join(edit, parser);
         return;
 
+    case CMD_H: {
+        LONG number;
+
+        /* H sets the halt line; H * takes it off again. */
+        if (parse_peek(parser) == '*') {
+            parser->position++;
+            edit->ceiling = 0;
+        } else if (parse_number(parser, &number))
+            edit->ceiling = number;
+        else
+            edit->ceiling = 0;
+        return;
+    }
     case CMD_REWIND:
         rewind_file(edit);
         return;

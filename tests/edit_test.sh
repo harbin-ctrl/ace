@@ -117,10 +117,12 @@ edit SYS:C/six.txt WITH SYS:C/six.cmd > /dev/null || fail 'split failed'
 printf 'left \nright\nlast' > "$test_dir/expected"
 cmp -s "$work/six.txt" "$test_dir/expected" || fail 'split wrote the wrong file'
 
+# C,L takes no string, whatever the quick reference says: the original
+# refuses one. So it joins the two lines and nothing goes between them.
 printf 'left\nright\n' > "$work/seven.txt"
-printf 'V-\nCL/ /\nM*\nW\n' > "$work/seven.cmd"
+printf 'V-\nCL\nM*\nW\n' > "$work/seven.cmd"
 edit SYS:C/seven.txt WITH SYS:C/seven.cmd > /dev/null || fail 'join failed'
-expect_file seven.txt 'left right'
+expect_file seven.txt 'leftright'
 
 # Moving backward through the queue of previous lines, and the limit the
 # PREVIOUS argument puts on it.
@@ -522,6 +524,14 @@ printf 'V-\nI3 .SYS:C/piece.txt.\nM*\nW\n' > "$work/insfile.cmd"
 edit SYS:C/insfile.txt WITH SYS:C/insfile.cmd > /dev/null ||
     fail 'inserting a file failed'
 expect_file insfile.txt 'one cat' 'two dog' X1 X2 'three cat cat' four five six
+
+# H sets a halt line: moving forward stops on it and says so. Z and C,L both
+# refuse the string argument the quick reference gives them.
+printf 'one cat\ntwo dog\nCAT cat pig\nfour\n' > "$test_dir/ceiling.original"
+printf 'Z /END/\nM1;CL / /;?\nH 3\nM*\nSTOP\n' > "$work/ceiling.cmd"
+printf 'Editor\n  >\nIllegal qualifiers\n      >\nIllegal qualifiers\n >\nCeiling reached\n3.\nCAT cat pig\n' \
+    > "$test_dir/ceiling.expected"
+transcript ceiling "$test_dir/ceiling.original"
 
 # A missing source file is a failure, not an empty edit.
 set +e
