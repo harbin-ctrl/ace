@@ -170,13 +170,36 @@ edit SYS:C/eleven.txt WITH SYS:C/eleven.cmd > /dev/null ||
     fail 'nested command file failed'
 expect_file eleven.txt replaced k2 tail
 
-# A line longer than WIDTH is carried in two while it is edited and written
-# back as one, so a narrow window does not damage the file.
-printf 'abcdefghijklmnopqrstuvwxyz\nshort\n' > "$work/twelve.txt"
-printf 'V-\nM*\nW\n' > "$work/twelve.cmd"
-edit SYS:C/twelve.txt WIDTH 16 WITH SYS:C/twelve.cmd > /dev/null ||
-    fail 'narrow width failed'
-expect_file twelve.txt abcdefghijklmnopqrstuvwxyz short
+# WIDTH sizes the memory the queue needs; it does not limit a line. A line
+# longer than WIDTH is carried whole, shown whole, and written back whole.
+printf 'abcdefghijklmnopqrstuvwxyz0123456789\n' > "$work/twelve.txt"
+printf '?\nN\nSTOP\n' > "$work/twelve.cmd"
+edit SYS:C/twelve.txt WIDTH 20 WITH SYS:C/twelve.cmd > "$test_dir/output" 2>&1 ||
+    true
+printf 'Editor\n1.\nabcdefghijklmnopqrstuvwxyz0123456789\n2*\n\n' \
+    > "$test_dir/expected"
+cmp -s "$test_dir/output" "$test_dir/expected" ||
+    fail 'WIDTH chopped a line instead of sizing memory'
+expect_file twelve.txt abcdefghijklmnopqrstuvwxyz0123456789
+
+# Trailing blanks are dropped, and T,R+ does not bring back the ones already
+# read past.
+printf 'abc   \n' > "$work/blanks.txt"
+printf 'V-\nM*\nW\n' > "$work/blanks.cmd"
+edit SYS:C/blanks.txt WITH SYS:C/blanks.cmd > /dev/null || fail 'blanks run failed'
+expect_file blanks.txt abc
+printf 'abc   \n' > "$work/blanks.txt"
+printf 'TR+\nM*\nW\n' > "$work/blanks.cmd"
+edit SYS:C/blanks.txt WITH SYS:C/blanks.cmd > /dev/null || fail 'TR+ run failed'
+expect_file blanks.txt abc
+
+# A file whose last line has no line feed does not gain one.
+printf 'first\nlast' > "$work/noeol.txt"
+printf 'V-\nM*\nW\n' > "$work/noeol.cmd"
+edit SYS:C/noeol.txt WITH SYS:C/noeol.cmd > /dev/null || fail 'noeol run failed'
+printf 'first\nlast' > "$test_dir/expected"
+cmp -s "$work/noeol.txt" "$test_dir/expected" ||
+    fail 'a missing final line feed was added'
 
 # A line number that is not in the file walks to the end and reports running
 # out of input, the way the original does, rather than searching for it

@@ -435,10 +435,11 @@ printf 'M2\nE/old/new/\nM*\nW\n' | ./build/Edit WORK:notes.txt
 The source file passes through a queue of previous lines on its way to the
 destination, and `PREVIOUS` and `WIDTH` size that queue exactly as the manual
 says: `PREVIOUS` lines of `WIDTH` characters is the memory it uses, and the
-number of lines `P` can move back over. A line longer than `WIDTH` is carried
-in two while it is edited and written back as one, and a last line with no
-line feed does not acquire one, so an edit that changes nothing writes the
-file back byte for byte.
+number of lines `P` can move back over. `WIDTH` does not limit a line, though
+-- the original shows and writes a line longer than it whole, and so does
+this. Trailing blanks are dropped and a last line with no line feed does not
+acquire one, so an edit that changes nothing writes the file back byte for
+byte.
 
 With no `TO` file the editing goes to a work file in `T:`, named the way the
 original names it -- `T:E<nn>-WK<n>`, with the process number in it and the

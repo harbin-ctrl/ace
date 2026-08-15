@@ -60,6 +60,11 @@
  *   - The window deletions cut to the first match, not the last: D,T,A on a
  *     line holding "cat" twice leaves the text after the first one.
  *
+ *   - WIDTH sizes the memory the queue of previous lines needs, which is what
+ *     PREVIOUS * WIDTH describes, but it does not limit a line: WIDTH 20 on a
+ *     36 character line shows and writes it whole. Trailing blanks are
+ *     dropped, and T,R+ does not bring back the ones already read past.
+ *
  *   - D takes a count or a range. The manual's "D .*" for deleting to the end
  *     of the file is not a thing: D runs on its own and the period is left
  *     over as "Unknown command - .", which is how an unreadable character is
@@ -216,6 +221,7 @@ struct Parser
 struct Edit
 {
     LONG width;
+    LONG capacity;
     LONG previous;
 
     struct Line **queue;
@@ -536,7 +542,7 @@ static struct Line *line_alloc(struct Edit *edit)
         edit->spare = line->next;
     else {
         line = (struct Line *)AllocVec((ULONG)(sizeof(struct Line) +
-                                               (size_t)edit->width + 1),
+                                               (size_t)edit->capacity + 1),
                                        MEMF_ANY);
         if (!line)
             return NULL;
@@ -576,7 +582,7 @@ static BOOL line_insert(struct Edit *edit, struct Line *line, LONG at,
 {
     if (length <= 0)
         return TRUE;
-    if (line->length + length > edit->width) {
+    if (line->length + length > edit->capacity) {
         report(edit, "Line too long");
         return FALSE;
     }
@@ -753,7 +759,7 @@ static struct Line *source_line(struct Edit *edit, struct Source *source)
             break;
         }
         line->text[line->length++] = (UBYTE)character;
-        if (line->length == edit->width)
+        if (line->length == edit->capacity)
             break;
         character = reader_char(&source->reader);
     }
@@ -1458,8 +1464,8 @@ static void insert_lines(struct Edit *edit)
             report(edit, "Out of memory");
             return;
         }
-        if (length > edit->width)
-            length = edit->width;
+        if (length > edit->capacity)
+            length = edit->capacity;
         memcpy(line->text, buffer, (size_t)length);
         line->length = length;
         line->text[length] = '\0';
@@ -2910,6 +2916,12 @@ int main(void)
         edit.previous = *(LONG *)args[ARG_PREVIOUS];
     edit.width = clamp(edit.width, MINIMUM_WIDTH, MAXIMUM_WIDTH);
     edit.previous = clamp(edit.previous, MINIMUM_PREVIOUS, MAXIMUM_PREVIOUS);
+    /* WIDTH sizes the memory the queue of previous lines needs, which is what
+       the manual's PREVIOUS * WIDTH describes, but it does not limit a line:
+       the original carries a line longer than WIDTH whole, and shows it
+       whole. So the buffer a line gets is the larger of WIDTH and the default
+       width, and only a line longer than that has to be carried in two. */
+    edit.capacity = edit.width > DEFAULT_WIDTH ? edit.width : DEFAULT_WIDTH;
 
     if (args[ARG_VER]) {
         handle = Open((CONST_STRPTR)args[ARG_VER], MODE_NEWFILE);
