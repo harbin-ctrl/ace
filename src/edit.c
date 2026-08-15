@@ -81,9 +81,12 @@
  *     would be typed with: a ' cmd the manual never describes, the search
  *     string, and the input terminator. The ' cmd is the last change command
  *     typed: E/one/ONE/ saves itself, S,H,D shows it as "E /one/ONE", and '
- *     runs it again -- reporting against the ' rather than into the saved
- *     text. Whether commands other than A, B and E save themselves has not
- *     been checked.
+ *     runs it again against whatever line is current then -- reporting against
+ *     the ' rather than into the saved text. A saves itself as well; moving,
+ *     deleting and creating a global do not.
+ *
+ *   - An argument line it cannot read, no arguments at all included, is
+ *     "bad args".
  *
  *   - Suspending a global is D,G, for disable, not the S,G the manual gives:
  *     S,G is not a command at all. S,H,G shows a D against a disabled one.
@@ -3050,7 +3053,9 @@ int main(void)
 
     args_handle = ReadArgs((CONST_STRPTR)EDIT_TEMPLATE, (IPTR *)args, NULL);
     if (!args_handle) {
-        PrintFault(IoErr(), (CONST_STRPTR)"Edit");
+        /* The original's own words for an argument line it cannot read,
+           including the commonest case of no arguments at all. */
+        report(&edit, "bad args");
         return RETURN_FAIL;
     }
 

@@ -455,6 +455,33 @@ printf "Editor\n1.\nONE cat\n' cmd: E /one/ONE\nSearch string: unset\nInput term
     > "$test_dir/repeat.expected"
 transcript repeat "$test_dir/original6"
 
+# A change command saves itself; moving, deleting and creating a global do
+# not. The ' cmd is the same after all four.
+cp "$test_dir/original6" "$work/saves.txt"
+printf 'A/one/X/\nSHD\nN\nSHD\nD\nSHD\nGE/cat/CAT/\nSHD\nSTOP\n' > "$work/saves.cmd"
+edit SYS:C/saves.txt WITH SYS:C/saves.cmd > "$test_dir/output" 2>&1 ||
+    fail 'the saves run failed'
+[ "$(grep -c "^' cmd: A /one/X$" "$test_dir/output")" = 4 ] ||
+    fail 'the wrong commands were saved for the repeat command'
+
+# Repeating runs against the line current at the time, and an error from it
+# abandons the rest of the line, so '' repeats once.
+cp "$test_dir/original6" "$work/twice.txt"
+printf "E/one/ONE/\n''\nSTOP\n" > "$work/twice.cmd"
+edit SYS:C/twice.txt WITH SYS:C/twice.cmd > "$test_dir/output" 2>&1 ||
+    fail 'the twice run failed'
+[ "$(grep -c '^No match$' "$test_dir/output")" = 1 ] ||
+    fail "'' repeated the wrong number of times"
+
+# An argument line the editor cannot read is the original's own two words.
+set +e
+printf '\n' | edit > "$test_dir/output" 2>&1
+status=$?
+set -e
+[ "$status" -eq 20 ] || fail "no arguments exited $status instead of 20"
+grep -q '^bad args$' "$test_dir/output" ||
+    fail 'no arguments did not report bad args'
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1
