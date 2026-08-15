@@ -79,9 +79,11 @@
  *
  *   - S,H,D shows three saved values, each introduced by the delimiter it
  *     would be typed with: a ' cmd the manual never describes, the search
- *     string, and the input terminator. The ' cmd is a saved command that '
- *     repeats; what sets one is not known, so here there is never one and '
- *     always answers "Nothing to repeat", as the original does with none.
+ *     string, and the input terminator. The ' cmd is the last change command
+ *     typed: E/one/ONE/ saves itself, S,H,D shows it as "E /one/ONE", and '
+ *     runs it again -- reporting against the ' rather than into the saved
+ *     text. Whether commands other than A, B and E save themselves has not
+ *     been checked.
  *
  *   - Suspending a global is D,G, for disable, not the S,G the manual gives:
  *     S,G is not a command at all. S,H,G shows a D against a disabled one.
@@ -286,6 +288,11 @@ struct Edit
     LONG search_length;
     UBYTE last_command[COMMAND_SIZE];
     LONG last_command_length;
+    /* The ' cmd: the last change command typed, kept so that ' can run it
+       again. Stored as it was typed, and re-parsed when it is repeated. */
+    UBYTE saved[COMMAND_SIZE];
+    LONG saved_length;
+    BOOL repeating;
 
     struct Source *sources;
     struct Source *source;
@@ -394,6 +401,7 @@ static const struct CommandName command_names[] =
 static void execute_line(struct Edit *edit, UBYTE *text, LONG length);
 static void execute_commands(struct Edit *edit, struct Parser *parser);
 static void report_unknown(struct Edit *edit, struct Parser *parser);
+static void execute_one(struct Edit *edit, struct Parser *parser);
 
 /* ------------------------------------------------------------------ */
 /* Small character and string helpers, written out rather than taken from
@@ -1376,6 +1384,31 @@ static enum Command parse_command(struct Parser *parser)
     return CMD_NONE;
 }
 
+/* ' runs the saved command again.  Anything it reports points at the ' that
+   asked for it rather than into the saved text, so the parser it runs on is
+   deliberately not made the active one. */
+static void repeat_saved(struct Edit *edit)
+{
+    struct Parser saved;
+
+    if (edit->saved_length == 0) {
+        report(edit, "Nothing to repeat");
+        return;
+    }
+    parser_init(&saved, edit->saved, edit->saved_length, 0);
+    edit->repeating = TRUE;
+    while (!edit->finished && !edit->aborted) {
+        LONG before = saved.position;
+
+        if (parse_peek(&saved) < 0)
+            break;
+        execute_one(edit, &saved);
+        if (saved.position == before)
+            break;
+    }
+    edit->repeating = FALSE;
+}
+
 /* A command that could not be read.  A name made of letters is simply
    unknown; anything else is named in the message, as D.* gets for its period
    once the D has been taken as a command of its own. */
@@ -1887,6 +1920,21 @@ static void command_find(struct Edit *edit, struct Parser *parser,
 
 /* A, B and E, with and without the ,P qualifier that leaves the line window
    pointing after the new text. */
+/* Keeps the text of the command that has just been read, from where its name
+   started to where its arguments ended, as the command ' will run again. */
+static void save_command(struct Edit *edit, struct Parser *parser, LONG start)
+{
+    LONG length = parser->position - start;
+
+    if (edit->repeating || length <= 0)
+        return;
+    if (length > COMMAND_SIZE - 1)
+        length = COMMAND_SIZE - 1;
+    memcpy(edit->saved, parser->text + start, (size_t)length);
+    edit->saved[length] = '\0';
+    edit->saved_length = length;
+}
+
 static void command_change(struct Edit *edit, struct Parser *parser,
                            UBYTE type, BOOL move_pointer)
 {
@@ -2056,7 +2104,21 @@ static void command_show_globals(struct Edit *edit)
    it is always unset -- the line is here because the original prints it. */
 static void command_show_state(struct Edit *edit)
 {
-    ver_text(edit, "' cmd: unset");
+    ver_text(edit, "' cmd: ");
+    if (edit->saved_length > 0) {
+        LONG at = 0;
+        LONG end = edit->saved_length;
+
+        while (at < end && (is_letter(edit->saved[at]) ||
+                            edit->saved[at] == ','))
+            at++;
+        ver_bytes(edit, edit->saved, at);
+        ver_char(edit, ' ');
+        if (end > at + 1 && edit->saved[end - 1] == edit->saved[at])
+            end--;
+        ver_bytes(edit, edit->saved + at, end - at);
+    } else
+        ver_text(edit, "unset");
     ver_newline(edit);
     ver_text(edit, "Search string: ");
     if (edit->search_length > 0) {
@@ -2492,6 +2554,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
     LONG character = parse_peek(parser);
     LONG count = 1;
     LONG index;
+    LONG command_start;
     enum Command command;
     BOOL flag;
 
@@ -2548,7 +2611,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         return;
     case '\'':
         parser->position++;
-        report(edit, "Nothing to repeat");
+        repeat_saved(edit);
         return;
     case ';':
         parser->position++;
@@ -2627,6 +2690,7 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
         break;
     }
 
+    command_start = parser->position;
     command = parse_command(parser);
     switch (command) {
     case CMD_NONE:
@@ -2668,21 +2732,27 @@ static void execute_one(struct Edit *edit, struct Parser *parser)
 
     case CMD_A:
         command_change(edit, parser, 'A', FALSE);
+        save_command(edit, parser, command_start);
         return;
     case CMD_B:
         command_change(edit, parser, 'B', FALSE);
+        save_command(edit, parser, command_start);
         return;
     case CMD_E:
         command_change(edit, parser, 'E', FALSE);
+        save_command(edit, parser, command_start);
         return;
     case CMD_AP:
         command_change(edit, parser, 'A', TRUE);
+        save_command(edit, parser, command_start);
         return;
     case CMD_BP:
         command_change(edit, parser, 'B', TRUE);
+        save_command(edit, parser, command_start);
         return;
     case CMD_EP:
         command_change(edit, parser, 'E', TRUE);
+        save_command(edit, parser, command_start);
         return;
 
     case CMD_I: {

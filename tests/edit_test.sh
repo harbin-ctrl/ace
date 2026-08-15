@@ -447,6 +447,14 @@ printf 'Editor\nG1\n1.\none CAT\n 1     1 GE/cat/CAT\n 1 D   1 GE/cat/CAT\n 1   
     > "$test_dir/suspend.expected"
 transcript suspend "$test_dir/original6"
 
+# A change command saves itself as the ' cmd, shown by S,H,D as its name, a
+# space, and its arguments without the closing delimiter. ' runs it again,
+# and anything it reports points at the ' rather than into the saved text.
+printf "E/one/ONE/\nSHD\n'\nSTOP\n" > "$work/repeat.cmd"
+printf "Editor\n1.\nONE cat\n' cmd: E /one/ONE\nSearch string: unset\nInput terminator: /Z\n>\nNo match\n" \
+    > "$test_dir/repeat.expected"
+transcript repeat "$test_dir/original6"
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1
