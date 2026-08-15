@@ -1,4 +1,10 @@
-CC ?= cc
+ifeq ($(origin CC),default)
+CC := ccache gcc
+endif
+# ccache handles the local cache; its prefix sends cache misses through
+# distcc. Both remain overridable for local or cross builds.
+CCACHE_PREFIX ?= distcc
+export CCACHE_PREFIX
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-pointer-sign -O2
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
