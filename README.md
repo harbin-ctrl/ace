@@ -410,7 +410,8 @@ that no longer exists. While in scrollback, Ctrl-C copies the retained output
 to the Linux clipboard, or copies a mouse-selected region; the selection is
 disabled in the live console. Ctrl-V pastes the Linux clipboard into the shell
 from either mode, and copy operations briefly report their character count at
-the bottom of the console.
+the bottom of the console. F12 always copies the full retained output and
+returns to the live console when scrollback was active.
 
 ## The standard assigns, and who makes them
 

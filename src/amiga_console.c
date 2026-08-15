@@ -1367,6 +1367,11 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
         paste_clipboard(console);
         return TRUE;
     }
+    if (key == GDK_KEY_F12 && modifiers == 0) {
+        copy_all(console);
+        leave_scrollback(console);
+        return TRUE;
+    }
     leave_scrollback(console);
     if (key == GDK_KEY_F11 && modifiers == 0) {
         toggle_fullscreen(console);
