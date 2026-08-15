@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <dos/dos.h>
@@ -10,6 +12,18 @@
 #include "broker_client.h"
 #include "broker_protocol.h"
 #include "native_host.h"
+
+static void publish_shell_path(void)
+{
+    char executable[PATH_MAX];
+    ssize_t length = readlink("/proc/self/exe", executable,
+                              sizeof(executable) - 1);
+
+    if (length < 0 || (size_t)length >= sizeof(executable) - 1)
+        return;
+    executable[length] = '\0';
+    (void)setenv("ACE_USER_SHELL", executable, 1);
+}
 
 /* The unmodified AROS Shell.c is compiled with its main symbol renamed by
  * the Makefile. This tiny host entry point is the ACE-owned seam around it:
@@ -104,6 +118,7 @@ static void run_startup_scripts(void)
 
 int main(int argc, char **argv)
 {
+    publish_shell_path();
     if (native_broker_ensure() != 0) {
         fputs("ace-user-shell: broker unavailable\n", stderr);
         return 20;
