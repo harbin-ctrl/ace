@@ -126,7 +126,10 @@
 
 #include <string.h>
 
-#define EDIT_TEMPLATE "FROM/A,TO,WITH/K,VER/K,OPT/K,WIDTH/K/N,PREVIOUS/K/N"
+/* The original's own template, as it prints it for a lone ? argument. WIDTH
+   and PREVIOUS are /N rather than /K/N, so they can be given positionally as
+   well as by name. */
+#define EDIT_TEMPLATE "FROM/A,TO,WITH/K,VER/K,OPT/K,WIDTH/N,PREVIOUS/N"
 
 enum {
     ARG_FROM,

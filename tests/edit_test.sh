@@ -426,6 +426,17 @@ printf "Editor\n' cmd: unset\nSearch string: unset\nInput terminator: /Z\n2.\ntw
     > "$test_dir/saved.expected"
 transcript saved "$test_dir/original6"
 
+# The argument template is the original's own, as it prints it for a lone ?.
+# WIDTH and PREVIOUS are /N, so they take a position as well as a keyword.
+printf '\n' | edit '?' > "$test_dir/output" 2>&1 || true
+grep -q 'FROM/A,TO,WITH/K,VER/K,OPT/K,WIDTH/N,PREVIOUS/N' "$test_dir/output" ||
+    fail 'the argument template does not match the original'
+cp "$test_dir/original6" "$work/positional.txt"
+printf '?\nSTOP\n' > "$work/positional.cmd"
+edit SYS:C/positional.txt SYS:C/positional.out 40 5 \
+    WITH SYS:C/positional.cmd > /dev/null ||
+    fail 'positional WIDTH and PREVIOUS were refused'
+
 # A missing source file is a failure, not an empty edit.
 set +e
 edit SYS:C/nosuch.txt < /dev/null > /dev/null 2>&1
