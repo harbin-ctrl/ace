@@ -15,7 +15,8 @@
 
 /* Amiga console.device calls CSI 0x9b.  ACE accepts both this native form
  * and the equivalent ESC-[ form, but emitting native CSI keeps this backend
- * usable on an actual Amiga console as well. */
+ * usable on an actual Amiga console as well.  Its cursor visibility commands
+ * are CSI SP p (visible) and CSI 0 SP p (invisible), not VT ?25h/?25l. */
 #define CSI "\233"
 
 WINDOW *tine_stdscr;
@@ -227,7 +228,7 @@ tine_init(bool reversed, WINDOW **command_window_out)
     enter_raw();
     active = true;
     cursor_visible = true;
-    emit(CSI "?25h");
+    emit(CSI " p");
     clear_screen();
     if (ace_console)
         emit(CSI "12{");
@@ -250,7 +251,7 @@ tine_endwin(void)
 {
     if (!active)
         return;
-    emit(CSI "0m" CSI "?25h" "\n");
+    emit(CSI "0m" CSI " p" "\n");
     if (have_termios)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
     active = false;
@@ -419,7 +420,7 @@ tine_curs_set(int visible)
 {
     int old = cursor_visible ? 1 : 0;
     cursor_visible = visible != 0;
-    emit(cursor_visible ? CSI "?25h" : CSI "?25l");
+    emit(cursor_visible ? CSI " p" : CSI "0 p");
     return old;
 }
 
