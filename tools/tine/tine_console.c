@@ -159,7 +159,7 @@ update_size(void)
     if (requested_cols > 0 && requested_cols < cols)
         cols = requested_cols;
     tine_stdscr->top = 0;
-    tine_stdscr->rows = rows - 1;
+    tine_stdscr->rows = rows;
     tine_stdscr->cols = cols;
     tine_stdscr->y = tine_stdscr->x = 0;
     command_window.top = rows - 1;

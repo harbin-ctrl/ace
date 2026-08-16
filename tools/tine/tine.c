@@ -33,8 +33,7 @@ setupcommand(WINDOW *w, int i)
 {
     (void)i;
     cmdwin = w;
-    if (!reversed)
-       wbkgdset(w, A_REVERSE);
+    wbkgdset(w, reversed ? A_REVERSE : A_NORMAL);
     werase(w);
     return OK;
 }

@@ -1009,8 +1009,6 @@ COMMAND(sh, NOLOCATOR) /* show information */
     free(be);
 
     werase(c);
-    mvwprintw(c, 0, 0,
-        "tine Copyright (C) 2019-2020 Rob King. See COPYING for details.");
     wrefresh(c);
     getkeystroke(e, true);
     if (oc != ERR)
