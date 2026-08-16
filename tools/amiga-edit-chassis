@@ -1,0 +1,24 @@
+; Task chassis, take four. No nested EXECUTE: the loop runs EDIT itself,
+; once per handshake, on WORK:in with commands from WORK:cmd. Returning
+; from a nested EXECUTE is what kept killing the earlier ones.
+FAILAT 100
+ECHO >WORK:alive "awake"
+LAB loop
+IF EXISTS WORK:stop
+  ECHO >WORK:alive "stopped"
+  QUIT
+ENDIF
+IF EXISTS WORK:go
+  DELETE >NIL: WORK:go
+  IF EXISTS WORK:ver
+    DELETE >NIL: WORK:ver
+  ENDIF
+  ECHO >WORK:alive "running"
+  EDIT WORK:in WITH WORK:cmd VER WORK:ver
+  ECHO >WORK:done "ok"
+  ECHO >WORK:alive "idle"
+ENDIF
+IF EXISTS C:Wait
+  C:Wait 1
+ENDIF
+SKIP BACK loop

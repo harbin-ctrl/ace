@@ -103,6 +103,19 @@
  *   - The character pointer runs past the end of the line: 99> on a three
  *     character line puts the mark 98 columns out.
  *
+ *   - The file-switching commands cannot be given a file. C, CF, FROM <name>,
+ *     TO <name> and the file-taking forms of I and R refuse every spelling
+ *     tried -- bare, /slashes/, .periods. as both manuals write them,
+ *     "quotes", 'quotes', (parentheses), and a dozen other delimiters, with
+ *     or without a space, on a name with a colon in it and without. A bare
+ *     word is "Unknown command", a delimiter is "Illegal qualifiers" or
+ *     "Unknown qualifier", and the command alone is "Filename expected", so
+ *     a name is wanted and nothing is accepted as one. FROM and TO with no
+ *     argument, which revert to the original files, do work. This is
+ *     implemented as the manuals describe rather than as the program
+ *     behaves, and it is the one place where that choice was made: a script
+ *     written for the original cannot use these commands anyway.
+ *
  *   - Splitting a line verifies the part it sends out, before the remainder
  *     becomes the current line.
  *

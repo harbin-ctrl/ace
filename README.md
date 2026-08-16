@@ -485,9 +485,18 @@ commands turned out to be spelled differently than the manual says: a global
 is suspended with `DG`, not `SG`, and the manual's `D.*` and `I.*` are `D*`
 and `I*`. The insert terminator cannot be changed at all.
 
-`make test-edit` runs the editor against a broker of its own. Three of its
+`make test-edit` runs the editor against a broker of its own. Many of its
 cases are transcripts taken from the original under emulation, replayed and
 compared byte for byte.
+
+The later ones were not typed by hand. `tools/amiga-edit-chassis` is an
+AmigaDOS script that polls a drawer the emulator shares with the host, runs
+whatever EDIT session it finds staged there, and leaves the `VER` log behind;
+`tools/amiga-edit-drive.sh` stages a run from this side and waits for the
+answer. One run takes a second or two, which turned checking the clone
+against the real program from a typing exercise into something that could be
+done a hundred times. Most of what this editor gets right, it gets right
+because that loop found it wrong first.
 
 ## The standard assigns, and who makes them
 
