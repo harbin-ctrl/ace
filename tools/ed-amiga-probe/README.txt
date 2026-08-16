@@ -14,6 +14,9 @@ saved and the raw console output from each session.  The .raw files are
 important: they preserve ED's cursor movement, screen clearing, prompts, and
 status messages for comparison with Tine.
 
+The command files intentionally put one extended command on each line, as
+required by ED 2.00's WITH-file reader.
+
 The probe is deliberately non-interactive.  It does not modify anything
 outside Work:ed-probe/results and the files it creates there.  Re-running it
 deletes only the contents of that results drawer.
