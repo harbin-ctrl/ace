@@ -13,11 +13,13 @@
 #include <termios.h>
 #include <unistd.h>
 
-/* Amiga console.device calls CSI 0x9b.  ACE accepts both this native form
- * and the equivalent ESC-[ form, but emitting native CSI keeps this backend
- * usable on an actual Amiga console as well.  Its cursor visibility commands
- * are CSI SP p (visible) and CSI 0 SP p (invisible), not VT ?25h/?25l. */
-#define CSI "\233"
+/* Amiga console.device accepts both native CSI (0x9b) and the equivalent
+ * ESC-[ spelling.  Real Ed uses native CSI for device/event controls, but
+ * emits ESC-[ for screen drawing and SGR operations.  Keep those streams
+ * distinct so ET can reproduce the bytes rather than merely the appearance.
+ * Cursor visibility commands remain native CSI SP p / CSI 0 SP p. */
+#define NATIVE_CSI "\233"
+#define SCREEN_CSI "\033["
 
 WINDOW *tine_stdscr;
 
@@ -78,22 +80,22 @@ apply_attr(int attr)
 {
     if (output_attr == attr)
         return;
-    emit(CSI "0m");
+    emit(SCREEN_CSI "0m");
     if (attr & TINE_A_BOLD)
-        emit(CSI "1m");
+        emit(SCREEN_CSI "1m");
     if (attr & TINE_A_UNDERLINE)
-        emit(CSI "4m");
+        emit(SCREEN_CSI "4m");
     if (attr & TINE_A_REVERSE)
-        emit(CSI "7m");
+        emit(SCREEN_CSI "7m");
     if (attr & TINE_A_STATUS)
-        emit(CSI "33m");
+        emit(SCREEN_CSI "33m");
     output_attr = attr;
 }
 
 static void
 move_absolute(int y, int x)
 {
-    emit_csi("\233%d;%dH", y + 1, x + 1);
+    emit_csi("\033[%d;%dH", y + 1, x + 1);
 }
 
 /* Amiga console.device implements erase-in-display as CSI J without a
@@ -104,7 +106,7 @@ static void
 clear_screen(void)
 {
     move_absolute(0, 0);
-    emit(CSI "J");
+    emit(SCREEN_CSI "J");
     move_absolute(0, 0);
 }
 
@@ -126,7 +128,7 @@ update_size(void)
          * CSI 1;1;<rows>;<columns> r.  stdout and stdin are the same
          * session socket here, so this is the authoritative size; there is
          * no host tty for TIOCGWINSZ to inspect. */
-        emit(CSI "0 q");
+        emit(NATIVE_CSI "0 q");
         while (length + 1 < sizeof(reply)) {
             if (read_byte(&byte, -1) != 1)
                 break;
@@ -234,10 +236,10 @@ tine_init(bool reversed, WINDOW **command_window_out)
     enter_raw();
     active = true;
     cursor_visible = true;
-    emit(CSI " p");
+    emit(NATIVE_CSI " p");
     clear_screen();
     if (ace_console)
-        emit(CSI "12{");
+        emit(NATIVE_CSI "12{");
     apply_attr(tine_stdscr->base_attr);
     *command_window_out = &command_window;
     if (offline_callback)
@@ -258,8 +260,8 @@ tine_endwin(void)
     if (!active)
         return;
     if (ace_console)
-        emit(CSI "12}");
-    emit(CSI "0m" CSI " p" "\n");
+        emit(NATIVE_CSI "12}");
+    emit(SCREEN_CSI "0m" NATIVE_CSI " p" "\n");
     if (have_termios)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
     active = false;
@@ -300,7 +302,7 @@ tine_werase(WINDOW *window)
         clear_screen();
     } else {
         move_absolute(window->top, 0);
-        emit(CSI "K");
+        emit(SCREEN_CSI "K");
         move_absolute(window->top, 0);
     }
     window->y = window->x = 0;
@@ -428,7 +430,7 @@ tine_curs_set(int visible)
 {
     int old = cursor_visible ? 1 : 0;
     cursor_visible = visible != 0;
-    emit(cursor_visible ? CSI " p" : CSI "0 p");
+    emit(cursor_visible ? NATIVE_CSI " p" : NATIVE_CSI "0 p");
     return old;
 }
 
