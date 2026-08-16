@@ -116,6 +116,28 @@ apply_attr(int attr)
 {
     if (output_attr == attr)
         return;
+
+    /* Ed selects pen 3 for status text and pen 1 for ordinary text.  These
+     * are complete Amiga console pen selections, not ANSI attribute resets:
+     * the byte stream emitted when a status message ends is specifically
+     * ESC-[31m.  Preserve the compact transition while retaining the old
+     * reset-and-reapply path for combinations TINE itself uses for tags. */
+    if (attr == TINE_A_STATUS && output_attr == TINE_A_NORMAL) {
+        emit(SCREEN_CSI "33m");
+        output_attr = attr;
+        return;
+    }
+    if (attr == TINE_A_NORMAL && output_attr == TINE_A_STATUS) {
+        emit(SCREEN_CSI "31m");
+        output_attr = attr;
+        return;
+    }
+
+    /* The initial Amiga setup already selects the ordinary pen. */
+    if (output_attr < 0 && attr == TINE_A_NORMAL) {
+        output_attr = attr;
+        return;
+    }
     emit(SCREEN_CSI "0m");
     if (attr & TINE_A_BOLD)
         emit(SCREEN_CSI "1m");
