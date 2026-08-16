@@ -157,4 +157,25 @@ cmp -s "$sys_dir/C/size-limit.txt" "$test_dir/expected" ||
     'FROM/A,SIZE/N,WITH/K,WINDOW/K,TABS/N,WIDTH=COLS/N,HEIGHT=ROWS/N' ] ||
     fail 'ED ? did not print the ED template'
 
+# ED 2.00's immediate control-key defaults: Ctrl-H deletes left, Ctrl-I moves
+# to the next tab stop, Ctrl-A inserts a line, and undefined controls do
+# nothing. Save the resulting file through extended X and verify the layout.
+: > "$sys_dir/C/key-map.txt"
+set +e
+{
+    sleep 0.7
+    printf 'a\010\003\001c\011b\013d\033X\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-key-map-test \
+         '$repo_dir/build/ED' SYS:C/key-map.txt" \
+        "$test_dir/key-map.log" >/dev/null 2>&1
+key_status=$?
+set -e
+[ "$key_status" -eq 0 ] || fail 'ED immediate-key session failed'
+printf 'c  bd\n\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/key-map.txt" "$test_dir/expected" ||
+    fail 'ED immediate control-key mappings differ'
+
 printf 'tine ESC prompt test passed\n'
