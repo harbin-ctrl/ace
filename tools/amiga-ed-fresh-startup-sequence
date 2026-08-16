@@ -1,0 +1,15 @@
+; Fresh ACE ED chassis startup.  This file is installed only in the
+; disposable System: copy made by tools/amiga-ed-fresh-run.
+; Keep the boot small and deterministic: the real AmigaOS 3.1 ED binary still
+; comes from the Amiga Forever System: volume.  Workbench is not needed for
+; this CLI-driven probe.
+
+C:MakeDir RAM:T RAM:ENV
+Assign T: RAM:T
+Assign ENV: RAM:ENV
+Assign Work: EXISTS
+Path C: SYS:System SYS:Utilities S:
+
+C:Execute Work:ed-probe/boot-run
+
+EndCLI >NIL:

@@ -2,12 +2,13 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-amiberry=${AMIBERRY_LITE:-/usr/local/bin/amiberry-lite}
+fs_uae=${FS_UAE:-fs-uae}
 af_root=${AF_ROOT:-/home/pi/AF/Shared}
+model=${AMIGA_MODEL:-A1200}
 rom=${AMIGA_ROM:-$af_root/rom/amiga-os-310-a1200.rom}
 
-if [ ! -x "$amiberry" ]; then
-    printf '%s\n' "Amiberry Lite not found or not executable: $amiberry" >&2
+if ! command -v "$fs_uae" >/dev/null 2>&1; then
+    printf '%s\n' "FS-UAE not found: $fs_uae" >&2
     exit 2
 fi
 if [ ! -f "$rom" ]; then
@@ -22,7 +23,8 @@ fi
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/ace-amiga-ed.XXXXXX")
 system_root=$run_root/System
 work_root=$run_root/Work
-log_file=$run_root/amiberry.log
+log_file=$run_root/fs-uae.log
+config_file=$run_root/amiga-ed-test.fs-uae
 probe_root=$work_root/ed-probe
 emulator_pid=
 
@@ -42,6 +44,16 @@ stop_emulator()
     fi
 }
 
+emulator_alive()
+{
+    [ -n "$emulator_pid" ] || return 1
+    kill -0 "$emulator_pid" 2>/dev/null || return 1
+    case "$(ps -o stat= -p "$emulator_pid" 2>/dev/null | tr -d ' ')" in
+        Z*) return 1 ;;
+    esac
+    return 0
+}
+
 trap 'stop_emulator' EXIT
 trap 'exit 130' INT TERM
 
@@ -49,24 +61,25 @@ mkdir "$work_root"
 cp -a "$af_root/dir/System" "$system_root"
 cp -a "$repo_dir/tools/ed-amiga-probe/." "$probe_root"
 chmod -R u+rwX "$system_root" "$work_root"
+cp "$repo_dir/tools/amiga-ed-fresh-startup-sequence" "$system_root/S/Startup-Sequence"
 cp "$repo_dir/tools/amiga-ed-fresh-user-startup" "$system_root/S/user-startup"
 cp "$repo_dir/tools/amiga-ed-fresh-guest-run" "$probe_root/boot-run"
+sed \
+    -e "s|__MODEL__|$model|g" \
+    -e "s|__ROM__|$rom|g" \
+    -e "s|__SYSTEM__|$system_root|g" \
+    -e "s|__WORK__|$work_root|g" \
+    "$repo_dir/tools/amiga-ed-fs-uae.fs-uae.in" >"$config_file"
 
-"$amiberry" --log -G \
-    --model A1200 \
-    -r "$rom" \
-    -s gfx_display=0 \
-    -s gfx_fullscreen_amiga=false \
-    -s "filesystem2=rw,DH0:System:$system_root,0" \
-    -s "filesystem2=rw,DH1:Work:$work_root,0" \
+"$fs_uae" "$config_file" \
     >"$log_file" 2>&1 &
 emulator_pid=$!
 
 complete=$probe_root/results/COMPLETE
 ticks=0
 while [ ! -f "$complete" ] && [ "$ticks" -lt 600 ]; do
-    if ! kill -0 "$emulator_pid" 2>/dev/null; then
-        printf '%s\n' "Amiberry Lite exited before the probe completed." >&2
+    if ! emulator_alive; then
+        printf '%s\n' "FS-UAE exited before the probe completed." >&2
         tail -80 "$log_file" >&2 || true
         exit 1
     fi

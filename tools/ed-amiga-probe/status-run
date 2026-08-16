@@ -1,0 +1,7 @@
+; Interactive ED status-page probe.  The SH command pauses for a real
+; keystroke, so it is intentionally separate from the non-interactive batch.
+IF NOT EXISTS Work:ed-probe/results
+  MAKEDIR Work:ed-probe/results
+ENDIF
+COPY Work:ed-probe/seed.txt Work:ed-probe/results/status.txt
+ED Work:ed-probe/results/status.txt WITH Work:ed-probe/cmd-status-interactive WINDOW CONSOLE:

@@ -1,0 +1,28 @@
+[fs-uae]
+amiga_model = __MODEL__
+kickstart_file = __ROM__
+chip_memory = 512
+slow_memory = 512
+fast_memory = 0
+
+hard_drive_0 = __SYSTEM__
+hard_drive_0_label = System
+hard_drive_0_priority = 6
+hard_drive_1 = __WORK__
+hard_drive_1_label = Work
+hard_drive_1_priority = 5
+
+floppy_drive_count = 0
+floppy_drive_0_sounds = off
+floppy_drive_1_sounds = off
+floppy_drive_2_sounds = off
+floppy_drive_3_sounds = off
+floppy_drive_volume = 0
+floppy_drive_volume_empty = 0
+
+shader = 0
+window_hidden = 1
+deterministic = 1
+uae_sound_output = none
+video_sync = 0
+cpu_idle = 1
