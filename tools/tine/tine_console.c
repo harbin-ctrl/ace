@@ -41,6 +41,22 @@ static int output_x = -1;
 
 static int read_byte(unsigned char *byte, int timeout_ms);
 
+static int
+environment_dimension(const char *name)
+{
+    const char *value = getenv(name);
+    char *end;
+    long dimension;
+
+    if (!value || !*value)
+        return 0;
+    errno = 0;
+    dimension = strtol(value, &end, 10);
+    if (errno || *end || dimension <= 0 || dimension > INT_MAX)
+        return 0;
+    return (int)dimension;
+}
+
 static size_t
 window_cell_count(const WINDOW *window)
 {
@@ -184,38 +200,45 @@ update_size(void)
     int cols = 80;
 
     if (ace_console) {
-        char reply[64];
-        size_t length = 0;
-        unsigned char byte;
-        int reply_rows;
-        int reply_cols;
+        int environment_rows = environment_dimension("ACE_CONSOLE_ROWS");
+        int environment_cols = environment_dimension("ACE_CONSOLE_COLS");
 
-        /* ACE's console.device answers the Amiga DSR size query with
-         * CSI 1;1;<rows>;<columns> r.  stdout and stdin are the same
-         * session socket here, so this is the authoritative size; there is
-         * no host tty for TIOCGWINSZ to inspect. */
-        emit(NATIVE_CSI "0 q");
-        while (length + 1 < sizeof(reply)) {
-            if (read_byte(&byte, -1) != 1)
-                break;
-            if (length == 0 && byte == 0x1b) {
-                if (read_byte(&byte, -1) != 1 || byte != '[')
+        if (environment_rows > 1 && environment_cols > 0) {
+            rows = environment_rows;
+            cols = environment_cols;
+        } else {
+            char reply[64];
+            size_t length = 0;
+            unsigned char byte;
+            int reply_rows;
+            int reply_cols;
+
+            /* Older ACE console launchers may not export dimensions.  Keep
+             * the query fallback for them; the current launcher uses the
+             * out-of-band values so Ed's setup stream remains untouched. */
+            emit(NATIVE_CSI "0 q");
+            while (length + 1 < sizeof(reply)) {
+                if (read_byte(&byte, -1) != 1)
                     break;
-                reply[length++] = (char)0x9b;
-                continue;
+                if (length == 0 && byte == 0x1b) {
+                    if (read_byte(&byte, -1) != 1 || byte != '[')
+                        break;
+                    reply[length++] = (char)0x9b;
+                    continue;
+                }
+                if (length == 0 && byte != 0x9b)
+                    break;
+                if (length != 0 || byte == 0x9b)
+                    reply[length++] = (char)byte;
+                if (byte == 'r')
+                    break;
             }
-            if (length == 0 && byte != 0x9b)
-                break;
-            if (length != 0 || byte == 0x9b)
-                reply[length++] = (char)byte;
-            if (byte == 'r')
-                break;
-        }
-        reply[length] = '\0';
-        if (sscanf(reply, "\2331;1;%d;%d r", &reply_rows,
-                   &reply_cols) == 2 && reply_rows > 1 && reply_cols > 0) {
-            rows = reply_rows;
-            cols = reply_cols;
+            reply[length] = '\0';
+            if (sscanf(reply, "\2331;1;%d;%d r", &reply_rows,
+                       &reply_cols) == 2 && reply_rows > 1 && reply_cols > 0) {
+                rows = reply_rows;
+                cols = reply_cols;
+            }
         }
     } else if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0) {
         if (size.ws_row)
@@ -304,10 +327,12 @@ tine_init(bool reversed, WINDOW **command_window_out)
     enter_raw();
     active = true;
     cursor_visible = true;
-    emit(NATIVE_CSI " p");
-    clear_screen();
     if (ace_console)
-        emit(NATIVE_CSI "12{");
+        emit(NATIVE_CSI "12{" NATIVE_CSI "2{" NATIVE_CSI "10{" NATIVE_CSI
+             "11{" NATIVE_CSI " q" NATIVE_CSI " q");
+    else
+        emit(NATIVE_CSI " p");
+    clear_screen();
     apply_attr(tine_stdscr->base_attr);
     *command_window_out = &command_window;
     if (offline_callback)

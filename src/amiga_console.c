@@ -1688,6 +1688,28 @@ int main(int argc, char **argv)
         ace_console_device_close(console.device);
         return 20;
     }
+    {
+        int pixel_width;
+        int pixel_height;
+        int cell_width;
+        int cell_height;
+        char rows[32];
+        char columns[32];
+
+        /* Real Ed learns its initial cell geometry from the CON: window
+         * while opening it; it does not send a size query into the console
+         * stream.  Export the same initial geometry to ET so its first
+         * bytes can remain identical to Ed's. */
+        ace_console_device_size(console.device, &pixel_width, &pixel_height);
+        if (ace_console_device_cell_size(console.device, &cell_width,
+                                         &cell_height) == 0 &&
+            cell_width > 0 && cell_height > 0) {
+            snprintf(columns, sizeof(columns), "%d", pixel_width / cell_width);
+            snprintf(rows, sizeof(rows), "%d", pixel_height / cell_height);
+            setenv("ACE_CONSOLE_COLS", columns, 1);
+            setenv("ACE_CONSOLE_ROWS", rows, 1);
+        }
+    }
     if (argc != 3 || strcmp(argv[1], "--session") != 0) {
         fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
         return 20;
