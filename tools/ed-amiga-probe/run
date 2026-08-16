@@ -1,6 +1,6 @@
 ; ED 2.00 / AmigaOS 3.1 behavior probe
 ; Run with: EXECUTE Work:ed-probe/run
-.FAILAT 21
+FAILAT 21
 
 IF EXISTS Work:ed-probe/results
   DELETE Work:ed-probe/results/#? ALL QUIET
