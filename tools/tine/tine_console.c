@@ -136,16 +136,22 @@ move_absolute(int y, int x)
     output_x = x;
 }
 
-/* Amiga console.device implements erase-in-display as CSI J without a
- * parameter.  CSI 2J is the VT form, but its parameter makes the Amiga
- * parser reject the sequence and leaves the literal "2J" on the screen.
- * Home first so the Amiga form still clears the entire display. */
+/* Ed starts a fresh window with a form feed, then clears the document rows
+ * explicitly.  This is intentionally not a display-wide erase: the row
+ * operations are visible in the console.device byte stream and leave the
+ * cursor at the same place as the original editor. */
 static void
 clear_screen(void)
 {
+    int row;
+
+    emit("\f");
+    for (row = 1; row < command_window.top; row++) {
+        move_absolute(row, 0);
+        emit(SCREEN_CSI "1K");
+    }
     move_absolute(0, 0);
-    emit(SCREEN_CSI "J");
-    move_absolute(0, 0);
+    emit(SCREEN_CSI "1K");
 }
 
 static void
