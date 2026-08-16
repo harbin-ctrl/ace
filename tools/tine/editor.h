@@ -10,6 +10,9 @@
 #include "buffer.h"
 #include "mode.h"
 
+#define ED_DEFAULT_SIZE 59960
+#define ED_DEFAULT_RIGHT_MARGIN 76
+
 struct VIEW{
     BUFFER *b;
     POS p, tos, gb;

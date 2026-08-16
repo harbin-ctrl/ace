@@ -171,6 +171,30 @@ printf 'a\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/size-limit.txt" "$test_dir/expected" ||
     fail 'SIZE rejection changed the file'
 
+# ED's SH page exposes the 3.1 defaults observed on the real editor. Feed one
+# character to dismiss SH, then leave through the normal extended prompt.
+printf 'SH\n' > "$sys_dir/C/status.cmd"
+status_log="$test_dir/status.log"
+set +e
+{
+    sleep 0.7
+    printf 'x'
+    sleep 0.1
+    printf '\033Q\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-status-test \
+         '$repo_dir/build/ED' SYS:C/status.txt WITH SYS:C/status.cmd" \
+        "$status_log" >/dev/null 2>&1
+status_status=$?
+set -e
+[ "$status_status" -eq 0 ] || fail 'ED status-page session failed'
+grep -a -q 'Right margin.*77' "$status_log" ||
+    fail 'ED status page did not show right margin 77'
+grep -a -q 'Buffer size.*59960' "$status_log" ||
+    fail 'ED status page did not show buffer size 59960'
+
 [ "$("$repo_dir/build/ED" '?')" = \
     'FROM/A,SIZE/N,WITH/K,WINDOW/K,TABS/N,WIDTH=COLS/N,HEIGHT=ROWS/N' ] ||
     fail 'ED ? did not print the ED template'

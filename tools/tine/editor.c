@@ -25,7 +25,8 @@ initview(VIEW *v, WINDOW *w, MODE *m, void (*statuscb)(EDITOR *e, VIEW *v))
         return false;
     v->w = w;
     v->m = m;
-    v->bs = v->be = v->rm = NONE;
+    v->bs = v->be = NONE;
+    v->rm = ED_DEFAULT_RIGHT_MARGIN;
     v->gb = pos(NONE, NONE);
     v->lm = 0;
     v->ts = DEFAULT_TS;

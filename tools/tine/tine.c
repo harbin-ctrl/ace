@@ -250,7 +250,7 @@ main(int argc, char **argv)
     loadfile(argv[0]);
     if (ed_compat){
         if (!ed_size)
-            ed_size = 40000;
+            ed_size = ED_DEFAULT_SIZE;
         if (editor->docview.b->bytes > ed_size)
             ed_size = editor->docview.b->bytes;
         editor->ed_size = ed_size;

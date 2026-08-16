@@ -128,10 +128,7 @@ This field displays the current margins.
 The first number represents the left margin
 .Pq "which always has a value" ","
 and the second number represents the right margin.
-The left margin is 1 if it is not otherwise specified;
-the right margin is displayed as
-.Li "?"
-if not specified.
+The left margin defaults to 1 and the right margin defaults to 77.
 The margins can be set via the
 .Ic SL
 and
@@ -716,7 +713,7 @@ extended commands.
 .It "RM"
 .Dq "Reset Margins"
 Reset the margins to their defaults
-.Pq "that is, 1 for the left margin and undefined for the right" "."
+.Pq "that is, 1 for the left margin and 77 for the right" "."
 .It "S"
 .Dq "Split"
 Split the current line at the cursor position.

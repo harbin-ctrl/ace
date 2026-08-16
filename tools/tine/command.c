@@ -21,7 +21,6 @@
 #include "util.h"
 
 /* UTILITY FUNCTIONS */
-#define ED_DEFAULT_SIZE 40000
 #define ED_LINE_LIMIT 255
 
 static bool
@@ -848,7 +847,7 @@ COMMAND(rf, NOLOCATOR) /* run command file */
 END
 
 COMMAND(rm, NOLOCATOR) /* reset margins */
-    v->rm = NONE;
+    v->rm = ED_DEFAULT_RIGHT_MARGIN;
     v->lm = 0;
 END
 
@@ -996,13 +995,14 @@ COMMAND(sh, NOLOCATOR) /* show information */
     mvwprintw(w, 3, 0, "Tab distance    %zu",    v->ts);
     mvwprintw(w, 4, 0, "Page height     %zu",    v->ph);
     mvwprintw(w, 5, 0, "Left margin     %zu",    v->lm == NONE? 1 : v->lm + 1);
-    if (v->rm == NONE)
-        mvwprintw(w, 5, 0, "Right margin    Not set");
-    else
-        mvwprintw(w, 5, 0, "Right margin    %zu", v->rm + 1);
-    mvwprintw(w, 6, 0, "Block start     %-.24s%s", bs? trimleft(bs) : "Not set", bs? "..." : "");
-    mvwprintw(w, 7, 0, "Block end       %-.24s%s", be? trimleft(be) : "Not set", be? "..." : "");
-    mvwprintw(w, 9, 0, "Type any character to continue");
+    mvwprintw(w, 6, 0, "Right margin    %zu",    v->rm + 1);
+    mvwprintw(w, 7, 0, "Block start     %-.24s%s", bs? trimleft(bs) : "Not set", bs? "..." : "");
+    mvwprintw(w, 8, 0, "Block end       %-.24s%s", be? trimleft(be) : "Not set", be? "..." : "");
+    unsigned long long usage = e->ed_size
+        ? ((unsigned long long)v->b->bytes * 100) / e->ed_size : 0;
+    mvwprintw(w, 9, 0, "Buffer usage    %llu%%", usage);
+    mvwprintw(w, 10, 0, "Buffer size     %zu", e->ed_size);
+    mvwprintw(w, 12, 0, "Type any character to continue");
     wattroff(w, A_BOLD);
     wrefresh(w);
     free(bs);
