@@ -329,6 +329,7 @@ END
 COMMAND(ca, NOFLAGS) /* cancel command mode */
    cmd_cs(e, v, a);
    cmd_el(e, v, a);
+   v->prompt = false;
    e->focusview = &e->docview;
    e->err[0] = 0;
 END
@@ -371,6 +372,7 @@ COMMAND(cl, NOFLAGS) /* cursor left */
 END
 
 COMMAND(cm, NOLOCATOR) /* enter command mode */
+    e->cmdview.prompt = true;
     e->focusview = &e->cmdview;
     werase(e->cmdview.w);
     wrefresh(e->cmdview.w);
@@ -826,8 +828,10 @@ runcommand(EDITOR *e, VIEW *v, const ARG *a, bool stay)
     }
     v->p = pos(v->b->n - 1, 0);
     werase(v->w);
-    if (!stay)
+    if (!stay){
+        v->prompt = false;
         e->focusview = &e->docview;
+    }
     return rc;
 }
 

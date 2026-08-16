@@ -182,13 +182,13 @@ redisplay(VIEW *v)
     /* FIXME - this is a mess */
     reframe(v);
 
-    size_t lines, cols, y = 0, x = 0;
+    size_t lines, cols, y = 0, x = v->prompt ? 1 : 0;
     getmaxyx(v->w, lines, cols);
 
     werase(v->w);
     size_t l = 0;
     for (l = 0; l < lines && v->tos.l + l < v->b->n; l++){
-        size_t c = 0, i = 0;
+        size_t c = v->prompt ? 1 : 0, i = 0;
         while (c < cols){
             wattrset(v->w, gettag(v->b, pos(v->tos.l + l, v->tos.c + i)));
             wmove(v->w, l, c);
@@ -220,6 +220,10 @@ redisplay(VIEW *v)
     while (l < lines && v->se)
        mvwhline(v->w, l++, 0, ' ', cols);
 
+    if (v->prompt){
+        wmove(v->w, 0, 0);
+        waddch(v->w, L'*');
+    }
     wmove(v->w, y, x);
     wrefresh(v->w);
 }
