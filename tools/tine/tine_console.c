@@ -160,7 +160,11 @@ update_size(void)
     if (requested_cols > 0 && requested_cols < cols)
         cols = requested_cols;
     tine_stdscr->top = 0;
-    tine_stdscr->rows = rows;
+    /* ripoffline() reserves the bottom row for ED's command prompt.  It is
+     * not a status line, but the document must not write through it: doing
+     * so reaches the Amiga console's autowrap edge and can scroll away the
+     * freshly typed command text before the prompt is repainted. */
+    tine_stdscr->rows = rows - 1;
     tine_stdscr->cols = cols;
     tine_stdscr->y = tine_stdscr->x = 0;
     command_window.top = rows - 1;
