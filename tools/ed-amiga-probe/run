@@ -1,0 +1,34 @@
+; ED 2.00 / AmigaOS 3.1 behavior probe
+; Run with: EXECUTE Work:ed-probe/run
+.FAILAT 21
+
+IF EXISTS Work:ed-probe/results
+  DELETE Work:ed-probe/results/#? ALL QUIET
+ELSE
+  MAKEDIR Work:ed-probe/results
+ENDIF
+
+VERSION >Work:ed-probe/results/version.txt
+
+; Startup on a missing file: creation message, initial screen, and quit.
+ED Work:ed-probe/results/new.txt WITH Work:ed-probe/cmd-quit >Work:ed-probe/results/new.raw
+
+; Startup on an existing file, without changing it.
+COPY Work:ed-probe/seed.txt Work:ed-probe/results/existing.txt
+ED Work:ed-probe/results/existing.txt WITH Work:ed-probe/cmd-quit >Work:ed-probe/results/existing.raw
+
+; Immediate document editing performed by extended commands.
+ED Work:ed-probe/results/edit.txt WITH Work:ed-probe/cmd-edit >Work:ed-probe/results/edit.raw
+
+; U after text insertion, and U after a line deletion.
+ED Work:ed-probe/results/undo-text.txt WITH Work:ed-probe/cmd-undo-text >Work:ed-probe/results/undo-text.raw
+COPY Work:ed-probe/seed.txt Work:ed-probe/results/undo-line.txt
+ED Work:ed-probe/results/undo-line.txt WITH Work:ed-probe/cmd-undo-line >Work:ed-probe/results/undo-line.raw
+
+; Show ED's state/status information, followed by a clean quit.
+ED Work:ed-probe/results/status.txt WITH Work:ed-probe/cmd-status >Work:ed-probe/results/status.raw
+
+; Startup dimensions and tab setting as accepted by ED's command line.
+ED Work:ed-probe/results/args.txt SIZE 40000 TABS 5 WIDTH 40 HEIGHT 10 WITH Work:ed-probe/cmd-quit >Work:ed-probe/results/args.raw
+
+ECHO "ED probe complete.  Raw sessions and saved files are in Work:ed-probe/results." >Work:ed-probe/results/COMPLETE
