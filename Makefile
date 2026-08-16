@@ -1079,4 +1079,7 @@ test-relabel: all
 test-edit: all
 	sh tests/edit_test.sh
 
-.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+test-dir-sort: all
+	sh tests/dir_sort_test.sh
+
+.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics

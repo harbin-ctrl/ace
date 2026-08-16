@@ -1,0 +1,20 @@
+diff --git a/workbench/c/Dir.c b/workbench/c/Dir.c
+index b02fb37157..f805090fb2 100644
+--- a/workbench/c/Dir.c
++++ b/workbench/c/Dir.c
+@@ -598,13 +598,13 @@ LONG doDir(CONST_STRPTR dir, BOOL all, BOOL doDirs, BOOL doFiles, BOOL inter)
+                 error = RETURN_FAIL;
+             }
+ 
+-            if (error == 0 && doDirs)
++            if (error == 0 && (doDirs || all))
+             {
+                 if (dirs.num != 0)
+                 {
+                     g_indent++;
+ 
+-                    //qsort(dirs.entries, dirs.num, sizeof(char *), compare_strings);
++                    qsort(dirs.entries, dirs.num, sizeof(char *), compare_strings);
+ 
+                     // Output the directories
+                     for (t = 0; t < dirs.num; t++)

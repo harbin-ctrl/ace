@@ -1,6 +1,20 @@
-; Task chassis, take four. No nested EXECUTE: the loop runs EDIT itself,
-; once per handshake, on WORK:in with commands from WORK:cmd. Returning
-; from a nested EXECUTE is what kept killing the earlier ones.
+; Task chassis: polls a drawer this Amiga sees as WORK: (shared with the
+; host by the emulator) for work, runs it, and leaves the answer behind.
+; See tools/amiga-edit-drive.sh and README's Edit section for how this
+; end of the handshake is driven from the host.
+;
+; Each verb is a separate flag file rather than one flag carrying a
+; command name, because AmigaDOS scripts have no way to build a command
+; line from a variable's contents. EDIT is driven fully through its own
+; WITH/VER files, and takes any command; DIR is fixed to a handful of
+; useful invocations against a target the host repopulates between runs,
+; because the same limitation prevents passing it a path.
+;
+; Everything here runs directly in the polling loop rather than through
+; a nested EXECUTE, because every earlier version that nested one died
+; silently after its first task -- apparently on the return from the
+; inner EXECUTE. Every DELETE is guarded by IF EXISTS, because deleting a
+; file that is not there is an error even with QUIET.
 FAILAT 100
 ECHO >WORK:alive "awake"
 LAB loop
@@ -10,11 +24,38 @@ IF EXISTS WORK:stop
 ENDIF
 IF EXISTS WORK:go
   DELETE >NIL: WORK:go
-  IF EXISTS WORK:ver
-    DELETE >NIL: WORK:ver
+  IF EXISTS WORK:out
+    DELETE >NIL: WORK:out
   ENDIF
   ECHO >WORK:alive "running"
-  EDIT WORK:in WITH WORK:cmd VER WORK:ver
+  IF EXISTS WORK:vedit
+    DELETE >NIL: WORK:vedit
+    EDIT WORK:in WITH WORK:cmd VER WORK:out
+  ENDIF
+  IF EXISTS WORK:vdirall
+    DELETE >NIL: WORK:vdirall
+    DIR >WORK:out WORK:cmptest ALL
+  ENDIF
+  IF EXISTS WORK:vdirplain
+    DELETE >NIL: WORK:vdirplain
+    DIR >WORK:out WORK:cmptest
+  ENDIF
+  IF EXISTS WORK:vdirfiles
+    DELETE >NIL: WORK:vdirfiles
+    DIR >WORK:out WORK:cmptest ALL FILES
+  ENDIF
+  IF EXISTS WORK:vdirdirs
+    DELETE >NIL: WORK:vdirdirs
+    DIR >WORK:out WORK:cmptest ALL DIRS
+  ENDIF
+  IF EXISTS WORK:vdirpat
+    DELETE >NIL: WORK:vdirpat
+    DIR >WORK:out WORK:cmptest/#?.txt
+  ENDIF
+  IF EXISTS WORK:vdirc
+    DELETE >NIL: WORK:vdirc
+    DIR >WORK:out C:
+  ENDIF
   ECHO >WORK:done "ok"
   ECHO >WORK:alive "idle"
 ENDIF

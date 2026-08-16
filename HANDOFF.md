@@ -265,6 +265,51 @@ name is the device, the label is the volume.
 One test had `sda2:` written into it, which is this host's root device; it now
 takes the expected spelling from the broker.
 
+## Dir's directory sort, found by comparison against a real Amiga
+
+`workbench/c/Dir.c` sorts the files in a listing (`qsort(files->entries, ...)`)
+but not the directories -- the equivalent call for `dirs->entries` is present
+in the source and commented out. `Dir` on ACE therefore listed subdirectories
+in raw host filesystem order rather than alphabetically, which was visible
+next to the correctly-sorted files in the same listing.
+
+This was found by running `Dir` on the same directory through both ACE and a
+real Amiga 1200 under emulation, comparing byte for byte: see "Driving a real
+Amiga" below. The real machine sorts directories case-insensitively, the same
+as files, so `patches/aros-dir-sort.patch` uncomments the call. A second,
+related defect came from the same comparison: `Dir ALL FILES` did not recurse
+into subdirectories on ACE, because the traversal loop in `doDir()` is gated
+on `doDirs` -- whether directory *names* are printed -- rather than on `all`
+-- whether the tree is *walked*. `FILES` alone sets `doDirs` false, silently
+disabling recursion regardless of `ALL`. The same patch changes the gate to
+`doDirs || all`, which does not change what is printed, only what is walked.
+
+Both are AROS's own divergence from AmigaOS, not something ACE introduced;
+they are inherited by building unmodified AROS source, and this is the first
+place a difference between AROS's reimplementation and the original machine's
+actual behavior turned up.
+
+## Driving a real Amiga
+
+`tools/amiga-edit-chassis` (an AmigaDOS script) and `tools/amiga-edit-drive.sh`
+(this host's side) turn a directory the emulator shares with the host into a
+request/response channel: stage a file and a command, raise a flag, wait for
+an answer file. Built for checking `Edit` against AmigaDOS's own EDIT -- see
+the file header and README's Edit section -- it generalizes to anything that
+can be driven through a `WITH`/`VER`-style file interface, and a second,
+ad hoc chassis extended it to run `Dir` directly for the sort/recurse finding
+above.
+
+Two things worth knowing before extending it further. First, `EXECUTE` should
+not be nested inside a script that is itself run by `Execute` -- every version
+that tried it died silently after one task, apparently on the return from the
+inner `EXECUTE`; every version that runs the target command directly in the
+polling loop has been stable. Second, the emulator's own shared-drive layer
+can serve a stale directory listing to the guest for some number of seconds
+after a host-side change -- a file deleted from Linux can still read as
+present to the Amiga's `IF EXISTS` for a little while. A reboot of the guest
+clears it; there is no known way to force a refresh short of that.
+
 ## Filenote, and the two things it found
 
 `Filenote` needed one new call, `SetComment()`. An AmigaDOS file comment is
@@ -387,6 +432,7 @@ cd "$HOME/aros"
 git checkout 53af6e419b
 cd "$HOME/repo/ace"
 patch -p1 -d "$HOME/aros" < patches/aros-console-seam.patch
+patch -p1 -d "$HOME/aros" < patches/aros-dir-sort.patch
 make -j2 all
 make test-aros-console-editor test-aros-exec-runtime \
      test-console-device test-exec-compat test-boopsi test-graphics

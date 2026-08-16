@@ -491,12 +491,14 @@ compared byte for byte.
 
 The later ones were not typed by hand. `tools/amiga-edit-chassis` is an
 AmigaDOS script that polls a drawer the emulator shares with the host, runs
-whatever EDIT session it finds staged there, and leaves the `VER` log behind;
-`tools/amiga-edit-drive.sh` stages a run from this side and waits for the
-answer. One run takes a second or two, which turned checking the clone
-against the real program from a typing exercise into something that could be
-done a hundred times. Most of what this editor gets right, it gets right
-because that loop found it wrong first.
+whatever it finds staged there, and leaves the answer behind;
+`tools/amiga-edit-drive.sh` stages one EDIT run from this side and waits for
+the answer, and `tools/amiga-dir-drive.sh` does the same for `Dir`. One run
+takes a second or two, which turned checking a clone against the real program
+from a typing exercise into something that could be done a hundred times.
+Most of what `Edit` gets right, it gets right because that loop found it
+wrong first -- and the same loop, pointed at `Dir`, found a real defect in
+`Dir` too: see `patches/aros-dir-sort.patch` and `make test-dir-sort`.
 
 ## The standard assigns, and who makes them
 

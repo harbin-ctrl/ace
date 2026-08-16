@@ -3,10 +3,10 @@
 #
 # tools/amiga-edit-chassis runs in an AmigaShell and polls a drawer the
 # emulator shares with this host. Here we write the file to edit and the
-# commands to run into that drawer, raise the "go" flag, and wait for the
-# chassis to leave a VER log behind. One run per call, a second or two each,
-# which is enough to check the clone against the real program without anyone
-# typing transcripts.
+# commands to run into that drawer, mark it as an EDIT task, raise the "go"
+# flag, and wait for the chassis to leave a VER log behind. One run per call,
+# a second or two each, which is enough to check the clone against the real
+# program without anyone typing transcripts.
 #
 #   WORK=/path/to/shared/drawer tools/amiga-edit-drive.sh input.txt 'M3;?'
 #
@@ -18,7 +18,8 @@ commands=$2
 
 cp "$input" "$WORK/in"
 printf '%s\nSTOP\n' "$commands" > "$WORK/cmd"
-rm -f "$WORK/done" "$WORK/ver"
+rm -f "$WORK/done" "$WORK/out"
+touch "$WORK/vedit"
 echo go > "$WORK/go"
 
 waited=0
@@ -30,4 +31,4 @@ while [ ! -f "$WORK/done" ]; do
     fi
     sleep 1
 done
-cat "$WORK/ver" 2>/dev/null || true
+cat "$WORK/out" 2>/dev/null || true
