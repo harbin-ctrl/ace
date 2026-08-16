@@ -407,7 +407,6 @@ COMMAND(cm, NOLOCATOR) /* enter command mode */
     e->focusview = &e->cmdview;
     werase(e->cmdview.w);
     wrefresh(e->cmdview.w);
-    refresh();
 END
 
 COMMAND(cr, NOFLAGS) /* cursor right */
