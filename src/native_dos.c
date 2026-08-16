@@ -707,21 +707,46 @@ static int native_fill_fib(const char *path, const char *name,
 
 struct native_console_handle {
     uint64_t magic;
+    FILE *input;
+    FILE *output;
+    int raw;
     char specification[PATH_MAX];
 };
 
 #define NATIVE_CONSOLE_MAGIC UINT64_C(0x414345434f4e3031)
 
+static struct native_console_handle *
+native_console_pointer(BPTR handle)
+{
+    struct native_console_handle *candidate = handle;
+
+    /* These are ordinary stdio handles, not heap-allocated CON: objects.
+       Check them before looking at the larger console structure so optimized
+       builds cannot treat a small stdio wrapper as a native console handle. */
+    if (handle == (BPTR)stdin || handle == (BPTR)stdout ||
+        handle == (BPTR)stderr ||
+        handle == (BPTR)&native_stdin_handle.amiga ||
+        handle == (BPTR)&native_stdout_handle.amiga ||
+        handle == (BPTR)&native_stderr_handle.amiga)
+        return NULL;
+    return candidate && candidate->magic == NATIVE_CONSOLE_MAGIC
+        ? candidate : NULL;
+}
+
 BPTR native_console_open(const char *specification)
 {
     struct native_console_handle *handle;
 
+    native_init_stdio_handles();
     handle = calloc(1, sizeof(*handle));
     if (!handle) {
         native_ioerr = ERROR_NO_FREE_STORE;
         return BNULL;
     }
     handle->magic = NATIVE_CONSOLE_MAGIC;
+    handle->input = stdin;
+    handle->output = stdout;
+    handle->raw = native_input_raw;
     snprintf(handle->specification, sizeof(handle->specification), "%s",
              specification ? specification : "CON:");
     return handle;
@@ -729,16 +754,14 @@ BPTR native_console_open(const char *specification)
 
 int native_console_is_handle(BPTR handle)
 {
-    struct native_console_handle *candidate = handle;
-
-    return candidate && candidate->magic == NATIVE_CONSOLE_MAGIC;
+    return native_console_pointer(handle) != NULL;
 }
 
 const char *native_console_specification(BPTR handle)
 {
-    struct native_console_handle *console = handle;
+    struct native_console_handle *console = native_console_pointer(handle);
 
-    return native_console_is_handle(handle) ? console->specification : NULL;
+    return console ? console->specification : NULL;
 }
 
 void native_console_close(BPTR handle)
@@ -749,7 +772,11 @@ void native_console_close(BPTR handle)
 
 static FILE *as_file(BPTR handle)
 {
+    struct native_console_handle *console = native_console_pointer(handle);
+
     native_init_stdio_handles();
+    if (console)
+        return console->input;
     if (handle == (BPTR)&native_stdin_handle.amiga)
         return native_stdin_handle.stream;
     if (handle == (BPTR)&native_stdout_handle.amiga)
@@ -1511,7 +1538,9 @@ BPTR Open(CONST_STRPTR name, LONG mode)
        that set it. */
     int open_errno = 0;
 
-    if (name && strncasecmp(name, "CON:", 4) == 0)
+    if (name && (strncasecmp(name, "CON:", 4) == 0 ||
+                 strncasecmp(name, "CONSOLE:", 8) == 0 ||
+                 strcmp(name, "*") == 0))
         return native_console_open(name);
 
     if (native_named_device_path(name)) {
@@ -1840,6 +1869,8 @@ LONG SameLock(BPTR lock1, BPTR lock2)
 
 BOOL IsInteractive(BPTR handle)
 {
+    if (native_console_is_handle(handle))
+        return native_interactive ? DOSTRUE : DOSFALSE;
     native_init_stdio_handles();
     if (handle != (BPTR)stdin && handle != (BPTR)stdout &&
         handle != (BPTR)stderr &&
@@ -1857,6 +1888,12 @@ void native_set_interactive(int interactive)
 
 LONG SetMode(BPTR handle, LONG mode)
 {
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    if (console) {
+        console->raw = mode != 0;
+        return DOSTRUE;
+    }
     native_init_stdio_handles();
     if (handle != (BPTR)&native_stdin_handle.amiga && handle != (BPTR)stdin) {
         native_ioerr = ERROR_ACTION_NOT_KNOWN;
@@ -1868,6 +1905,7 @@ LONG SetMode(BPTR handle, LONG mode)
 
 LONG WaitForChar(BPTR handle, LONG timeout)
 {
+    struct native_console_handle *console = native_console_pointer(handle);
     FILE *file;
     fd_set readable;
     struct timeval interval;
@@ -1875,6 +1913,16 @@ LONG WaitForChar(BPTR handle, LONG timeout)
     int descriptor;
     int result;
 
+    if (console) {
+        int saved_raw = native_input_raw;
+        LONG result;
+
+        native_input_raw = console->raw;
+        result = WaitForChar((BPTR)&native_stdin_handle.amiga, timeout);
+        console->raw = native_input_raw;
+        native_input_raw = saved_raw;
+        return result;
+    }
     native_init_stdio_handles();
     if (!handle || (handle != (BPTR)&native_stdin_handle.amiga &&
                     handle != (BPTR)stdin))
@@ -1914,7 +1962,10 @@ LONG WaitForChar(BPTR handle, LONG timeout)
 
 LONG FPutC(BPTR handle, LONG character)
 {
-    if (fputc((unsigned char)character, as_file(handle)) == EOF) {
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->output : as_file(handle);
+
+    if (fputc((unsigned char)character, file) == EOF) {
         native_ioerr = errno;
         return -1;
     }
@@ -1923,7 +1974,10 @@ LONG FPutC(BPTR handle, LONG character)
 
 LONG FPuts(BPTR handle, CONST_STRPTR string)
 {
-    if (fputs(string, as_file(handle)) == EOF) {
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->output : as_file(handle);
+
+    if (fputs(string, file) == EOF) {
         native_ioerr = errno;
         return -1;
     }
@@ -1932,7 +1986,19 @@ LONG FPuts(BPTR handle, CONST_STRPTR string)
 
 STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 {
-    FILE *file = as_file(handle);
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->input : as_file(handle);
+
+    if (console) {
+        int saved_raw = native_input_raw;
+        STRPTR result;
+
+        native_input_raw = console->raw;
+        result = FGets((BPTR)&native_stdin_handle.amiga, buffer, length);
+        console->raw = native_input_raw;
+        native_input_raw = saved_raw;
+        return result;
+    }
 
     if (file != stdin) {
         if (!fgets(buffer, length, file)) {
@@ -1965,7 +2031,10 @@ STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 
 LONG Flush(BPTR handle)
 {
-    if (fflush(as_file(handle)) != 0) {
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->output : as_file(handle);
+
+    if (fflush(file) != 0) {
         native_ioerr = errno;
         return DOSFALSE;
     }
@@ -2699,8 +2768,19 @@ LONG PutStr(CONST_STRPTR string)
 
 LONG FGetC(BPTR handle)
 {
-    FILE *file = handle ? as_file(handle) : selected_input();
-    int character = native_input_getc(file);
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->input :
+        (handle ? as_file(handle) : selected_input());
+    int saved_raw = native_input_raw;
+    int character;
+
+    if (console)
+        native_input_raw = console->raw;
+    character = native_input_getc(file);
+    if (console) {
+        console->raw = native_input_raw;
+        native_input_raw = saved_raw;
+    }
 
     if (character == EOF) {
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
@@ -2713,8 +2793,21 @@ LONG FGetC(BPTR handle)
 
 LONG Read(BPTR handle, APTR buffer, LONG length)
 {
+    struct native_console_handle *console = native_console_pointer(handle);
     size_t result;
-    FILE *file = handle ? as_file(handle) : selected_input();
+    FILE *file = console ? console->input :
+        (handle ? as_file(handle) : selected_input());
+
+    if (console) {
+        LONG count;
+        int saved_raw = native_input_raw;
+
+        native_input_raw = console->raw;
+        count = Read((BPTR)&native_stdin_handle.amiga, buffer, length);
+        console->raw = native_input_raw;
+        native_input_raw = saved_raw;
+        return count;
+    }
 
     if (!buffer || length <= 0)
         return 0;
@@ -2776,8 +2869,22 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
 
 LONG FRead(BPTR handle, APTR buffer, LONG block_size, LONG block_count)
 {
+    struct native_console_handle *console = native_console_pointer(handle);
     size_t result;
-    FILE *file = handle ? as_file(handle) : selected_input();
+    FILE *file = console ? console->input :
+        (handle ? as_file(handle) : selected_input());
+
+    if (console) {
+        LONG count;
+        int saved_raw = native_input_raw;
+
+        native_input_raw = console->raw;
+        count = FRead((BPTR)&native_stdin_handle.amiga, buffer, block_size,
+                      block_count);
+        console->raw = native_input_raw;
+        native_input_raw = saved_raw;
+        return count;
+    }
 
     if (!buffer || block_size <= 0 || block_count <= 0)
         return 0;
@@ -2796,7 +2903,9 @@ LONG FRead(BPTR handle, APTR buffer, LONG block_size, LONG block_count)
 
 LONG UnGetC(BPTR handle, LONG character)
 {
-    FILE *file = handle ? as_file(handle) : selected_input();
+    struct native_console_handle *console = native_console_pointer(handle);
+    FILE *file = console ? console->input :
+        (handle ? as_file(handle) : selected_input());
     int result;
 
     /* -1 is AmigaDOS for "the character just read", which is how readitem.c
@@ -2824,19 +2933,31 @@ LONG UnGetC(BPTR handle, LONG character)
 BPTR SelectInput(BPTR handle)
 {
     BPTR old = Input();
-    native_input = handle ? as_file(handle) : stdin;
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    native_input = console ? console->input : (handle ? as_file(handle) :
+                                               stdin);
+    if (console)
+        native_input_raw = console->raw;
     return old;
 }
 
 BPTR SelectOutput(BPTR handle)
 {
     BPTR old = Output();
-    native_output = handle ? as_file(handle) : stdout;
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    native_output = console ? console->output : (handle ? as_file(handle) :
+                                                 stdout);
     return old;
 }
 
 LONG Seek(BPTR handle, LONG position, LONG mode)
 {
+    if (native_console_is_handle(handle)) {
+        native_ioerr = ERROR_ACTION_NOT_KNOWN;
+        return -1;
+    }
     FILE *file = handle ? as_file(handle) : selected_input();
     long old = ftell(file);
     int whence = mode == OFFSET_BEGINNING ? SEEK_SET :

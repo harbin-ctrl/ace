@@ -635,6 +635,11 @@ $(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
                             $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
 
+$(BUILD)/native-console-handle-test: tests/native_console_handle_test.c $(DOS_RUNTIME_OBJ) \
+                                     $(BUILD)/native_dos.o $(BUILD)/native_command.o \
+                                     $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
+
 $(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
                                    $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                                    $(BUILD)/aros-graphics-runtime.o $(AROS_ARSUPPORT_OBJS)
@@ -1041,6 +1046,9 @@ test-aros-console-editor: $(BUILD)/aros-console-editor-test
 test-native-input: $(BUILD)/native-input-test
 	$(BUILD)/native-input-test
 
+test-native-console-handle: $(BUILD)/native-console-handle-test
+	$(BUILD)/native-console-handle-test
+
 test-exec-compat: $(BUILD)/exec-compat-test
 	$(BUILD)/exec-compat-test
 
@@ -1085,4 +1093,4 @@ test-dir-sort: all
 test-tine: all tine
 	sh tests/tine_test.sh
 
-.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
