@@ -64,6 +64,24 @@ fi
 grep -a -q '\*' "$log_path" ||
     fail 'ESC did not display the extended-command asterisk prompt'
 
+# Amiga Backspace/Delete is byte 0x08. In ED extended-command mode it must
+# edit the command line, not be rendered as the visible control text ^H.
+set +e
+{
+    sleep 0.5
+    printf '\033QX\010\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_BROKER_SOCKET='$socket_path' \
+         ACE_SESSION=tine-command-backspace-test '$repo_dir/tools/tine/tine' SYS:C/esc.txt" \
+        "$test_dir/command-backspace.log" >/dev/null 2>&1
+backspace_status=$?
+set -e
+[ "$backspace_status" -eq 0 ] ||
+    fail 'Backspace did not edit the extended-command prompt'
+! grep -a -q '\^H' "$test_dir/command-backspace.log" ||
+    fail 'Backspace was rendered as ^H in the extended-command prompt'
+
 # The ED wrapper must consume the Amiga argument template rather than passing
 # keywords such as FROM and WITH to Tine as command-file names. TABS must also
 # affect the initial tab stop: TB followed by TY should leave four spaces
