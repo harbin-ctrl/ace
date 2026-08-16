@@ -45,6 +45,7 @@ enum {
     TINE_KEY_END,
     TINE_KEY_PPAGE,
     TINE_KEY_NPAGE,
+    TINE_KEY_HELP,
     TINE_KEY_F1,
 };
 
@@ -116,6 +117,7 @@ void tine_napms(unsigned milliseconds);
 #define KEY_PPAGE    TINE_KEY_PPAGE
 #define KEY_NPAGE    TINE_KEY_NPAGE
 #define KEY_F(n)     TINE_KEY_F(n)
+#define KEY_HELP     TINE_KEY_HELP
 #define A_NORMAL     TINE_A_NORMAL
 #define A_BOLD       TINE_A_BOLD
 #define A_UNDERLINE  TINE_A_UNDERLINE

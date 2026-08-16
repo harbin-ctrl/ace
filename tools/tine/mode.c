@@ -55,6 +55,7 @@ static MODE cmdmodetab ={
         {{OK,           CTRL(L'T')},       cmd_wn, {0}},
         {{OK,           CTRL(L'V')},       cmd_vw, {0}},
         {{OK,           CTRL(L'Y')},       cmd_el, {0}},
+        {{KEY_CODE_YES, KEY_HELP},         noaction, {0}},
         {{KEY_CODE_YES, 0},                noaction, {0}},
         {{OK,           0},                NULL,   {0}}
     }
@@ -90,6 +91,7 @@ static MODE docmodetab ={
         {{KEY_CODE_YES, KEY_F(8)},         noaction, {0}},
         {{KEY_CODE_YES, KEY_F(9)},         noaction, {0}},
         {{KEY_CODE_YES, KEY_F(10)},        noaction, {0}},
+        {{KEY_CODE_YES, KEY_HELP},         noaction, {0}},
         {{OK,           L'\n'},            cmd_s,  {0}},
         {{OK,           L'\r'},            cmd_s,  {0}},
         {{OK,           L'\t'},            cmd_tb, {0}},

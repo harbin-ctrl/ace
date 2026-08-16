@@ -479,6 +479,25 @@ special_sequence(const char *sequence, size_t length)
         return TINE_KEY_SLEFT;
     if (length == 2 && sequence[0] == ' ' && *final == '@')
         return TINE_KEY_SRIGHT;
+    if (length == 1 && *final == '?')
+        return TINE_KEY_HELP;
+    if (*final >= '0' && *final <= '9') {
+        (void)sscanf(sequence, "%d", &value);
+        if (value <= 19)
+            return TINE_KEY_F((value % 10) + 1);
+        if (value == 20 || value == 21)
+            return TINE_KEY_F(value - 19);
+        if (value == 30 || value == 31)
+            return TINE_KEY_F(value - 29);
+        switch (value) {
+        case 40: case 50: return TINE_KEY_IC;
+        case 41: case 51: return TINE_KEY_PPAGE;
+        case 42: case 52: return TINE_KEY_NPAGE;
+        case 44: case 54: return TINE_KEY_HOME;
+        case 45: case 55: return TINE_KEY_END;
+        default: return 0;
+        }
+    }
     switch (*final) {
     case 'A': return TINE_KEY_UP;
     case 'B': return TINE_KEY_DOWN;
@@ -530,12 +549,37 @@ read_special(wint_t *character, unsigned char first)
             return TINE_OK;
         }
     }
-    while (length < sizeof(sequence) - 1) {
-        if (read_byte(&byte, 100) != 1)
-            break;
-        sequence[length++] = (char)byte;
-        if (byte >= '@' && byte <= '~')
-            break;
+    if (read_byte(&byte, 100) != 1) {
+        *character = 0x1b;
+        return TINE_OK;
+    }
+    sequence[length++] = (char)byte;
+    if (byte >= '0' && byte <= '9') {
+        /* Amiga special-key reports are numeric and have no terminator
+         * (CSI 0 is F1, CSI 40 is Insert, CSI 41 is Page Up, etc.).
+         * Keep reading digits and report punctuation, but leave the first
+         * ordinary character after a report for the next read.  A final ~
+         * is retained for the VT sequences used by host-side test ttys. */
+        while (length < sizeof(sequence) - 1) {
+            if (read_byte(&byte, 100) != 1)
+                break;
+            if ((byte >= '0' && byte <= '9') || byte == ';' ||
+                byte == '~' || (byte == '|' && strchr(sequence, ';'))) {
+                sequence[length++] = (char)byte;
+                if (byte == '~' || byte == '|')
+                    break;
+            } else {
+                pending_byte = byte;
+                break;
+            }
+        }
+    } else {
+        while (length < sizeof(sequence) - 1 &&
+               !(byte >= '@' && byte <= '~')) {
+            if (read_byte(&byte, 100) != 1)
+                break;
+            sequence[length++] = (char)byte;
+        }
     }
     sequence[length] = '\0';
     if (length >= 3 && sequence[0] == '1' && sequence[1] == '2' &&
