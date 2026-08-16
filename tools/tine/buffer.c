@@ -307,14 +307,19 @@ mark(BUFFER *b)
 }
 
 bool
-undo(BUFFER *b, POS *p)
+undo(BUFFER *b, lineno line, POS *p)
 {
     if (!b->j)
         return false;
     if (b->j->a == MA)
       pop(b);
+    if (!b->j || b->j->a == MA || b->j->p.l != line ||
+        b->j->a == IL || b->j->a == DL)
+        return false;
+
     bool rc = true;
-    while (b->j && b->j->a != MA && rc){
+    while (b->j && b->j->a != MA && b->j->p.l == line &&
+           (b->j->a == IT || b->j->a == DT) && rc){
         switch (b->j->a){
             case IT:
                 rc = dodeletetext(b, b->j->p, b->j->n);
@@ -333,12 +338,13 @@ undo(BUFFER *b, POS *p)
                 break; /* just grabbing the position */
             case MA:
                 break; /* never reached */
+            default:
+                rc = false;
+                break;
         }
         memcpy(p, &b->j->p, sizeof(POS));
         pop(b);
     }
-    if (b->j && b->j->a == MA)
-      pop(b);
     return rc;
 }
 

@@ -70,7 +70,7 @@ void enableundo(BUFFER *b);
 bool mark(BUFFER *b);
 void begin(BUFFER *b);
 bool commit(BUFFER *b);
-bool undo(BUFFER *b, POS *p);
+bool undo(BUFFER *b, lineno line, POS *p);
 void clearundo(BUFFER *b);
 
 #endif

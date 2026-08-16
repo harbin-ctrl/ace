@@ -178,4 +178,61 @@ printf 'c  bd\n\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/key-map.txt" "$test_dir/expected" ||
     fail 'ED immediate control-key mappings differ'
 
+# ED's U command reverses edits on the current line.
+: > "$sys_dir/C/undo-current.txt"
+set +e
+{
+    sleep 0.7
+    printf 'abc\033U\r\033X\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-current-test \
+         '$repo_dir/build/ED' SYS:C/undo-current.txt" \
+        "$test_dir/undo-current.log" >/dev/null 2>&1
+undo_current_status=$?
+set -e
+[ "$undo_current_status" -eq 0 ] || fail 'ED current-line undo session failed'
+printf '\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/undo-current.txt" "$test_dir/expected" ||
+    fail 'ED did not undo current-line edits'
+
+# Moving to another line prevents U from undoing an edit made on the old line.
+: > "$sys_dir/C/undo-moved.txt"
+set +e
+{
+    sleep 0.7
+    printf 'a\rb\033[A\033U\r\033X\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-moved-test \
+         '$repo_dir/build/ED' SYS:C/undo-moved.txt" \
+        "$test_dir/undo-moved.log" >/dev/null 2>&1
+undo_moved_status=$?
+set -e
+[ "$undo_moved_status" -eq 0 ] || fail 'ED moved-line undo session failed'
+printf 'a\nb\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/undo-moved.txt" "$test_dir/expected" ||
+    fail 'ED undid an edit after moving lines'
+
+# ED cannot undo a line deletion.
+printf 'a\nb\n' > "$sys_dir/C/undo-delete.txt"
+set +e
+{
+    sleep 0.7
+    printf '\033D\r\033U\r\033X\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-delete-test \
+         '$repo_dir/build/ED' SYS:C/undo-delete.txt" \
+        "$test_dir/undo-delete.log" >/dev/null 2>&1
+undo_delete_status=$?
+set -e
+[ "$undo_delete_status" -eq 0 ] || fail 'ED line-delete undo session failed'
+printf 'b\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/undo-delete.txt" "$test_dir/expected" ||
+    fail 'ED undid a line deletion'
+
 printf 'tine ESC prompt test passed\n'

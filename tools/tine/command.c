@@ -1157,8 +1157,8 @@ END
 COMMAND(u, CLEARSBLOCK) /* undo */
     if (!b->j)
         ERROR("Nothing to undo");
-    if (!undo(b, &p))
-        ERROR("Out of memory");
+    if (!undo(b, p.l, &p))
+        ERROR("Nothing to undo");
     v->p = p;
 END
 
