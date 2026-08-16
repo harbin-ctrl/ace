@@ -121,8 +121,6 @@ find(EDITOR *e, VIEW *v, POS op, bool r)
         if (i == e->findn){
             v->p = op;
             settag(b, HIGHLIGHT, op, p, A_UNDERLINE | A_BOLD);
-            if (e->focusview == &e->cmdview)
-               settag(b, VIRTCURS, op, pos(op.l, op.c + 1), A_REVERSE);
             redisplay(&e->docview);
             return true;
         }

@@ -69,8 +69,6 @@ cmdstatus(EDITOR *e, VIEW *v)
 {
    VIEW *dv = &e->docview;
    cleartag(dv->b, VIRTCURS);
-   int s = dv->p.l >= dv->bs && dv->p.l <= dv->be? A_NORMAL : A_REVERSE;
-   settag(dv->b, VIRTCURS, dv->p, pos(dv->p.l, dv->p.c + 1), s);
 }
 
 EDITOR *
