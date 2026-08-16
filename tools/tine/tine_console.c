@@ -85,6 +85,8 @@ apply_attr(int attr)
         emit(CSI "4m");
     if (attr & TINE_A_REVERSE)
         emit(CSI "7m");
+    if (attr & TINE_A_STATUS)
+        emit(CSI "33m");
     output_attr = attr;
 }
 

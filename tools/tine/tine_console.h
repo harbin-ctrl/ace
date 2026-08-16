@@ -55,6 +55,7 @@ enum {
 #define TINE_A_BOLD      0x01
 #define TINE_A_UNDERLINE 0x02
 #define TINE_A_REVERSE   0x04
+#define TINE_A_STATUS    0x08
 
 extern WINDOW *tine_stdscr;
 
@@ -122,6 +123,7 @@ void tine_napms(unsigned milliseconds);
 #define A_BOLD       TINE_A_BOLD
 #define A_UNDERLINE  TINE_A_UNDERLINE
 #define A_REVERSE    TINE_A_REVERSE
+#define A_STATUS     TINE_A_STATUS
 #define endwin       tine_endwin
 #define refresh      tine_refresh
 #define raw          tine_raw

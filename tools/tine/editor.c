@@ -56,8 +56,10 @@ docstatus(EDITOR *e, VIEW *v)
     cleartag(e->docview.b, VIRTCURS);
 
     werase(w);
-    if (e->err[0])
+    if (e->err[0]) {
+        wattrset(w, A_STATUS);
         mvwprintw(w, 0, 0, "%s", e->err);
+    }
     e->err[0] = 0;
     wrefresh(w);
 }
