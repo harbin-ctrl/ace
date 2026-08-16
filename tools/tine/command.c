@@ -21,6 +21,37 @@
 #include "util.h"
 
 /* UTILITY FUNCTIONS */
+#define ED_DEFAULT_SIZE 40000
+#define ED_LINE_LIMIT 255
+
+static bool
+insertline_checked(EDITOR *e, VIEW *v, lineno l)
+{
+    if (e->ed_compat && v == &e->docview && e->ed_size &&
+        v->b->bytes >= e->ed_size)
+        return error(e, "Buffer full");
+    return insertline(v->b, l);
+}
+
+static bool
+inserttext_checked(EDITOR *e, VIEW *v, POS p, const wchar_t *s, size_t n)
+{
+    if (e->ed_compat && v == &e->docview){
+        if (p.l >= v->b->n)
+            return error(e, "Invalid line");
+
+        const LINE *l = &v->b->l[p.l];
+        size_t end = p.c > l->n ? p.c : l->n;
+        size_t padding = end - l->n;
+        if (end > ED_LINE_LIMIT || n > ED_LINE_LIMIT - end)
+            return error(e, "Line Too Long");
+        if (e->ed_size && (padding > e->ed_size - v->b->bytes ||
+                           n > e->ed_size - v->b->bytes - padding))
+            return error(e, "Buffer full");
+    }
+    return inserttext(v->b, p, s, n);
+}
+
 static bool
 prompt(EDITOR *e, const char *p)
 {
@@ -110,7 +141,7 @@ exchange(EDITOR *e, VIEW *v, const ARG *a, bool query)
         return false;
     if (!query || prompt(e, "Exchange?")){
         if (!deletetext(v->b, v->p, a->n1)
-        ||  !inserttext(v->b, v->p, a->s2, a->n2))
+        ||  !inserttext_checked(e, v, v->p, a->s2, a->n2))
             return false;
     }
     v->p.c += a->n2;
@@ -277,7 +308,8 @@ enum{
 #define FAIL RETURN(false)
 
 COMMAND(a, MARK | CLEARSBLOCK) /* insert line after current */
-   RETURN(insertline(b, p.l + 1) && inserttext(b, pos(p.l + 1, 0), a->s1, a->n1));
+   RETURN(insertline_checked(e, v, p.l + 1)
+       && inserttext_checked(e, v, pos(p.l + 1, 0), a->s1, a->n1));
 END
 
 COMMAND(ai, NOLOCATOR) /* autoindent */
@@ -607,7 +639,7 @@ COMMAND(fc, NOFLAGS) /* flip case */
    bool r = true;
    w = iswupper(w)? towlower(w) : towupper(w);
    if (haslines && p.c < b->l[p.l].n)
-      r = deletetext(b, p, 1) && inserttext(b, p, &w, 1);
+      r = deletetext(b, p, 1) && inserttext_checked(e, v, p, &w, 1);
    RETURN(r && cmd_cr(e, v, a));
 END
 
@@ -627,7 +659,8 @@ COMMAND(gm, MARK | NOLOCATOR) /* go to mark */
 END
 
 COMMAND(i, MARK | CLEARSBLOCK) /* insert line before */
-   RETURN(insertline(b, p.l) && inserttext(b, pos(p.l, 0), a->s1, a->n1));
+   RETURN(insertline_checked(e, v, p.l)
+       && inserttext_checked(e, v, pos(p.l, 0), a->s1, a->n1));
 END
 
 COMMAND(ib, MARK | NEEDSBLOCK) /* insert block */
@@ -637,13 +670,13 @@ COMMAND(ib, MARK | NEEDSBLOCK) /* insert block */
     size_t n = v->be - v->bs;
     lineno bs = p.l < v->bs? v->bs + n + 1 : v->bs;
     for (size_t i = 0; i <= n; i++){
-        if (!insertline(v->b, v->p.l))
+        if (!insertline_checked(e, v, v->p.l))
             FAIL;
     }
 
     for (size_t i = 0; i <= n; i++){
         const LINE *l = &v->b->l[bs + i];
-        if (!inserttext(b, pos(p.l + i, 0), l->s, l->n))
+        if (!inserttext_checked(e, v, pos(p.l + i, 0), l->s, l->n))
             FAIL;
     }
 
@@ -654,9 +687,11 @@ END
 static bool
 cmd_if_cb(const wchar_t *s, size_t n, void *p)
 {
-    VIEW *v = (VIEW *)p;
+    EDITOR *e = (EDITOR *)p;
+    VIEW *v = &e->docview;
     v->p.c = 0;
-    bool rc = insertline(v->b, v->p.l) && inserttext(v->b, v->p, s, n);
+    bool rc = insertline_checked(e, v, v->p.l)
+           && inserttext_checked(e, v, v->p, s, n);
     v->p.l++;
     return rc;
 }
@@ -665,9 +700,13 @@ COMMAND(if, MARK | CLEARSBLOCK) /* insert file */
     char *fn = wstos(a->s1, a->n1);
     if (!fn)
         ERROR("Out of memory");
-    bool r = readfile(fn, cmd_if_cb, v);
-    if (!r)
+    int saved_errno;
+    bool r = readfile(fn, cmd_if_cb, e);
+    saved_errno = errno;
+    if (!r && !e->err[0])
       snprintf(e->err, ERR_MAX, "Could not open file: %s", strerror(errno));
+    if (!r && saved_errno == EILSEQ)
+      snprintf(e->err, ERR_MAX, "Binary file");
     v->p = p;
     free(fn);
     RETURN(r);
@@ -851,7 +890,7 @@ COMMAND(ru, MARK | NOLOCATOR) /* run extended command */
 END
 
 COMMAND(s, MARK | CLEARSBLOCK) /* split line */
-    if (!b->n && !insertline(b, p.l))
+    if (!b->n && !insertline_checked(e, v, p.l))
         ERROR("Out of memory");
 
     size_t lines, cols;
@@ -870,8 +909,8 @@ COMMAND(s, MARK | CLEARSBLOCK) /* split line */
     }
     size_t ln = b->l[p.l].n;
     size_t n = p.c >= ln? 0 : ln - p.c;
-    if (!insertline(v->b, p.l + 1)
-    ||  !inserttext(v->b, pos(p.l + 1, lm), b->l[p.l].s + p.c, n)
+    if (!insertline_checked(e, v, p.l + 1)
+    ||  !inserttext_checked(e, v, pos(p.l + 1, lm), b->l[p.l].s + p.c, n)
     ||  !deletetext(v->b, pos(p.l, p.c), n))
         ERROR("Out of memory");
     v->p = pos(p.l + 1, lm);
@@ -1098,7 +1137,7 @@ wordwrap(EDITOR *e, VIEW *v, const ARG *a)
 }
 
 COMMAND(ty, NOFLAGS) /* type in characters */
-    if (!haslines && !insertline(b, p.l))
+    if (!haslines && !insertline_checked(e, v, p.l))
         ERROR("Out of memory");
 
     for (size_t i = 0; i < a->n1; i++){
@@ -1109,8 +1148,8 @@ COMMAND(ty, NOFLAGS) /* type in characters */
            }
            wordwrap(e, v, a);
         }
-        if (!inserttext(b, v->p, a->s1 + i, 1))
-            ERROR("Out of memory");
+        if (!inserttext_checked(e, v, v->p, a->s1 + i, 1))
+            FAIL;
         v->p.c++;
     }
 END

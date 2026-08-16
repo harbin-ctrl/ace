@@ -95,9 +95,23 @@ readfile(const char *fn, bool (*cb)(const wchar_t *, size_t, void *), void *p)
     while ((n = getline(&l, &ln, f)) != -1 && rc){
         if (n && l[n - 1] == '\n')
             n--;
+        for (ssize_t i = 0; i < n; i++){
+            if (l[i] == '\0'){
+                errno = EILSEQ;
+                rc = false;
+                break;
+            }
+        }
+        if (!rc)
+            break;
         if (n){
             wchar_t *c = stows(l, n);
-            rc = c && cb(c, wcslen(c), p);
+            if (!c){
+                errno = EILSEQ;
+                rc = false;
+            } else {
+                rc = cb(c, wcslen(c), p);
+            }
             free(c);
         } else
             rc = cb(L"", 0, p);

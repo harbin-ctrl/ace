@@ -77,4 +77,80 @@ printf 'a    b\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/from.txt" "$test_dir/expected" ||
     fail 'ED FROM/WITH/TABS produced the wrong file'
 
+# A missing file is a normal ED session, not an input-file error.
+printf 'Q\n' > "$sys_dir/C/quit.cmd"
+missing_log="$test_dir/missing.log"
+timeout 5 script -qefc \
+    "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+     ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-missing-test \
+     '$repo_dir/build/ED' FROM SYS:C/missing.txt WITH SYS:C/quit.cmd" \
+    "$missing_log" >/dev/null 2>&1 || fail 'missing-file ED session failed'
+grep -a -q 'Creating new file' "$missing_log" ||
+    fail 'ED did not report Creating new file'
+
+# ED rejects binary input. A command file quits after the diagnostic so the
+# test does not need to edit the terminal session interactively.
+printf 'text\000binary\n' > "$sys_dir/C/binary.dat"
+binary_log="$test_dir/binary.log"
+timeout 5 script -qefc \
+    "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+     ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-binary-test \
+     '$repo_dir/build/ED' SYS:C/binary.dat WITH SYS:C/quit.cmd" \
+    "$binary_log" >/dev/null 2>&1 || fail 'binary-file ED session failed'
+grep -a -q 'Binary file' "$binary_log" ||
+    fail 'ED did not reject binary input'
+
+# A 255-character line is accepted, but adding one more character is refused.
+awk 'BEGIN { for (i = 0; i < 255; i++) printf "a"; printf "\n" }' \
+    > "$sys_dir/C/line-limit.txt"
+printf 'TY/x/\n' > "$sys_dir/C/line-limit.cmd"
+line_log="$test_dir/line-limit.log"
+set +e
+{
+    sleep 0.7
+    printf '\033'
+    sleep 0.1
+    printf 'Q\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-line-limit \
+         '$repo_dir/build/ED' SYS:C/line-limit.txt WITH SYS:C/line-limit.cmd" \
+        "$line_log" >/dev/null 2>&1
+line_status=$?
+set -e
+[ "$line_status" -eq 0 ] || fail 'line-limit ED session failed'
+grep -a -q 'Line Too Long' "$line_log" ||
+    fail 'ED did not enforce the 255-character line limit'
+awk 'BEGIN { for (i = 0; i < 255; i++) printf "a"; printf "\n" }' \
+    > "$test_dir/expected"
+cmp -s "$sys_dir/C/line-limit.txt" "$test_dir/expected" ||
+    fail 'line-limit rejection changed the file'
+
+# SIZE limits the total in-memory text buffer. The existing two-byte file has
+# no room for another character when SIZE 2 is specified.
+printf 'a\n' > "$sys_dir/C/size-limit.txt"
+printf 'TY/x/\n' > "$sys_dir/C/size-limit.cmd"
+size_log="$test_dir/size-limit.log"
+set +e
+{
+    sleep 0.7
+    printf '\033'
+    sleep 0.1
+    printf 'Q\r'
+} |
+    timeout 5 script -qefc \
+        "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
+         ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-size-limit \
+         '$repo_dir/build/ED' SYS:C/size-limit.txt WITH SYS:C/size-limit.cmd SIZE 2" \
+        "$size_log" >/dev/null 2>&1
+size_status=$?
+set -e
+[ "$size_status" -eq 0 ] || fail 'SIZE-limit ED session failed'
+grep -a -q 'Buffer full' "$size_log" ||
+    fail 'ED did not enforce SIZE'
+printf 'a\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/size-limit.txt" "$test_dir/expected" ||
+    fail 'SIZE rejection changed the file'
+
 printf 'tine ESC prompt test passed\n'

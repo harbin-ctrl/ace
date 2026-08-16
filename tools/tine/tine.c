@@ -64,6 +64,11 @@ loadfile(const char *fn)
     ARG a = {.t = ARG_STRING, .s1 = s, .n1 = wcslen(s)};
     errno = 0;
     cmd_if(editor, &editor->docview, &a);
+    int saved_errno = errno;
+    if (saved_errno == ENOENT)
+        error(editor, "Creating new file");
+    else if (saved_errno == EILSEQ)
+        error(editor, "Binary file");
     free(s);
 }
 
@@ -239,10 +244,17 @@ main(int argc, char **argv)
     if ((editor = openeditor(argv[0], stdscr, cmdwin)) == NULL)
         return fputs("out of memory", stderr), EXIT_FAILURE;
     editor->ed_compat = ed_compat;
-    editor->ed_size = ed_size;
+    editor->ed_size = 0;
     if (tabs)
         editor->docview.ts = tabs;
     loadfile(argv[0]);
+    if (ed_compat){
+        if (!ed_size)
+            ed_size = 40000;
+        if (editor->docview.b->bytes > ed_size)
+            ed_size = editor->docview.b->bytes;
+        editor->ed_size = ed_size;
+    }
     if (runrc)
        runstartupfiles(argv[0]);
     enableundo(editor->docview.b);

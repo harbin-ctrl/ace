@@ -112,6 +112,7 @@ doinsertline(BUFFER *b, lineno l)
     memmove(b->l + l + 1, b->l + l, (b->n - l) * sizeof(LINE));
     memset(b->l + l, 0, sizeof(LINE));
     b->n++;
+    b->bytes++;
 
     return b->dirty = true;
 }
@@ -119,9 +120,11 @@ doinsertline(BUFFER *b, lineno l)
 static bool
 dodeleteline(BUFFER *b, lineno l)
 {
+    size_t bytes = b->l[l].n + 1;
     free(b->l[l].s);
     memmove(b->l + l, b->l + l + 1, (b->n - l - 1) * sizeof(LINE));
     b->n--;
+    b->bytes -= bytes;
     return b->dirty = true;
 }
 
@@ -149,6 +152,7 @@ doinserttext(BUFFER *b, POS p, const wchar_t *s, size_t n)
         if (!ensureline(l, p.c))
             return false;
         wmemset(l->s + l->n, L' ', p.c - l->n);
+        b->bytes += p.c - l->n;
         l->n = p.c;
     }
 
@@ -157,6 +161,7 @@ doinserttext(BUFFER *b, POS p, const wchar_t *s, size_t n)
     wmemmove(l->s + p.c + n, l->s + p.c, l->n - p.c);
     wmemcpy(l->s + p.c, s, n);
     l->n += n;
+    b->bytes += n;
     return true;
 }
 
@@ -169,6 +174,7 @@ dodeletetext(BUFFER *b, POS p, size_t n)
     b->dirty = true;
     wmemmove(l->s + p.c, l->s + p.c + n, l->n - p.c - n);
     l->n -= n;
+    b->bytes -= n;
     return true;
 }
 

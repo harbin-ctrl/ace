@@ -34,6 +34,7 @@ typedef enum{ /* note that these must be in descending order by priority */
 typedef uint64_t txn;
 struct BUFFER{
     size_t a, n;
+    size_t bytes;
     LINE *l;
 
     bool canundo, dirty;
