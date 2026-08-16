@@ -98,6 +98,22 @@ getdef(const char *env, const char *def)
    return def;
 }
 
+static bool
+number(const char *s, size_t *value)
+{
+    char *end;
+    unsigned long long n;
+
+    if (!s || !*s || s[0] == '-')
+        return false;
+    errno = 0;
+    n = strtoull(s, &end, 10);
+    if (errno || *end || !n || (unsigned long long)(size_t)n != n)
+        return false;
+    *value = (size_t)n;
+    return true;
+}
+
 static void
 runstartup(const char *ext)
 {
@@ -164,7 +180,10 @@ main(int argc, char **argv)
 
     int o = 0, toporbot = -1;
     bool runrc = true;
-    while ((o = getopt(argc, argv, "rtn")) != -1){
+    bool ed_compat = false;
+    const char *with = NULL;
+    size_t ed_size = 0, tabs = 0, width = 0, height = 0;
+    while ((o = getopt(argc, argv, "rtnES:T:W:H:G:C:")) != -1){
        switch (o){
           case 'n':
             runrc = false;
@@ -174,6 +193,34 @@ main(int argc, char **argv)
             break;
           case 'r':
             reversed = true;
+            break;
+
+          case 'E':
+            ed_compat = true;
+            break;
+          case 'S':
+            if (!number(optarg, &ed_size))
+                quit(USAGE, EXIT_FAILURE);
+            break;
+          case 'T':
+            if (!number(optarg, &tabs))
+                quit(USAGE, EXIT_FAILURE);
+            break;
+          case 'W':
+            if (!number(optarg, &width))
+                quit(USAGE, EXIT_FAILURE);
+            break;
+          case 'H':
+            if (!number(optarg, &height))
+                quit(USAGE, EXIT_FAILURE);
+            break;
+          case 'G':
+            /* Amiga WINDOW specifications have no ACE terminal equivalent. */
+            break;
+          case 'C':
+            if (with)
+                quit(USAGE, EXIT_FAILURE);
+            with = optarg;
             break;
 
           default:
@@ -187,14 +234,22 @@ main(int argc, char **argv)
     if (argc < 1)
         quit(USAGE, EXIT_FAILURE);
 
+    tine_set_dimensions((int)height, (int)width);
     initializescreen(toporbot);
     if ((editor = openeditor(argv[0], stdscr, cmdwin)) == NULL)
         return fputs("out of memory", stderr), EXIT_FAILURE;
+    editor->ed_compat = ed_compat;
+    editor->ed_size = ed_size;
+    if (tabs)
+        editor->docview.ts = tabs;
     loadfile(argv[0]);
     if (runrc)
        runstartupfiles(argv[0]);
     enableundo(editor->docview.b);
     editor->docview.b->dirty = false;
+
+    if (with)
+        runfile(with);
 
     for (int i = 1; i < argc; i++){
         if (argv[i][0] == '+' && isdigit(argv[i][1])){

@@ -58,6 +58,7 @@ enum {
 extern WINDOW *tine_stdscr;
 
 WINDOW *tine_initscr(void);
+void tine_set_dimensions(int rows, int cols);
 int tine_init(bool reversed, WINDOW **command_window);
 void tine_endwin(void);
 void tine_refresh(void);

@@ -31,6 +31,8 @@ static int output_attr = -1;
 static int pending_byte = -1;
 static volatile sig_atomic_t resized;
 static int (*offline_callback)(WINDOW *, int);
+static int requested_rows;
+static int requested_cols;
 
 static int read_byte(unsigned char *byte, int timeout_ms);
 
@@ -140,6 +142,10 @@ update_size(void)
     }
     if (rows < 2)
         rows = 2;
+    if (requested_rows > 1 && requested_rows < rows)
+        rows = requested_rows;
+    if (requested_cols > 0 && requested_cols < cols)
+        cols = requested_cols;
     tine_stdscr->top = 0;
     tine_stdscr->rows = rows - 1;
     tine_stdscr->cols = cols;
@@ -148,6 +154,13 @@ update_size(void)
     command_window.rows = 1;
     command_window.cols = cols;
     command_window.y = command_window.x = 0;
+}
+
+void
+tine_set_dimensions(int rows, int cols)
+{
+    requested_rows = rows;
+    requested_cols = cols;
 }
 
 static void

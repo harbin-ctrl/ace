@@ -64,4 +64,17 @@ fi
 grep -a -q '\*' "$log_path" ||
     fail 'ESC did not display the extended-command asterisk prompt'
 
+# The ED wrapper must consume the Amiga argument template rather than passing
+# keywords such as FROM and WITH to Tine as command-file names. TABS must also
+# affect the initial tab stop: TB followed by TY should leave four spaces
+# between the two characters when the tab distance is five.
+printf 'I/a/;TB;TY/b/;X\n' > "$sys_dir/C/with.cmd"
+env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
+    ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-ed-args \
+    "$repo_dir/build/ED" FROM SYS:C/from.txt WITH SYS:C/with.cmd TABS 5 \
+    > /dev/null 2>&1 || fail 'ED argument compatibility failed'
+printf 'a    b\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/from.txt" "$test_dir/expected" ||
+    fail 'ED FROM/WITH/TABS produced the wrong file'
+
 printf 'tine ESC prompt test passed\n'

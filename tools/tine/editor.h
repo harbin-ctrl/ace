@@ -28,7 +28,7 @@ struct VIEW{
 #define ERR_MAX 127
 #define BM_MAX 10
 struct EDITOR{
-    bool running, needsresize;
+    bool running, needsresize, ed_compat;
     VIEW cmdview, docview, *focusview;
     POS bm[BM_MAX], lc;
     wchar_t *funcs[FUNC_MAX];
@@ -37,6 +37,7 @@ struct EDITOR{
     char err[ERR_MAX + 1];
     wchar_t *find;
     size_t findn;
+    size_t ed_size;
 };
 
 EDITOR *openeditor(const char *name, WINDOW *docwin, WINDOW *cmdwin);

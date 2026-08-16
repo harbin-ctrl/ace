@@ -1277,6 +1277,7 @@ static CMD cmdtab[] ={
     {L"SR", ARG_NUMBER,     false, cmd_sr},
     {L"ST", ARG_NUMBER,     true,  cmd_st},
     {L"T",  ARG_NONE,       true,  cmd_t},
+    {L"TB", ARG_NONE,       true,  cmd_tb},
     {L"TY", ARG_STRING,     true,  cmd_ty},
     {L"U",  ARG_NONE,       true,  cmd_u},
     {L"UC", ARG_NONE,       true,  cmd_uc},
