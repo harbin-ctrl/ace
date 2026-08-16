@@ -36,8 +36,44 @@ static volatile sig_atomic_t resized;
 static int (*offline_callback)(WINDOW *, int);
 static int requested_rows;
 static int requested_cols;
+static int output_y = -1;
+static int output_x = -1;
 
 static int read_byte(unsigned char *byte, int timeout_ms);
+
+static size_t
+window_cell_count(const WINDOW *window)
+{
+    return (size_t)window->rows * (size_t)window->cols;
+}
+
+static bool
+resize_window_storage(WINDOW *window)
+{
+    size_t count = window_cell_count(window);
+    wchar_t *cells = calloc(count, sizeof(*cells));
+    unsigned char *cell_attrs = calloc(count, sizeof(*cell_attrs));
+    wchar_t *shown_cells = calloc(count, sizeof(*shown_cells));
+    unsigned char *shown_attrs = calloc(count, sizeof(*shown_attrs));
+
+    if (!cells || !cell_attrs || !shown_cells || !shown_attrs) {
+        free(cells);
+        free(cell_attrs);
+        free(shown_cells);
+        free(shown_attrs);
+        return false;
+    }
+    free(window->cells);
+    free(window->cell_attrs);
+    free(window->shown_cells);
+    free(window->shown_attrs);
+    window->cells = cells;
+    window->cell_attrs = cell_attrs;
+    window->shown_cells = shown_cells;
+    window->shown_attrs = shown_attrs;
+    window->force_refresh = true;
+    return true;
+}
 
 static void
 write_all(const char *data, size_t length)
@@ -96,6 +132,8 @@ static void
 move_absolute(int y, int x)
 {
     emit_csi("\033[%d;%dH", y + 1, x + 1);
+    output_y = y;
+    output_x = x;
 }
 
 /* Amiga console.device implements erase-in-display as CSI J without a
@@ -175,6 +213,8 @@ update_size(void)
     command_window.rows = 1;
     command_window.cols = cols;
     command_window.y = command_window.x = 0;
+    (void)resize_window_storage(tine_stdscr);
+    (void)resize_window_storage(&command_window);
 }
 
 void
@@ -244,6 +284,11 @@ tine_init(bool reversed, WINDOW **command_window_out)
     *command_window_out = &command_window;
     if (offline_callback)
         offline_callback(&command_window, command_window.top ? -1 : 1);
+    /* The console has just been cleared above.  The first editor frame can
+     * therefore be diffed against an already blank screen; forcing every
+     * cell here would recreate the old flashing full-screen repaint. */
+    tine_stdscr->force_refresh = false;
+    command_window.force_refresh = false;
     return TINE_OK;
 }
 
@@ -297,14 +342,11 @@ tine_wbkgdset(WINDOW *window, int attr)
 void
 tine_werase(WINDOW *window)
 {
-    apply_attr(window->base_attr);
-    if (window == tine_stdscr) {
-        clear_screen();
-    } else {
-        move_absolute(window->top, 0);
-        emit(SCREEN_CSI "K");
-        move_absolute(window->top, 0);
-    }
+    size_t count = window_cell_count(window);
+
+    memset(window->cells, 0, count * sizeof(*window->cells));
+    memset(window->cell_attrs, window->base_attr,
+           count * sizeof(*window->cell_attrs));
     window->y = window->x = 0;
     window->attr = window->base_attr;
 }
@@ -318,7 +360,6 @@ tine_wmove(WINDOW *window, int y, int x)
         x = 0;
     window->y = y < window->rows ? y : window->rows - 1;
     window->x = x < window->cols ? x : window->cols - 1;
-    move_absolute(window->top + window->y, window->x);
 }
 
 void
@@ -337,16 +378,90 @@ tine_getmaxyx(WINDOW *window, int *y, int *x)
 
 void tine_delwin(WINDOW *window) { (void)window; }
 
+static void
+write_wchar(wchar_t character)
+{
+    char buffer[MB_LEN_MAX];
+    mbstate_t state = {0};
+    int length;
+    int width;
+
+    if (character == L'\0')
+        character = L' ';
+    length = wcrtomb(buffer, character, &state);
+    if (length < 0) {
+        buffer[0] = '?';
+        length = 1;
+        width = 1;
+    } else {
+        width = wcwidth(character);
+        if (width < 1)
+            width = 1;
+    }
+    write_all(buffer, (size_t)length);
+    output_x += width;
+}
+
+static bool
+same_screen_cell(wchar_t left, unsigned char left_attr,
+                 wchar_t right, unsigned char right_attr)
+{
+    bool left_blank = left == L'\0' || left == L' ';
+    bool right_blank = right == L'\0' || right == L' ';
+
+    return left_blank && right_blank ? left_attr == right_attr
+                                     : left == right && left_attr == right_attr;
+}
+
+static void
+flush_window_row(WINDOW *window, int row, bool force)
+{
+    size_t offset = (size_t)row * (size_t)window->cols;
+    int last = -1;
+    int x;
+
+    for (x = 0; x < window->cols; x++) {
+        size_t index = offset + (size_t)x;
+        if (force || !same_screen_cell(window->cells[index],
+                                       window->cell_attrs[index],
+                                       window->shown_cells[index],
+                                       window->shown_attrs[index]))
+            last = x;
+    }
+    if (last < 0)
+        return;
+
+    move_absolute(window->top + row, 0);
+    emit(SCREEN_CSI "1K");
+    for (x = 0; x <= last; x++) {
+        size_t index = offset + (size_t)x;
+
+        apply_attr(window->cell_attrs[index]);
+        write_wchar(window->cells[index]);
+    }
+    for (x = 0; x < window->cols; x++) {
+        size_t index = offset + (size_t)x;
+        window->shown_cells[index] = window->cells[index];
+        window->shown_attrs[index] = window->cell_attrs[index];
+    }
+}
+
 void tine_wrefresh(WINDOW *window)
 {
-    move_absolute(window->top + window->y, window->x);
+    int row;
+    bool force = window->force_refresh;
+
+    for (row = 0; row < window->rows; row++)
+        flush_window_row(window, row, force);
+    window->force_refresh = false;
+    if (output_y != window->top + window->y || output_x != window->x)
+        move_absolute(window->top + window->y, window->x);
     fflush(stdout);
 }
 
 void tine_wattrset(WINDOW *window, int attr)
 {
     window->attr = attr;
-    apply_attr(attr);
 }
 
 void tine_wattron(WINDOW *window, int attr)
@@ -362,22 +477,16 @@ void tine_wattroff(WINDOW *window, int attr)
 void
 tine_waddch(WINDOW *window, wchar_t character)
 {
-    char buffer[MB_LEN_MAX];
-    mbstate_t state = {0};
-    int length;
-    int width;
-
     if (character == L'\0')
         character = L' ';
-    length = wcrtomb(buffer, character, &state);
-    if (length < 0) {
-        buffer[0] = '?';
-        length = 1;
+    if (window->y >= 0 && window->y < window->rows &&
+        window->x >= 0 && window->x < window->cols) {
+        size_t index = (size_t)window->y * (size_t)window->cols +
+                       (size_t)window->x;
+        window->cells[index] = character;
+        window->cell_attrs[index] = (unsigned char)window->attr;
     }
-    write_all(buffer, (size_t)length);
-    width = wcwidth(character);
-    if (width > 0)
-        window->x += width;
+    window->x += wcwidth(character) > 0 ? wcwidth(character) : 1;
     if (window->x >= window->cols)
         window->x = window->cols - 1;
 }
@@ -392,11 +501,24 @@ tine_waddwstr(WINDOW *window, const wchar_t *string)
 void
 tine_mvwaddstr(WINDOW *window, int y, int x, const char *string)
 {
+    mbstate_t state = {0};
+    const char *p = string;
+
     tine_wmove(window, y, x);
-    write_all(string, strlen(string));
-    window->x += (int)strlen(string);
-    if (window->x >= window->cols)
-        window->x = window->cols - 1;
+    while (*p) {
+        wchar_t character;
+        size_t length = mbrtowc(&character, p, strlen(p), &state);
+
+        if (length == (size_t)-1 || length == (size_t)-2) {
+            memset(&state, 0, sizeof(state));
+            character = L'?';
+            length = 1;
+        } else if (length == 0) {
+            break;
+        }
+        tine_waddch(window, character);
+        p += length;
+    }
 }
 
 void
@@ -423,7 +545,12 @@ tine_mvwhline(WINDOW *window, int y, int x, wchar_t character, int count)
         tine_waddch(window, character);
 }
 
-void tine_redrawwin(WINDOW *window) { tine_wrefresh(window); }
+void
+tine_redrawwin(WINDOW *window)
+{
+    window->force_refresh = true;
+    tine_wrefresh(window);
+}
 
 int
 tine_curs_set(int visible)

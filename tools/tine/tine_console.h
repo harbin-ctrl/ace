@@ -18,6 +18,11 @@ struct tine_window {
     int x;
     int attr;
     int base_attr;
+    wchar_t *cells;
+    unsigned char *cell_attrs;
+    wchar_t *shown_cells;
+    unsigned char *shown_attrs;
+    bool force_refresh;
 };
 
 enum {
