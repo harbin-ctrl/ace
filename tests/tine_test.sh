@@ -63,6 +63,8 @@ if [ "$status" -ne 0 ]; then
 fi
 grep -a -q '\*' "$log_path" ||
     fail 'ESC did not display the extended-command asterisk prompt'
+grep -a -q 'File=SYS:C/esc.txt Line=1 Col=1 Block=?? Tabs=3 Margins=1,?' \
+    "$log_path" || fail 'ED did not display its status line'
 
 # The ED wrapper must consume the Amiga argument template rather than passing
 # keywords such as FROM and WITH to Tine as command-file names. TABS must also

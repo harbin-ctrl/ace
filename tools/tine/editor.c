@@ -1,5 +1,6 @@
 #include <libgen.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "structs.h"
@@ -51,12 +52,39 @@ static void
 docstatus(EDITOR *e, VIEW *v)
 {
     WINDOW *w = e->cmdview.w;
+    VIEW *dv = &e->docview;
+    char status[1024];
+    char left[32];
+    char right[32];
+    int rows, columns;
 
     cleartag(e->docview.b, VIRTCURS);
 
     werase(w);
-    if (e->err[0])
-        mvwprintw(w, 0, 0, "%s", e->err);
+    if (e->err[0]) {
+        mvwaddstr(w, 0, 0, e->err);
+    } else {
+        if (dv->ai)
+            strcpy(left, ">");
+        else
+            snprintf(left, sizeof(left), "%zu", dv->lm == NONE? 1 : dv->lm + 1);
+        if (dv->rm == NONE)
+            strcpy(right, "?");
+        else
+            snprintf(right, sizeof(right), "%zu", dv->rm + 1);
+        snprintf(status, sizeof(status),
+            "File=%s%s Line=%zu Col=%zu Block=%c%c Tabs=%s%zu Margins=%s%s,%s",
+            dv->b->dirty? "*" : "", e->name,
+            dv->p.l + 1, dv->p.c + 1,
+            dv->bs == NONE? '?' : 'S', dv->be == NONE? '?' : 'E',
+            dv->et? "*" : "", dv->ts,
+            dv->ex? "*" : "", left, right);
+        getmaxyx(w, rows, columns);
+        (void)rows;
+        if (columns > 0 && (size_t)columns < sizeof(status))
+            status[columns] = '\0';
+        mvwaddstr(w, 0, 0, status);
+    }
     e->err[0] = 0;
     wrefresh(w);
 }
