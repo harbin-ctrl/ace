@@ -55,6 +55,7 @@ static bool
 prompt(EDITOR *e, const char *p)
 {
     werase(e->cmdview.w);
+    wattrset(e->cmdview.w, A_STATUS);
     mvwaddstr(e->cmdview.w, 0, 0, p);
     wrefresh(e->cmdview.w);
     KEYSTROKE k = getkeystroke(e, true);
@@ -795,7 +796,8 @@ COMMAND(pu, NOLOCATOR | MARK) /* page up */
 END
 
 COMMAND(q, NOLOCATOR) /* quit without save */
-    if (e->docview.b->dirty && !prompt(e, "File has changed. Lose changes?"))
+    if (e->docview.b->dirty &&
+        !prompt(e, "Edits will be lost - type Y to confirm: "))
         FAIL;
     e->running = false;
 END
