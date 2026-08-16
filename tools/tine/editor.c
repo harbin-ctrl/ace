@@ -190,7 +190,13 @@ redisplay(VIEW *v)
     size_t l = 0;
     for (l = 0; l < lines && v->tos.l + l < v->b->n; l++){
         size_t c = v->prompt ? 1 : 0, i = 0;
-        while (c < cols){
+        size_t end = SIZE_MAX;
+        if (v->prompt) {
+            end = v->b->l[v->tos.l + l].n;
+            if (v->p.l == v->tos.l + l && v->p.c > end)
+                end = v->p.c;
+        }
+        while (c < cols && (!v->prompt || i < end)){
             wattrset(v->w, gettag(v->b, pos(v->tos.l + l, v->tos.c + i)));
             wmove(v->w, l, c);
             if (v->tos.l + l == v->p.l && v->tos.c + i == v->p.c)
@@ -218,12 +224,22 @@ redisplay(VIEW *v)
             i++;
         }
     }
-    while (l < lines && v->se)
-       mvwhline(v->w, l++, 0, ' ', cols);
+    if (!v->prompt) {
+        while (l < lines && v->se)
+            mvwhline(v->w, l++, 0, ' ', cols);
+    }
 
     if (v->prompt){
         wmove(v->w, 0, 0);
         waddch(v->w, L'*');
+        if (v->p.l != NONE && v->p.c != NONE &&
+            v->p.l >= v->tos.l && v->p.l < v->tos.l + lines &&
+            v->p.c >= v->tos.c) {
+            y = v->p.l - v->tos.l;
+            x = v->p.c - v->tos.c + 1;
+            if (x >= cols)
+                x = cols - 1;
+        }
     }
     wmove(v->w, y, x);
     wrefresh(v->w);
