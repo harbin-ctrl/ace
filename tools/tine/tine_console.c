@@ -251,6 +251,8 @@ tine_endwin(void)
 {
     if (!active)
         return;
+    if (ace_console)
+        emit(CSI "12}");
     emit(CSI "0m" CSI " p" "\n");
     if (have_termios)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
