@@ -291,7 +291,7 @@ tine_werase(WINDOW *window)
         clear_screen();
     } else {
         move_absolute(window->top, 0);
-        emit(CSI "2K");
+        emit(CSI "K");
         move_absolute(window->top, 0);
     }
     window->y = window->x = 0;
