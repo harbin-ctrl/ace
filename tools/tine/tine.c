@@ -169,9 +169,13 @@ run(void)
         KEYSTROKE k = getkeystroke(editor, true);
         if (k.o == ERR)
             continue;
+        VIEW *previous_focus = editor->focusview;
         dispatch(editor, editor->focusview, k);
         if (editor->focusview->statuscb)
             editor->focusview->statuscb(editor, editor->focusview);
+        if (editor->focusview == &editor->cmdview &&
+            previous_focus != editor->focusview)
+            redisplay(&editor->docview);
         redisplay(editor->focusview);
     }
 }

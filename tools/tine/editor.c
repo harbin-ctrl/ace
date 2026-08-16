@@ -69,7 +69,6 @@ cmdstatus(EDITOR *e, VIEW *v)
    cleartag(dv->b, VIRTCURS);
    int s = dv->p.l >= dv->bs && dv->p.l <= dv->be? A_NORMAL : A_REVERSE;
    settag(dv->b, VIRTCURS, dv->p, pos(dv->p.l, dv->p.c + 1), s);
-   redisplay(dv);
 }
 
 EDITOR *
@@ -264,9 +263,9 @@ getkeystroke(EDITOR *e, bool delay)
     wint_t c = 0;
     int o = wget_wch(e->focusview->w, &c);
     while (o == KEY_CODE_YES && c == KEY_RESIZE){
-        redisplay(&e->docview);
         if (e->focusview->statuscb)
             e->focusview->statuscb(e, e->focusview);
+        redisplay(&e->docview);
         redisplay(e->focusview);
         o = wget_wch(e->focusview->w, &c);
     }
