@@ -43,13 +43,14 @@ done
 
 # ED/Tine is a full-screen program, so feed it through a real pseudo-terminal.
 # ESC enters extended-command mode, Q is Quit, and Return executes it. The
-# command-line transcript must contain the asterisk prompt before Q.
+# command-line transcript must contain the asterisk prompt before Q. The ACE
+# console delivers the physical Return key as LF, so exercise that path here.
 set +e
 {
     sleep 0.5
     printf '\033'
     sleep 0.1
-    printf 'Q\r'
+    printf 'Q\n'
 } |
     timeout 5 script -qefc \
         "env TERM=xterm ACE_BROKER_SOCKET='$socket_path' \

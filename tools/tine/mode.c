@@ -42,7 +42,8 @@ static MODE cmdmodetab ={
         {{KEY_CODE_YES, KEY_RESIZE},       cmd_vw, {0}},
         {{KEY_CODE_YES, KEY_ENTER},        cmd_ru, {0}},
         {{KEY_CODE_YES, KEY_BTAB},         cmd_bt, {0}},
-        {{OK,           L'\n'},            noaction, {0}},
+        /* The ACE console delivers the physical Return key as LF. */
+        {{OK,           L'\n'},            cmd_ru, {0}},
         {{OK,           L'\r'},            cmd_ru, {0}},
         {{OK,           L'\t'},            cmd_tb, {0}},
         {{OK,           0x7f},             cmd_dl, {0}},
