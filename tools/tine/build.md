@@ -1,6 +1,6 @@
-# Building tine
+# Building ET (Edified Tine)
 
-`tine` is written in portable C99;
+ET is written in portable C99;
 build using `make`:
 
     make
@@ -28,7 +28,7 @@ command line.
 
 ### macOS
 
-On my 2022 macOS laptop the following works to compile `tine`:
+On my 2022 macOS laptop the following works to compile the editor:
 
 make 'CURSES=-DCURSES_INCLUDE=<curses.h>' LDFLAGS=-lcurses
 

@@ -11,7 +11,8 @@
 #include <unistd.h>
 
 /* ED is an Amiga command from the user's point of view.  Its implementation
-   is the TINE guest executable installed beside ACE's host programs. */
+   is the ET (Edified Tine) guest executable installed beside ACE's host
+   programs. */
 
 static void
 usage(void)

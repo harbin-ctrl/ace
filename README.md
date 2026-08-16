@@ -6,6 +6,11 @@ It intentionally does not build Workbench or the AROS kernel.  Original AROS
 command sources are compiled against the compatibility headers in
 `compat/include` and the broker-backed DOS implementation in `src`.
 
+### ET — Edified Tine
+
+ACE's Amiga ED-compatible editor is its maintained Tine fork, named ET —
+Edified Tine. Its submotto is *Back in Tine.*
+
 ## Build and run
 
 ```sh
