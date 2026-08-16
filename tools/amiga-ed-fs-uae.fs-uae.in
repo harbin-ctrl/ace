@@ -21,7 +21,7 @@ floppy_drive_volume = 0
 floppy_drive_volume_empty = 0
 
 shader = 0
-window_hidden = 1
+window_hidden = __WINDOW_HIDDEN__
 deterministic = 1
 uae_sound_output = none
 video_sync = 0

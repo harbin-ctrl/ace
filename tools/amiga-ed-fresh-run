@@ -6,6 +6,8 @@ fs_uae=${FS_UAE:-fs-uae}
 af_root=${AF_ROOT:-/home/pi/AF/Shared}
 model=${AMIGA_MODEL:-A1200}
 rom=${AMIGA_ROM:-$af_root/rom/amiga-os-310-a1200.rom}
+probe_dir=${ED_PROBE_DIR:-$repo_dir/tools/ed-amiga-probe}
+window_hidden=${FS_UAE_WINDOW_HIDDEN:-1}
 
 if ! command -v "$fs_uae" >/dev/null 2>&1; then
     printf '%s\n' "FS-UAE not found: $fs_uae" >&2
@@ -17,6 +19,10 @@ if [ ! -f "$rom" ]; then
 fi
 if [ ! -d "$af_root/dir/System" ]; then
     printf '%s\n' "Amiga Forever System directory not found: $af_root/dir/System" >&2
+    exit 2
+fi
+if [ ! -f "$probe_dir/run" ]; then
+    printf '%s\n' "ED probe runner not found: $probe_dir/run" >&2
     exit 2
 fi
 
@@ -59,7 +65,7 @@ trap 'exit 130' INT TERM
 
 mkdir "$work_root"
 cp -a "$af_root/dir/System" "$system_root"
-cp -a "$repo_dir/tools/ed-amiga-probe/." "$probe_root"
+cp -a "$probe_dir/." "$probe_root"
 chmod -R u+rwX "$system_root" "$work_root"
 cp "$repo_dir/tools/amiga-ed-fresh-startup-sequence" "$system_root/S/Startup-Sequence"
 cp "$repo_dir/tools/amiga-ed-fresh-user-startup" "$system_root/S/user-startup"
@@ -69,6 +75,7 @@ sed \
     -e "s|__ROM__|$rom|g" \
     -e "s|__SYSTEM__|$system_root|g" \
     -e "s|__WORK__|$work_root|g" \
+    -e "s|__WINDOW_HIDDEN__|$window_hidden|g" \
     "$repo_dir/tools/amiga-ed-fs-uae.fs-uae.in" >"$config_file"
 
 "$fs_uae" "$config_file" \

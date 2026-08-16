@@ -1,0 +1,14 @@
+; Focused ED 2.00 probe: Return submits an interactive extended command.
+FAILAT 21
+
+IF EXISTS Work:ed-probe/results
+  DELETE Work:ed-probe/results/#? ALL QUIET
+ELSE
+  MAKEDIR Work:ed-probe/results
+ENDIF
+
+; The operator types alpha, presses ESC, types X, and presses Return.
+; The chassis stays alive until this ED session returns to the Shell.
+ED Work:ed-probe/results/return.txt WINDOW CONSOLE: >Work:ed-probe/results/return.raw
+VERSION >Work:ed-probe/results/version.txt
+ECHO "ED command-return probe complete." >Work:ed-probe/results/COMPLETE
