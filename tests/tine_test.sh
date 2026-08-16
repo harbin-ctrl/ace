@@ -153,4 +153,8 @@ printf 'a\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/size-limit.txt" "$test_dir/expected" ||
     fail 'SIZE rejection changed the file'
 
+[ "$("$repo_dir/build/ED" '?')" = \
+    'FROM/A,SIZE/N,WITH/K,WINDOW/K,TABS/N,WIDTH=COLS/N,HEIGHT=ROWS/N' ] ||
+    fail 'ED ? did not print the ED template'
+
 printf 'tine ESC prompt test passed\n'

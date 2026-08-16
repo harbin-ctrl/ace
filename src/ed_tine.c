@@ -20,6 +20,12 @@ usage(void)
           "[TABS n] [WIDTH|COLS n] [HEIGHT|ROWS n]\n", stderr);
 }
 
+static void
+template(void)
+{
+    puts("FROM/A,SIZE/N,WITH/K,WINDOW/K,TABS/N,WIDTH=COLS/N,HEIGHT=ROWS/N");
+}
+
 static bool
 number(const char *s)
 {
@@ -54,6 +60,10 @@ int main(int argc, char **argv)
     const char *window = NULL;
     int input = 1;
 
+    if (argc == 2 && keyword(argv[1], "?")) {
+        template();
+        return 0;
+    }
     if (input < argc && keyword(argv[input], "FROM"))
         input++;
     if (input >= argc) {
