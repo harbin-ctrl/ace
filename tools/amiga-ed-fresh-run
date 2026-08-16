@@ -8,6 +8,7 @@ model=${AMIGA_MODEL:-A1200}
 rom=${AMIGA_ROM:-$af_root/rom/amiga-os-310-a1200.rom}
 probe_dir=${ED_PROBE_DIR:-$repo_dir/tools/ed-amiga-probe}
 window_hidden=${FS_UAE_WINDOW_HIDDEN:-1}
+fast_memory=${FS_UAE_FAST_MEMORY:-0}
 
 if ! command -v "$fs_uae" >/dev/null 2>&1; then
     printf '%s\n' "FS-UAE not found: $fs_uae" >&2
@@ -76,6 +77,7 @@ sed \
     -e "s|__SYSTEM__|$system_root|g" \
     -e "s|__WORK__|$work_root|g" \
     -e "s|__WINDOW_HIDDEN__|$window_hidden|g" \
+    -e "s|__FAST_MEMORY__|$fast_memory|g" \
     "$repo_dir/tools/amiga-ed-fs-uae.fs-uae.in" >"$config_file"
 
 "$fs_uae" "$config_file" \

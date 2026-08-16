@@ -3,7 +3,7 @@ amiga_model = __MODEL__
 kickstart_file = __ROM__
 chip_memory = 512
 slow_memory = 512
-fast_memory = 0
+fast_memory = __FAST_MEMORY__
 
 hard_drive_0 = __SYSTEM__
 hard_drive_0_label = System
