@@ -93,6 +93,18 @@ move_absolute(int y, int x)
     emit_csi("\233%d;%dH", y + 1, x + 1);
 }
 
+/* Amiga console.device implements erase-in-display as CSI J without a
+ * parameter.  CSI 2J is the VT form, but its parameter makes the Amiga
+ * parser reject the sequence and leaves the literal "2J" on the screen.
+ * Home first so the Amiga form still clears the entire display. */
+static void
+clear_screen(void)
+{
+    move_absolute(0, 0);
+    emit(CSI "J");
+    move_absolute(0, 0);
+}
+
 static void
 update_size(void)
 {
@@ -215,7 +227,8 @@ tine_init(bool reversed, WINDOW **command_window_out)
     enter_raw();
     active = true;
     cursor_visible = true;
-    emit(CSI "?25h" CSI "2J" CSI "H");
+    emit(CSI "?25h");
+    clear_screen();
     if (ace_console)
         emit(CSI "12{");
     apply_attr(tine_stdscr->base_attr);
@@ -275,8 +288,7 @@ tine_werase(WINDOW *window)
 {
     apply_attr(window->base_attr);
     if (window == tine_stdscr) {
-        emit(CSI "2J");
-        move_absolute(0, 0);
+        clear_screen();
     } else {
         move_absolute(window->top, 0);
         emit(CSI "2K");
