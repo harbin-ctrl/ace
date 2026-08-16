@@ -413,7 +413,7 @@ same_screen_cell(wchar_t left, unsigned char left_attr,
                                      : left == right && left_attr == right_attr;
 }
 
-static void
+static bool
 flush_window_row(WINDOW *window, int row, bool force)
 {
     size_t offset = (size_t)row * (size_t)window->cols;
@@ -429,7 +429,7 @@ flush_window_row(WINDOW *window, int row, bool force)
             last = x;
     }
     if (last < 0)
-        return;
+        return false;
 
     move_absolute(window->top + row, 0);
     emit(SCREEN_CSI "1K");
@@ -444,17 +444,20 @@ flush_window_row(WINDOW *window, int row, bool force)
         window->shown_cells[index] = window->cells[index];
         window->shown_attrs[index] = window->cell_attrs[index];
     }
+    return true;
 }
 
 void tine_wrefresh(WINDOW *window)
 {
     int row;
     bool force = window->force_refresh;
+    bool flushed = false;
 
     for (row = 0; row < window->rows; row++)
-        flush_window_row(window, row, force);
+        flushed = flush_window_row(window, row, force) || flushed;
     window->force_refresh = false;
-    if (output_y != window->top + window->y || output_x != window->x)
+    if (!flushed &&
+        (output_y != window->top + window->y || output_x != window->x))
         move_absolute(window->top + window->y, window->x);
     fflush(stdout);
 }
