@@ -1,0 +1,4 @@
+; Amiga Forever calls S:User-Startup before it loads Workbench.
+; Run the probe in its own process so the normal Workbench startup can
+; continue while ED is being exercised.
+RUN >NIL: C:Execute Work:ed-probe/boot-run

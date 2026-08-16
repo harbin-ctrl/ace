@@ -1,0 +1,4 @@
+; User-Startup starts this script before C:LoadWB.  Give Workbench time to
+; come up, then run the ED probe in the child process's CLI context.
+C:Wait 3
+C:Execute Work:ed-probe/run
