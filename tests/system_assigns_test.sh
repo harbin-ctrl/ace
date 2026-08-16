@@ -144,6 +144,47 @@ CD
 ')
 expect_missing "$output" "/C" "typing SYS: should not land in SYS:C"
 
+# A directory named after a command must not win over the command. The Shell
+# first searches the command path and C: after the current-directory open
+# reports ERROR_OBJECT_WRONG_TYPE; only an unsuccessful command lookup is a
+# request to change directory. Dir's listing proves that the command ran,
+# while the following CD proves that the shell stayed in T:.
+command_directory=T:Dir
+output=$(run_shell "Delete $command_directory
+MakeDir $command_directory
+CD T:
+Dir
+CD
+Delete $command_directory
+")
+expect_contains "$output" "Dir (dir)" \
+    "a directory named Dir took precedence over the Dir command"
+
+# CD accepts AmigaDOS patterns, but only when the pattern identifies one
+# directory. A second matching directory must not be selected arbitrarily or
+# change the current directory.
+output=$(run_shell 'Delete T:marionberry T:marionberry2
+MakeDir T:marionberry
+CD T:
+CD marion#?
+CD
+Delete T:marionberry
+')
+expect_contains "$output" "marionberry" \
+    "CD did not enter the unique directory matching a pattern"
+
+output=$(run_shell 'MakeDir T:marionberry
+MakeDir T:marionberry2
+CD T:
+CD marion#?
+CD
+Delete T:marionberry T:marionberry2
+')
+expect_contains "$output" "More than one directory matches" \
+    "CD did not reject an ambiguous directory pattern"
+expect_missing "$output" "marionberry/" \
+    "ambiguous CD changed into one of the matching directories"
+
 # The command path is the loader's business. Open() must not quietly find a
 # command when what was asked for was a file.
 output=$(run_shell 'Type Echo

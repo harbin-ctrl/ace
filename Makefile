@@ -60,7 +60,7 @@ else
 AROS_CPU_ARCH ?= x86_64-all
 endif
 AROS_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Echo.c
-AROS_CD_SRC := $(AROS_ROOT)/workbench/c/shellcommands/CD.c
+AROS_CD_SRC := src/cd.c
 AROS_PATHPART_SRC := $(AROS_ROOT)/workbench/c/shellcommands/PathPart.c
 AROS_WHICH_SRC := $(AROS_ROOT)/workbench/c/Which.c
 AROS_FAULT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Fault.c
@@ -662,7 +662,7 @@ $(BUILD)/Echo.o: $(AROS_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/CD.o: $(AROS_CD_SRC) | $(BUILD)
-	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) $(AROS_DOSPAT_CFLAGS) -c $< -o $@
 
 $(BUILD)/PathPart.o: $(AROS_PATHPART_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
@@ -822,7 +822,7 @@ $(BUILD)/ED: $(BUILD)/ed_tine.o
 $(BUILD)/Echo: $(BUILD)/Echo.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/CD: $(BUILD)/CD.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
+$(BUILD)/CD: $(BUILD)/CD.o $(AROS_DOSPAT_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Path: $(BUILD)/Path.o $(BUILD)/native_command_entry.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
