@@ -47,6 +47,8 @@ int main(void)
     char output_bytes[3];
     int rows;
     int cols;
+    int duplicated_input;
+    int duplicated_output;
 
     assert(pipe(input) == 0);
     assert(pipe(output) == 0);
@@ -62,8 +64,16 @@ int main(void)
     console = Open("CONSOLE:", MODE_READWRITE);
     assert(console != BNULL);
     assert(native_console_is_handle(console));
+    assert(!native_console_is_instance(console));
+    assert(native_console_session(console) == NULL);
     assert(strcmp(native_console_specification(console), "CONSOLE:") == 0);
     assert(IsInteractive(console) == DOSTRUE);
+    duplicated_input = native_console_dup_input(console);
+    duplicated_output = native_console_dup_output(console);
+    assert(duplicated_input >= 0);
+    assert(duplicated_output >= 0);
+    close(duplicated_input);
+    close(duplicated_output);
 
     alias = Open("CONSOLE:", MODE_READWRITE);
     star = Open("*", MODE_READWRITE);

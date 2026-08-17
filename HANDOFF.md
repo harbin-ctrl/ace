@@ -421,7 +421,7 @@ must then be changed by DOS `SetMode()` rather than being independently
 remembered by each consumer. Keep `CONSOLE:`/`*` as aliases for the current
 console and retain the Stage 1 trace at the channel boundary.
 
-### Stage 3: real CON: instances
+### Stage 3: real CON: instances (implemented)
 
 Add a separate channel instance for each `CON:x/y/w/h/title/...` window
 specification. `CON:` opens or creates that instance; `CONSOLE:` and `*`
@@ -430,6 +430,16 @@ but the DOS handle must select the instance rather than silently sharing the
 current stream. This is the point at which NEWCLI can be made faithful: it
 opens its requested CON: handle and passes it as `SYS_Input`, with output and
 error allowed to follow the same handler.
+
+ACE now parses the geometry and title fields, starts an `ace-console` window
+with a socket endpoint for each parameterised `CON:` handle, and keeps
+`CONSOLE:`/`*` on the current-console channel. `SystemTagList()` duplicates
+the selected handle into the new shell's standard input, output, and error
+streams; omitted output/error handles follow the input console. A
+`SYS_ScriptInput` handle is duplicated into the child through the existing
+`ACE_SCRIPT_INPUT` seam, so AROS's `NewCLI` can run its startup file and then
+return to interactive input. The remaining handler packet split belongs to
+Stage 4.
 
 ### Stage 4: Shell/CLI and console.device boundaries
 

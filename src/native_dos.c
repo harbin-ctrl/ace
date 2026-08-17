@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <dirent.h>
+#include <fcntl.h>
 
 #include <dos/dos.h>
 #include <dos/datetime.h>
@@ -938,25 +939,25 @@ const char *native_console_session(BPTR handle)
     return console && console->instance ? console->instance->session : NULL;
 }
 
-static int native_console_duplicate(BPTR handle)
+static int native_console_duplicate(BPTR handle, int output)
 {
     struct native_console_handle *console = native_console_pointer(handle);
 
-    if (!console || !console->instance) {
+    if (!console) {
         errno = EBADF;
         return -1;
     }
-    return dup(console->instance->fd);
+    return dup(fileno(output ? console->output : console->input));
 }
 
 int native_console_dup_input(BPTR handle)
 {
-    return native_console_duplicate(handle);
+    return native_console_duplicate(handle, 0);
 }
 
 int native_console_dup_output(BPTR handle)
 {
-    return native_console_duplicate(handle);
+    return native_console_duplicate(handle, 1);
 }
 
 void native_console_close(BPTR handle)
