@@ -544,8 +544,11 @@ $(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h src/broker_client.h 
 $(BUILD)/amiga_shell.o: src/amiga_shell.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_console.o: src/amiga_console.c src/console_device_bridge.h src/ace_appmenu_wayland.h | $(BUILD)
+$(BUILD)/amiga_console.o: src/amiga_console.c src/console_channel.h src/console_device_bridge.h src/ace_appmenu_wayland.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/console_channel.o: src/console_channel.c src/console_channel.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/ace-appmenu-wayland.o: src/ace_appmenu_wayland.c src/ace_appmenu_wayland.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(WAYLAND_CFLAGS) -Isrc -c $< -o $@
@@ -608,6 +611,12 @@ $(BUILD)/console-device-bridge-test: $(BUILD)/console-device-bridge-test.o $(BUI
                                      $(AROS_ARSUPPORT_OBJS) $(AROS_BOOPSI_OBJS) \
                                      $(BUILD)/aros-boopsi-runtime.o
 	$(CC) $(CFLAGS) -pthread $^ $(GFX_LIBS) -o $@
+
+$(BUILD)/console-channel-test.o: tests/console_channel_test.c src/console_channel.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/console-channel-test: $(BUILD)/console-channel-test.o $(BUILD)/console_channel.o
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
@@ -938,7 +947,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
@@ -1037,6 +1046,9 @@ install-vim: vim
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
 
+test-console-channel: $(BUILD)/console-channel-test
+	$(BUILD)/console-channel-test
+
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 	$(BUILD)/aros-exec-runtime-test
 
@@ -1093,4 +1105,4 @@ test-dir-sort: all
 test-tine: all tine
 	sh tests/tine_test.sh
 
-.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics

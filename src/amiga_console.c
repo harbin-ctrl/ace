@@ -16,6 +16,7 @@
 
 #include "aros_graphics_runtime.h"
 #include "ace_appmenu_wayland.h"
+#include "console_channel.h"
 #include "console_device_bridge.h"
 
 #define INPUT_MAX 4096
@@ -116,6 +117,7 @@ struct console_window {
     GtkWidget *menu_bar;
     GtkWidget *drawing_area;
     int stream_fd;
+    struct ace_console_channel channel;
     pid_t child_pid;
     char *font_family;
     int font_size;
@@ -156,6 +158,23 @@ struct console_window {
 
 static void clear_selection(struct console_window *console);
 static void copy_selection(struct console_window *console);
+
+static void update_channel_geometry(struct console_window *console)
+{
+    int pixel_width;
+    int pixel_height;
+    int cell_width;
+    int cell_height;
+
+    ace_console_device_size(console->device, &pixel_width, &pixel_height);
+    if (ace_console_device_cell_size(console->device, &cell_width,
+                                     &cell_height) != 0 ||
+        cell_width <= 0 || cell_height <= 0)
+        return;
+    ace_console_channel_set_geometry(&console->channel,
+                                     pixel_height / cell_height,
+                                     pixel_width / cell_width);
+}
 
 static char *config_path(void)
 {
@@ -989,6 +1008,7 @@ static gboolean apply_pending_resize(gpointer data)
                 width, height);
         return G_SOURCE_REMOVE;
     }
+    update_channel_geometry(console);
     ace_console_device_notify_resize(console->device);
     gtk_widget_queue_draw(console->drawing_area);
     return G_SOURCE_REMOVE;
@@ -1123,18 +1143,7 @@ static void drawing_area_size_allocate(GtkWidget *widget,
 static int send_input(struct console_window *console, const void *data,
                       size_t length)
 {
-    size_t offset = 0;
-
-    while (offset < length) {
-        ssize_t written = write(console->stream_fd,
-                                (const char *)data + offset,
-                                length - offset);
-
-        if (written <= 0)
-            return -1;
-        offset += (size_t)written;
-    }
-    return 0;
+    return ace_console_channel_send(&console->channel, data, length);
 }
 
 static void clear_selection(struct console_window *console)
@@ -1556,8 +1565,8 @@ static gboolean read_console(GIOChannel *channel, GIOCondition condition,
     }
 
     while (drained < OUTPUT_DRAIN_MAX) {
-        ssize_t length = recv(console->stream_fd, buffer, sizeof(buffer),
-                              MSG_DONTWAIT);
+        ssize_t length = ace_console_channel_receive(&console->channel,
+                                                     buffer, sizeof(buffer));
 
         if (length > 0) {
             /*
@@ -1627,6 +1636,7 @@ static void console_destroy(GtkWidget *widget, gpointer data)
     }
     if (console->stream_fd >= 0)
         close(console->stream_fd);
+    ace_console_channel_close(&console->channel);
     gtk_main_quit();
 }
 
@@ -1688,28 +1698,8 @@ int main(int argc, char **argv)
         ace_console_device_close(console.device);
         return 20;
     }
-    {
-        int pixel_width;
-        int pixel_height;
-        int cell_width;
-        int cell_height;
-        char rows[32];
-        char columns[32];
-
-        /* Real Ed learns its initial cell geometry from the CON: window
-         * while opening it; it does not send a size query into the console
-         * stream.  Export the same initial geometry to ET so its first
-         * bytes can remain identical to Ed's. */
-        ace_console_device_size(console.device, &pixel_width, &pixel_height);
-        if (ace_console_device_cell_size(console.device, &cell_width,
-                                         &cell_height) == 0 &&
-            cell_width > 0 && cell_height > 0) {
-            snprintf(columns, sizeof(columns), "%d", pixel_width / cell_width);
-            snprintf(rows, sizeof(rows), "%d", pixel_height / cell_height);
-            setenv("ACE_CONSOLE_COLS", columns, 1);
-            setenv("ACE_CONSOLE_ROWS", rows, 1);
-        }
-    }
+    ace_console_channel_init(&console.channel, -1);
+    update_channel_geometry(&console);
     if (argc != 3 || strcmp(argv[1], "--session") != 0) {
         fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
         return 20;
@@ -1754,6 +1744,7 @@ int main(int argc, char **argv)
     }
     close(sockets[1]);
     console.stream_fd = sockets[0];
+    ace_console_channel_set_fd(&console.channel, console.stream_fd);
     ace_console_device_set_input_fd(console.device, console.stream_fd);
 
     /* Keep the Wayland app_id, X11 class, launcher desktop file, and

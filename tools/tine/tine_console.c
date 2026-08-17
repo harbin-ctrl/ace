@@ -30,6 +30,7 @@ static bool active;
 static bool cursor_visible;
 static bool input_delay = true;
 static bool ace_console;
+static bool raw_mode_active;
 static int output_attr = -1;
 static int pending_byte = -1;
 static volatile sig_atomic_t resized;
@@ -40,22 +41,6 @@ static int output_y = -1;
 static int output_x = -1;
 
 static int read_byte(unsigned char *byte, int timeout_ms);
-
-static int
-environment_dimension(const char *name)
-{
-    const char *value = getenv(name);
-    char *end;
-    long dimension;
-
-    if (!value || !*value)
-        return 0;
-    errno = 0;
-    dimension = strtol(value, &end, 10);
-    if (errno || *end || dimension <= 0 || dimension > INT_MAX)
-        return 0;
-    return (int)dimension;
-}
 
 static size_t
 window_cell_count(const WINDOW *window)
@@ -200,45 +185,37 @@ update_size(void)
     int cols = 80;
 
     if (ace_console) {
-        int environment_rows = environment_dimension("ACE_CONSOLE_ROWS");
-        int environment_cols = environment_dimension("ACE_CONSOLE_COLS");
+        char reply[64];
+        size_t length = 0;
+        unsigned char byte;
+        int reply_rows;
+        int reply_cols;
 
-        if (environment_rows > 1 && environment_cols > 0) {
-            rows = environment_rows;
-            cols = environment_cols;
-        } else {
-            char reply[64];
-            size_t length = 0;
-            unsigned char byte;
-            int reply_rows;
-            int reply_cols;
-
-            /* Older ACE console launchers may not export dimensions.  Keep
-             * the query fallback for them; the current launcher uses the
-             * out-of-band values so Ed's setup stream remains untouched. */
-            emit(NATIVE_CSI "0 q");
-            while (length + 1 < sizeof(reply)) {
-                if (read_byte(&byte, -1) != 1)
+        /* The current console is the source of truth.  This is the public
+         * console.device size query, not an ACE-only environment shortcut,
+         * so ET follows the same channel contract as an Amiga program. */
+        emit(NATIVE_CSI "0 q");
+        while (length + 1 < sizeof(reply)) {
+            if (read_byte(&byte, -1) != 1)
+                break;
+            if (length == 0 && byte == 0x1b) {
+                if (read_byte(&byte, -1) != 1 || byte != '[')
                     break;
-                if (length == 0 && byte == 0x1b) {
-                    if (read_byte(&byte, -1) != 1 || byte != '[')
-                        break;
-                    reply[length++] = (char)0x9b;
-                    continue;
-                }
-                if (length == 0 && byte != 0x9b)
-                    break;
-                if (length != 0 || byte == 0x9b)
-                    reply[length++] = (char)byte;
-                if (byte == 'r')
-                    break;
+                reply[length++] = (char)0x9b;
+                continue;
             }
-            reply[length] = '\0';
-            if (sscanf(reply, "\2331;1;%d;%d r", &reply_rows,
-                       &reply_cols) == 2 && reply_rows > 1 && reply_cols > 0) {
-                rows = reply_rows;
-                cols = reply_cols;
-            }
+            if (length == 0 && byte != 0x9b)
+                break;
+            if (length != 0 || byte == 0x9b)
+                reply[length++] = (char)byte;
+            if (byte == 'r')
+                break;
+        }
+        reply[length] = '\0';
+        if (sscanf(reply, "\2331;1;%d;%d r", &reply_rows,
+                   &reply_cols) == 2 && reply_rows > 1 && reply_cols > 0) {
+            rows = reply_rows;
+            cols = reply_cols;
         }
     } else if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0) {
         if (size.ws_row)
@@ -285,18 +262,21 @@ resize_handler(int signal_number)
 static void
 enter_raw(void)
 {
-    struct termios raw_mode;
+    struct termios raw_settings;
 
+    if (raw_mode_active)
+        return;
+    raw_mode_active = true;
     if (!have_termios || active)
         return;
-    raw_mode = saved_termios;
-    raw_mode.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    raw_mode.c_oflag &= (tcflag_t)~OPOST;
-    raw_mode.c_cflag |= CS8;
-    raw_mode.c_lflag &= (tcflag_t)~(ECHO | ICANON | IEXTEN | ISIG);
-    raw_mode.c_cc[VMIN] = 1;
-    raw_mode.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_mode);
+    raw_settings = saved_termios;
+    raw_settings.c_iflag &= (tcflag_t)~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw_settings.c_oflag &= (tcflag_t)~OPOST;
+    raw_settings.c_cflag |= CS8;
+    raw_settings.c_lflag &= (tcflag_t)~(ECHO | ICANON | IEXTEN | ISIG);
+    raw_settings.c_cc[VMIN] = 1;
+    raw_settings.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_settings);
     active = true;
 }
 
@@ -309,6 +289,7 @@ tine_init(bool reversed, WINDOW **command_window_out)
     tine_stdscr = calloc(1, sizeof(*tine_stdscr));
     if (!tine_stdscr)
         return TINE_ERR;
+    raw_mode_active = false;
     term = getenv("TERM");
     ace_console = getenv("ACE_SESSION") != NULL && term != NULL &&
                   strcmp(term, "amiga") == 0;
@@ -363,6 +344,7 @@ tine_endwin(void)
     if (have_termios)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
     active = false;
+    raw_mode_active = false;
     output_attr = -1;
 }
 
