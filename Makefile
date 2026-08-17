@@ -511,6 +511,7 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-con-support.o \
                     $(BUILD)/aros-exec-runtime.o \
                     $(BUILD)/clipboard-device.o \
+                    $(BUILD)/iffparse-clipboard.o \
                     $(BUILD)/native-list-compat.o \
                     $(BUILD)/ace-vim-runtime.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
@@ -646,6 +647,9 @@ $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | 
 $(BUILD)/clipboard-device.o: src/clipboard_device.c src/clipboard_device.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
 
+$(BUILD)/iffparse-clipboard.o: src/iffparse_clipboard.c src/aros_exec_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
+
 $(BUILD)/aros-console-editor.o: src/aros_console_editor.c src/aros_console_editor.h $(AROS_CON_SUPPORT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
@@ -665,6 +669,12 @@ $(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c \
                                  $(BUILD)/aros-exec-runtime.o \
                                  $(BUILD)/clipboard-device.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
+
+$(BUILD)/iffparse-clipboard-test: tests/iffparse_clipboard_test.c \
+                                  $(BUILD)/aros-exec-runtime.o \
+                                  $(BUILD)/clipboard-device.o \
+                                  $(BUILD)/iffparse-clipboard.o
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc $^ -o $@
 
 $(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
                             $(BUILD)/native_dos.o $(BUILD)/native_command.o \
@@ -1090,6 +1100,9 @@ test-console-channel: $(BUILD)/console-channel-test
 
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 	$(BUILD)/aros-exec-runtime-test
+
+test-iffparse-clipboard: $(BUILD)/iffparse-clipboard-test
+	$(BUILD)/iffparse-clipboard-test
 
 test-aros-console-editor: $(BUILD)/aros-console-editor-test
 	$(BUILD)/aros-console-editor-test

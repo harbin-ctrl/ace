@@ -87,6 +87,22 @@ independent of GTK.
 
 ### Stage 3 — clipboard-capable `iffparse.library`
 
+Current implementation: the clipboard stream slice is now present in
+`src/iffparse_clipboard.c`. It preserves the public Amiga `IFFHandle` layout
+while keeping parser state private, and covers `AllocIFF`, `FreeIFF`,
+`OpenIFF`, `CloseIFF`, `ParseIFF`, `CurrentChunk`, `ReadChunkBytes`,
+`WriteChunkBytes`, `PushChunk`, `PopChunk`, `StopChunk`, `StopChunks`,
+`OpenClipboard`, `CloseClipboard`, and `InitIFFasClip`. It reads and writes
+big-endian IFF headers, composite FORM/LIST/CAT/PROP chunks, odd-byte padding,
+multiple matching chunks, and malformed/truncated streams through the native
+clipboard device.
+
+The rest of this stage remains deliberately separate: DOS and buffered stream
+handlers, properties, collections, entry/exit handlers, and local-context
+items will be added when a client needs them. The current implementation is
+therefore sufficient for the planned text clipboard clients, but is not yet a
+complete drop-in replacement for every iffparse.library consumer.
+
 Port the clipboard stream path first: `OpenClipboard`, `CloseClipboard`,
 `InitIFFasClip`, `OpenIFF`, `CloseIFF`, `ParseIFF`, `StopChunk`, chunk byte
 read/write, and chunk push/pop. Then add the broader parser ABI: buffered and
