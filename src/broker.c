@@ -1293,6 +1293,21 @@ static int resolve_path(struct broker_session *session, const char *input,
             memcpy(assign_name, input, name_length);
             assign_name[name_length] = '\0';
             struct assign_entry *assign = find_assign(session, assign_name);
+            /* CLIPS: is a boot-time virtual assign backed by the shared
+             * clipboard store.  A session can outlive the broker revision
+             * that created it, so repair this one special assign lazily when
+             * an older session has lost it.  This keeps DeleteFile("CLIPS:n")
+             * and clipboard.device pointed at the same unit instead of
+             * silently resolving to a host filename named "CLIPS:n". */
+            if (!assign && strcasecmp(assign_name, "CLIPS") == 0) {
+                char clips_path[PATH_MAX];
+
+                if (ace_clipboard_store_prepare() == 0 &&
+                    ace_clipboard_store_root(clips_path,
+                                             sizeof(clips_path)) == 0)
+                    set_directory_assign(session, "CLIPS", clips_path);
+                assign = find_assign(session, assign_name);
+            }
             if (assign) {
                 char clips_component[32];
 

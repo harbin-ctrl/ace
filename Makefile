@@ -1145,7 +1145,7 @@ test-acepaste: $(BUILD)/acepaste
 		test -f "$$clip_dir/clip$$unit" && count=$$((count + 1)); \
 	done; test "$$count" -eq 2
 
-test-clipboard-client: $(BUILD)/Clip $(BUILD)/acepaste
+test-clipboard-client: $(BUILD)/Clip $(BUILD)/Assign $(BUILD)/acepaste
 	sh tests/clipboard_client_test.sh
 
 test-aros-console-editor: $(BUILD)/aros-console-editor-test

@@ -26,6 +26,13 @@ test -f "$clip_dir/clip7"
 test "$(env $clip_env "$repo_dir/build/acepaste" --unit 7 --get)" = 'unit seven'
 test "$(env $clip_env "$repo_dir/build/Clip" COUNT)" = 2
 
+# A long-lived session can lose its boot-time CLIPS: assign when the broker
+# predates clipboard support.  The next CLIPS: access must repair that assign
+# instead of treating deletion as a successful no-op on a host pathname.
+env $clip_env "$repo_dir/build/Assign" CLIPS:
+env $clip_env "$repo_dir/build/Clip" UNIT 7 SET
+test ! -f "$clip_dir/clip7"
+
 env $clip_env "$repo_dir/build/Clip" GET WAIT >"$test_dir/wait-output" 2>"$test_dir/wait-error" &
 wait_pid=$!
 sleep 0.15
