@@ -36,6 +36,7 @@
 #include "aros_console_editor.h"
 #include "aros_exec_runtime.h"
 #include "clipboard_bridge.h"
+#include "console_channel.h"
 
 struct CommandLineInterface *Cli(void);
 
@@ -113,7 +114,7 @@ static size_t native_input_prefix_position;
 static int native_input_prefix_loaded;
 static struct ace_aros_console_editor *native_console_editor;
 static int native_console_editor_attempted;
-static int native_input_raw;
+static struct ace_console_channel native_current_console_channel;
 /*
  * A shell started to run one script and then stop is not interactive, even
  * though its standard input is the same kind of handle an interactive one
@@ -159,7 +160,15 @@ static void native_init_stdio_handles(void)
     native_stderr_handle.amiga.fh_Pos = 0;
     native_stderr_handle.amiga.fh_End = INT_MAX / 2;
     native_stderr_handle.stream = stderr;
+    ace_console_channel_attach(&native_current_console_channel,
+                               fileno(stdin), fileno(stdout));
     native_stdio_initialized = 1;
+}
+
+static bool native_input_is_raw(void)
+{
+    native_init_stdio_handles();
+    return ace_console_channel_is_raw(&native_current_console_channel);
 }
 
 static void native_load_input_prefix(void)
@@ -284,11 +293,11 @@ static int native_input_getc(FILE *file)
        A raw terminal program such as unchanged Vim must see the real
        console bytes immediately; otherwise the synthetic empty argument
        line's newline is consumed as Vim's first terminal response byte. */
-    if (file == stdin && !native_input_raw && native_input_prefix_position <
+    if (file == stdin && !native_input_is_raw() && native_input_prefix_position <
         native_input_prefix_length)
         return (unsigned char)native_input_prefix[
             native_input_prefix_position++];
-    if (file == stdin && !native_input_raw)
+    if (file == stdin && !native_input_is_raw())
         return native_editor_next_char(file);
     return fgetc(file);
 }
@@ -716,7 +725,7 @@ struct native_console_handle {
     uint64_t magic;
     FILE *input;
     FILE *output;
-    int raw;
+    struct ace_console_channel *channel;
     char specification[PATH_MAX];
 };
 
@@ -753,7 +762,7 @@ BPTR native_console_open(const char *specification)
     handle->magic = NATIVE_CONSOLE_MAGIC;
     handle->input = stdin;
     handle->output = stdout;
-    handle->raw = native_input_raw;
+    handle->channel = &native_current_console_channel;
     snprintf(handle->specification, sizeof(handle->specification), "%s",
              specification ? specification : "CON:");
     return handle;
@@ -775,6 +784,61 @@ void native_console_close(BPTR handle)
 {
     if (native_console_is_handle(handle))
         free(handle);
+}
+
+static struct ace_console_channel *native_channel_for_handle(BPTR handle)
+{
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    native_init_stdio_handles();
+    if (console)
+        return console->channel;
+    if (handle == (BPTR)stdin || handle == (BPTR)stdout ||
+        handle == (BPTR)&native_stdin_handle.amiga ||
+        handle == (BPTR)&native_stdout_handle.amiga)
+        return &native_current_console_channel;
+    return NULL;
+}
+
+int native_console_is_raw_mode(BPTR handle)
+{
+    struct ace_console_channel *channel = native_channel_for_handle(handle);
+
+    return channel ? ace_console_channel_is_raw(channel) : -1;
+}
+
+int native_console_geometry(BPTR handle, int *rows, int *cols)
+{
+    struct ace_console_channel *channel = native_channel_for_handle(handle);
+
+    if (!channel)
+        return -1;
+    if (rows)
+        *rows = ace_console_channel_rows(channel);
+    if (cols)
+        *cols = ace_console_channel_cols(channel);
+    return 0;
+}
+
+unsigned long native_console_resize_generation(BPTR handle)
+{
+    struct ace_console_channel *channel = native_channel_for_handle(handle);
+
+    return channel ? ace_console_channel_resize_generation(channel) : 0;
+}
+
+void native_console_notify_resize(int rows, int cols)
+{
+    native_init_stdio_handles();
+    ace_console_channel_notify_resize(&native_current_console_channel,
+                                      rows, cols);
+}
+
+int native_console_take_resize(BPTR handle)
+{
+    struct ace_console_channel *channel = native_channel_for_handle(handle);
+
+    return channel ? ace_console_channel_take_resize(channel) : 0;
 }
 
 static FILE *as_file(BPTR handle)
@@ -2028,44 +2092,28 @@ void native_set_interactive(int interactive)
 
 LONG SetMode(BPTR handle, LONG mode)
 {
-    struct native_console_handle *console = native_console_pointer(handle);
+    struct ace_console_channel *channel = native_channel_for_handle(handle);
 
-    if (console) {
-        console->raw = mode != 0;
+    if (channel && (native_console_is_handle(handle) ||
+                    handle == (BPTR)&native_stdin_handle.amiga ||
+                    handle == (BPTR)stdin)) {
+        ace_console_channel_set_raw(channel, mode != 0);
         return DOSTRUE;
     }
     native_init_stdio_handles();
-    if (handle != (BPTR)&native_stdin_handle.amiga && handle != (BPTR)stdin) {
-        native_ioerr = ERROR_ACTION_NOT_KNOWN;
-        return DOSFALSE;
-    }
-    native_input_raw = mode != 0;
-    return DOSTRUE;
+    native_ioerr = ERROR_ACTION_NOT_KNOWN;
+    return DOSFALSE;
 }
 
 LONG WaitForChar(BPTR handle, LONG timeout)
 {
     struct native_console_handle *console = native_console_pointer(handle);
-    FILE *file;
-    fd_set readable;
-    struct timeval interval;
-    struct timeval *interval_pointer = NULL;
-    int descriptor;
     int result;
 
-    if (console) {
-        int saved_raw = native_input_raw;
-        LONG result;
-
-        native_input_raw = console->raw;
-        result = WaitForChar((BPTR)&native_stdin_handle.amiga, timeout);
-        console->raw = native_input_raw;
-        native_input_raw = saved_raw;
-        return result;
-    }
     native_init_stdio_handles();
-    if (!handle || (handle != (BPTR)&native_stdin_handle.amiga &&
-                    handle != (BPTR)stdin))
+    if (!console && (!handle ||
+                     (handle != (BPTR)&native_stdin_handle.amiga &&
+                      handle != (BPTR)stdin)))
         return DOSFALSE;
     native_load_input_prefix();
     /* The synthetic argument line is part of the cooked Input() stream only.
@@ -2076,35 +2124,29 @@ LONG WaitForChar(BPTR handle, LONG timeout)
        would be told "yes" and then block in Read() until a key arrives.
        Bytes the cooked line editor has already pulled off the descriptor are
        different: those are real console input, and Read() returns them. */
-    if ((!native_input_raw &&
+    if ((!native_input_is_raw() &&
          native_input_prefix_position < native_input_prefix_length) ||
         native_editor_line_position < native_editor_line_length)
         return DOSTRUE;
-    file = stdin;
-    descriptor = fileno(file);
-    if (descriptor < 0)
-        return DOSFALSE;
-    if (timeout >= 0) {
-        interval_pointer = &interval;
-    }
-    do {
-        if (interval_pointer) {
-            interval.tv_sec = timeout / 1000000L;
-            interval.tv_usec = timeout % 1000000L;
-        }
-        FD_ZERO(&readable);
-        FD_SET(descriptor, &readable);
-        result = select(descriptor + 1, &readable, NULL, NULL,
-                        interval_pointer);
-    } while (result < 0 && errno == EINTR);
+    result = ace_console_channel_wait(&native_current_console_channel,
+                                      timeout);
     return result > 0 ? DOSTRUE : DOSFALSE;
 }
 
 LONG FPutC(BPTR handle, LONG character)
 {
     struct native_console_handle *console = native_console_pointer(handle);
-    FILE *file = console ? console->output : as_file(handle);
+    unsigned char byte = (unsigned char)character;
+    FILE *file;
 
+    if (console) {
+        if (ace_console_channel_send(console->channel, &byte, 1) != 0) {
+            native_ioerr = errno;
+            return -1;
+        }
+        return character;
+    }
+    file = as_file(handle);
     if (fputc((unsigned char)character, file) == EOF) {
         native_ioerr = errno;
         return -1;
@@ -2115,8 +2157,17 @@ LONG FPutC(BPTR handle, LONG character)
 LONG FPuts(BPTR handle, CONST_STRPTR string)
 {
     struct native_console_handle *console = native_console_pointer(handle);
-    FILE *file = console ? console->output : as_file(handle);
+    FILE *file;
 
+    if (console) {
+        if (ace_console_channel_send(console->channel, string,
+                                     strlen((const char *)string)) != 0) {
+            native_ioerr = errno;
+            return -1;
+        }
+        return 0;
+    }
+    file = as_file(handle);
     if (fputs(string, file) == EOF) {
         native_ioerr = errno;
         return -1;
@@ -2128,17 +2179,6 @@ STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 {
     struct native_console_handle *console = native_console_pointer(handle);
     FILE *file = console ? console->input : as_file(handle);
-
-    if (console) {
-        int saved_raw = native_input_raw;
-        STRPTR result;
-
-        native_input_raw = console->raw;
-        result = FGets((BPTR)&native_stdin_handle.amiga, buffer, length);
-        console->raw = native_input_raw;
-        native_input_raw = saved_raw;
-        return result;
-    }
 
     if (file != stdin) {
         if (!fgets(buffer, length, file)) {
@@ -2172,7 +2212,11 @@ STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 LONG Flush(BPTR handle)
 {
     struct native_console_handle *console = native_console_pointer(handle);
-    FILE *file = console ? console->output : as_file(handle);
+    FILE *file;
+
+    if (console)
+        return DOSTRUE;
+    file = as_file(handle);
 
     if (fflush(file) != 0) {
         native_ioerr = errno;
@@ -2927,16 +2971,9 @@ LONG FGetC(BPTR handle)
     struct native_console_handle *console = native_console_pointer(handle);
     FILE *file = console ? console->input :
         (handle ? as_file(handle) : selected_input());
-    int saved_raw = native_input_raw;
     int character;
 
-    if (console)
-        native_input_raw = console->raw;
     character = native_input_getc(file);
-    if (console) {
-        console->raw = native_input_raw;
-        native_input_raw = saved_raw;
-    }
 
     if (character == EOF) {
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
@@ -2955,14 +2992,7 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
         (handle ? as_file(handle) : selected_input());
 
     if (console) {
-        LONG count;
-        int saved_raw = native_input_raw;
-
-        native_input_raw = console->raw;
-        count = Read((BPTR)&native_stdin_handle.amiga, buffer, length);
-        console->raw = native_input_raw;
-        native_input_raw = saved_raw;
-        return count;
+        file = console->input;
     }
 
     if (!buffer || length <= 0)
@@ -2976,7 +3006,7 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
            producer and consumer are scheduled apart.  Unchanged Amiga
            programs such as Vim expect the complete currently available
            control reply, so use the underlying descriptor in raw mode. */
-        if (native_input_raw) {
+        if (native_input_is_raw()) {
             ssize_t bytes;
 
             /* Anything the cooked line editor already read off the
@@ -2995,7 +3025,8 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
                 native_editor_line_position += available;
                 return (LONG)available;
             }
-            bytes = read(fileno(file), buffer, (size_t)length);
+            bytes = ace_console_channel_read(&native_current_console_channel,
+                                             buffer, (size_t)length);
             if (bytes < 0)
                 native_ioerr = errno;
             return (LONG)bytes;
@@ -3005,7 +3036,7 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
             /* A raw console read is commonly preceded by WaitForChar(),
                and must return the bytes available at that instant rather
                than block trying to fill Vim's larger scratch buffer. */
-            if (native_input_raw && index != 0 &&
+            if (native_input_is_raw() && index != 0 &&
                 !WaitForChar(handle, 0))
                 break;
             int character = native_input_getc(file);
@@ -3031,15 +3062,7 @@ LONG FRead(BPTR handle, APTR buffer, LONG block_size, LONG block_count)
         (handle ? as_file(handle) : selected_input());
 
     if (console) {
-        LONG count;
-        int saved_raw = native_input_raw;
-
-        native_input_raw = console->raw;
-        count = FRead((BPTR)&native_stdin_handle.amiga, buffer, block_size,
-                      block_count);
-        console->raw = native_input_raw;
-        native_input_raw = saved_raw;
-        return count;
+        file = console->input;
     }
 
     if (!buffer || block_size <= 0 || block_count <= 0)
@@ -3093,8 +3116,6 @@ BPTR SelectInput(BPTR handle)
 
     native_input = console ? console->input : (handle ? as_file(handle) :
                                                stdin);
-    if (console)
-        native_input_raw = console->raw;
     return old;
 }
 

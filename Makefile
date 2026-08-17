@@ -299,7 +299,7 @@ $(LHA_AROS_SOURCE_STAMP): $(LHA_AROS_ARCHIVE) | $(BUILD)
 	$(TAR) --extract --gzip --file "$<" --strip-components=1 --directory "$(LHA_AROS_DIR)"
 	touch "$@"
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_amiga_posix.h \
@@ -515,7 +515,8 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/clipboard-device.o \
                     $(BUILD)/iffparse-clipboard.o \
                     $(BUILD)/native-list-compat.o \
-                    $(BUILD)/ace-vim-runtime.o | $(BUILD)
+                    $(BUILD)/ace-vim-runtime.o \
+                    $(BUILD)/console_channel.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
 
 $(BUILD)/native-list-compat.o: src/native_list_compat.c | $(BUILD)
@@ -1033,6 +1034,7 @@ $(BUILD)/vim: tools/build-vim-ace.sh \
               $(BUILD)/ace-vim-runtime.o $(BUILD)/broker_client.o \
               $(BUILD)/native_process.o $(BUILD)/native_command.o \
               $(BUILD)/assign_compat.o \
+              $(BUILD)/console_channel.o \
               $(BUILD)/aros-dos-getdeviceproc.o \
               $(BUILD)/aros-dos-freedeviceproc.o \
               $(AROS_DOSPAT_OBJS) | $(BUILD)

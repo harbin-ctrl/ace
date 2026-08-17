@@ -165,7 +165,8 @@ static void clear_selection(struct console_window *console);
 static void copy_selection(struct console_window *console);
 static void refresh_console_title(struct console_window *console);
 
-static void update_channel_geometry(struct console_window *console)
+static void update_channel_geometry(struct console_window *console,
+                                    gboolean notify)
 {
     int pixel_width;
     int pixel_height;
@@ -177,9 +178,14 @@ static void update_channel_geometry(struct console_window *console)
                                      &cell_height) != 0 ||
         cell_width <= 0 || cell_height <= 0)
         return;
-    ace_console_channel_set_geometry(&console->channel,
-                                     pixel_height / cell_height,
-                                     pixel_width / cell_width);
+    if (notify)
+        ace_console_channel_notify_resize(&console->channel,
+                                          pixel_height / cell_height,
+                                          pixel_width / cell_width);
+    else
+        ace_console_channel_set_geometry(&console->channel,
+                                         pixel_height / cell_height,
+                                         pixel_width / cell_width);
 }
 
 static char *config_path(void)
@@ -1024,7 +1030,7 @@ static gboolean apply_pending_resize(gpointer data)
                 width, height);
         return G_SOURCE_REMOVE;
     }
-    update_channel_geometry(console);
+    update_channel_geometry(console, TRUE);
     ace_console_device_notify_resize(console->device);
     refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
@@ -1872,7 +1878,7 @@ int main(int argc, char **argv)
         return 20;
     }
     ace_console_channel_init(&console.channel, -1);
-    update_channel_geometry(&console);
+    update_channel_geometry(&console, FALSE);
     if (argc != 3 || strcmp(argv[1], "--session") != 0) {
         fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
         return 20;

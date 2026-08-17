@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -42,10 +43,18 @@ static void trace_bytes(FILE *trace, const void *data, size_t length)
 
 void ace_console_channel_init(struct ace_console_channel *channel, int fd)
 {
-    memset(channel, 0, sizeof(*channel));
-    channel->fd = fd;
+    ace_console_channel_attach(channel, fd, fd);
     channel->output_trace = open_trace("ACE_DBGCON");
     channel->input_trace = open_trace("ACE_DBGCON_INPUT");
+}
+
+void ace_console_channel_attach(struct ace_console_channel *channel,
+                                int input_fd, int output_fd)
+{
+    memset(channel, 0, sizeof(*channel));
+    channel->fd = input_fd == output_fd ? input_fd : -1;
+    channel->input_fd = input_fd;
+    channel->output_fd = output_fd;
 }
 
 void ace_console_channel_close(struct ace_console_channel *channel)
@@ -59,12 +68,23 @@ void ace_console_channel_close(struct ace_console_channel *channel)
     channel->output_trace = NULL;
     channel->input_trace = NULL;
     channel->fd = -1;
+    channel->input_fd = -1;
+    channel->output_fd = -1;
 }
 
 void ace_console_channel_set_fd(struct ace_console_channel *channel, int fd)
 {
-    if (channel)
-        channel->fd = fd;
+    ace_console_channel_set_fds(channel, fd, fd);
+}
+
+void ace_console_channel_set_fds(struct ace_console_channel *channel,
+                                 int input_fd, int output_fd)
+{
+    if (!channel)
+        return;
+    channel->fd = input_fd == output_fd ? input_fd : -1;
+    channel->input_fd = input_fd;
+    channel->output_fd = output_fd;
 }
 
 int ace_console_channel_send(struct ace_console_channel *channel,
@@ -72,12 +92,12 @@ int ace_console_channel_send(struct ace_console_channel *channel,
 {
     const unsigned char *bytes = data;
 
-    if (!channel || channel->fd < 0) {
+    if (!channel || channel->output_fd < 0) {
         errno = EBADF;
         return -1;
     }
     while (length != 0) {
-        ssize_t written = write(channel->fd, bytes, length);
+        ssize_t written = write(channel->output_fd, bytes, length);
 
         if (written < 0) {
             if (errno == EINTR)
@@ -95,19 +115,64 @@ int ace_console_channel_send(struct ace_console_channel *channel,
     return 0;
 }
 
+ssize_t ace_console_channel_read(struct ace_console_channel *channel,
+                                 void *data, size_t length)
+{
+    ssize_t received;
+
+    if (!channel || channel->input_fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    do {
+        received = read(channel->input_fd, data, length);
+    } while (received < 0 && errno == EINTR);
+    if (received > 0)
+        trace_bytes(channel->output_trace, data, (size_t)received);
+    return received;
+}
+
 ssize_t ace_console_channel_receive(struct ace_console_channel *channel,
                                     void *data, size_t length)
 {
     ssize_t received;
 
-    if (!channel || channel->fd < 0) {
+    if (!channel || channel->input_fd < 0) {
         errno = EBADF;
         return -1;
     }
-    received = recv(channel->fd, data, length, MSG_DONTWAIT);
+    received = recv(channel->input_fd, data, length, MSG_DONTWAIT);
+    if (received < 0 && (errno == ENOTSOCK || errno == EOPNOTSUPP))
+        received = read(channel->input_fd, data, length);
     if (received > 0)
         trace_bytes(channel->output_trace, data, (size_t)received);
     return received;
+}
+
+int ace_console_channel_wait(struct ace_console_channel *channel,
+                             long timeout_microseconds)
+{
+    fd_set readable;
+    struct timeval timeout;
+    struct timeval *timeout_pointer = NULL;
+    int result;
+
+    if (!channel || channel->input_fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    if (timeout_microseconds >= 0) {
+        timeout.tv_sec = timeout_microseconds / 1000000L;
+        timeout.tv_usec = timeout_microseconds % 1000000L;
+        timeout_pointer = &timeout;
+    }
+    do {
+        FD_ZERO(&readable);
+        FD_SET(channel->input_fd, &readable);
+        result = select(channel->input_fd + 1, &readable, NULL, NULL,
+                        timeout_pointer);
+    } while (result < 0 && errno == EINTR);
+    return result > 0 ? 1 : result;
 }
 
 void ace_console_channel_set_geometry(struct ace_console_channel *channel,
@@ -119,6 +184,19 @@ void ace_console_channel_set_geometry(struct ace_console_channel *channel,
     channel->cols = cols > 0 ? cols : 0;
 }
 
+void ace_console_channel_notify_resize(struct ace_console_channel *channel,
+                                       int rows, int cols)
+{
+    if (!channel)
+        return;
+    if (channel->rows == (rows > 0 ? rows : 0) &&
+        channel->cols == (cols > 0 ? cols : 0))
+        return;
+    ace_console_channel_set_geometry(channel, rows, cols);
+    channel->resize_generation++;
+    channel->resize_pending = true;
+}
+
 int ace_console_channel_rows(const struct ace_console_channel *channel)
 {
     return channel ? channel->rows : 0;
@@ -127,6 +205,23 @@ int ace_console_channel_rows(const struct ace_console_channel *channel)
 int ace_console_channel_cols(const struct ace_console_channel *channel)
 {
     return channel ? channel->cols : 0;
+}
+
+unsigned long ace_console_channel_resize_generation(
+    const struct ace_console_channel *channel)
+{
+    return channel ? channel->resize_generation : 0;
+}
+
+bool ace_console_channel_take_resize(struct ace_console_channel *channel)
+{
+    bool pending;
+
+    if (!channel)
+        return false;
+    pending = channel->resize_pending;
+    channel->resize_pending = false;
+    return pending;
 }
 
 void ace_console_channel_set_raw(struct ace_console_channel *channel, bool raw)
