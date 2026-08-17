@@ -9,6 +9,13 @@ matters.
 
 Smaller items found alongside the above, in rough order of value.
 
+**Implement the Amiga clipboard stack.** The staged design is documented in
+[`docs/clipboard-system.md`](docs/clipboard-system.md). Stage 1 adds the
+public `clipboard.device` and `iffparse.library` compatibility contract;
+later stages will implement the device, IFF parser, `CLIPS:`, Linux bridge,
+and client migration. Preserve raw IFF and translate text at the host bridge
+so non-text clipboard data is not discarded.
+
 **Continue the current-console channel roadmap.** Stage 1 is now in
 `src/console_channel.[ch]`: ACE's current GUI stream has an explicit channel
 boundary, geometry state, raw-mode state, and opt-in raw byte tracing through
