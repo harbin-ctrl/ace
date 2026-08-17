@@ -142,10 +142,24 @@ UTF-8 without recoding them: the bytes are preserved in `CHRS`, and no
 silent high-bit conversion is performed. A future locale-aware Amiga charset
 policy can be added at this boundary.
 
-### Stage 5 — clients (acepaste slice implemented)
+### Stage 5 — clients (Clip, console, and acepaste implemented)
 
-Run the existing AROS `Clip` command unchanged against ACE. Move console
-selection/paste and ET copy/paste behind the same clipboard path.
+The existing AROS `Clip` command now runs unchanged against ACE. ACE supplies
+the `iffparse.library` entry point it opens, maps `CLIPS:N` to the
+corresponding `clipN` backing file, and implements the signal path used by
+`Clip GET WAIT`. Notifications use the file replacement boundary, so a wait
+does not wake merely because the unit already existed when the wait started.
+
+ACE console selection/paste now uses the same `iffparse.library` and
+`clipboard.device` path. GTK remains the window toolkit, but it is no longer
+the clipboard protocol for console copy/paste; the unit-0 bridge is the one
+place that translates the Amiga IFF stream to the Linux clipboard.
+
+ET (Edified Tine) has no existing operating-system clipboard operation to
+migrate. Its `IB`, `WB`, and related commands operate on Tine's internal line
+blocks or named files, and adding a new clipboard command or key would invent
+behavior rather than align it with Ed 2.00. This remains an explicit future
+item once the corresponding Amiga Ed behavior is established.
 
 `acepaste` is now the Linux-facing text adapter. It concatenates `CHRS`
 chunks from `FORM FTXT` on reads and wraps stdin as `FORM FTXT/CHRS` on
