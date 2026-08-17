@@ -27,7 +27,11 @@ int native_quit_script(void);
 
 BPTR native_console_open(const char *specification);
 int native_console_is_handle(BPTR handle);
+int native_console_is_instance(BPTR handle);
 const char *native_console_specification(BPTR handle);
+const char *native_console_session(BPTR handle);
+int native_console_dup_input(BPTR handle);
+int native_console_dup_output(BPTR handle);
 void native_console_close(BPTR handle);
 int native_console_is_raw_mode(BPTR handle);
 int native_console_geometry(BPTR handle, int *rows, int *cols);

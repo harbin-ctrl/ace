@@ -65,7 +65,7 @@ int main(void)
     assert(strcmp(native_console_specification(console), "CONSOLE:") == 0);
     assert(IsInteractive(console) == DOSTRUE);
 
-    alias = Open("CON:", MODE_READWRITE);
+    alias = Open("CONSOLE:", MODE_READWRITE);
     star = Open("*", MODE_READWRITE);
     assert(alias != BNULL);
     assert(star != BNULL);

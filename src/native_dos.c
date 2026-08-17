@@ -11,6 +11,7 @@
 #include <sys/statvfs.h>
 #include <sys/vfs.h>
 #include <sys/xattr.h>
+#include <sys/socket.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -726,7 +727,20 @@ struct native_console_handle {
     FILE *input;
     FILE *output;
     struct ace_console_channel *channel;
+    struct native_console_instance *instance;
     char specification[PATH_MAX];
+};
+
+/* A parameterised CON: name owns a different byte stream from the CLI that
+ * opened it.  The GUI process owns one end of this socket; the DOS handle
+ * owns the other, and NEWCLI can duplicate that end into the shell it starts.
+ * CONSOLE: and * deliberately have no instance and continue to name the
+ * caller's current console. */
+struct native_console_instance {
+    struct ace_console_channel channel;
+    int fd;
+    pid_t window_pid;
+    char session[128];
 };
 
 #define NATIVE_CONSOLE_MAGIC UINT64_C(0x414345434f4e3031)
@@ -749,9 +763,113 @@ native_console_pointer(BPTR handle)
         ? candidate : NULL;
 }
 
+static int native_console_current_specification(const char *specification)
+{
+    return specification &&
+        (strcasecmp(specification, "CONSOLE:") == 0 ||
+         strcmp(specification, "*") == 0);
+}
+
+static int native_console_executable_directory(char *directory,
+                                                size_t directory_size)
+{
+    char executable[PATH_MAX];
+    char *slash;
+    ssize_t length;
+
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length < 0 || (size_t)length >= sizeof(executable) - 1)
+        return -1;
+    executable[length] = '\0';
+    slash = strrchr(executable, '/');
+    if (!slash)
+        return -1;
+    *slash = '\0';
+    if (strlen(executable) >= directory_size)
+        return -1;
+    strcpy(directory, executable);
+    return 0;
+}
+
+static int native_console_child_session(char *session, size_t session_size)
+{
+    const char *parent = getenv("ACE_SESSION");
+    struct timespec now;
+
+    if (!parent || !*parent)
+        parent = "default";
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return -1;
+    return snprintf(session, session_size, "%s-con-%ld-%ld", parent,
+                    (long)getpid(), (long)now.tv_nsec) >= (int)session_size
+        ? -1 : 0;
+}
+
+static struct native_console_instance *
+native_console_create_instance(const char *specification)
+{
+    struct native_console_instance *instance;
+    char directory[PATH_MAX];
+    char console_path[PATH_MAX];
+    char descriptor[32];
+    int sockets[2];
+    pid_t child;
+
+    if (native_console_executable_directory(directory, sizeof(directory)) != 0 ||
+        snprintf(console_path, sizeof(console_path), "%s/ace-console",
+                 directory) >= (int)sizeof(console_path) ||
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) {
+        native_ioerr = errno ? errno : ERROR_OBJECT_NOT_FOUND;
+        return NULL;
+    }
+    instance = calloc(1, sizeof(*instance));
+    if (!instance) {
+        close(sockets[0]);
+        close(sockets[1]);
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return NULL;
+    }
+    if (native_console_child_session(instance->session,
+                                     sizeof(instance->session)) != 0 ||
+        native_broker_ensure() != 0 ||
+        native_broker_clone_session(instance->session) != 0) {
+        close(sockets[0]);
+        close(sockets[1]);
+        free(instance);
+        native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        return NULL;
+    }
+    child = fork();
+    if (child < 0) {
+        close(sockets[0]);
+        close(sockets[1]);
+        free(instance);
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return NULL;
+    }
+    if (child == 0) {
+        close(sockets[0]);
+        if (dup2(sockets[1], 3) < 0)
+            _exit(RETURN_FAIL);
+        if (sockets[1] != 3)
+            close(sockets[1]);
+        snprintf(descriptor, sizeof(descriptor), "%d", 3);
+        execl(console_path, console_path, "--session", instance->session,
+              "--fd", descriptor, "--spec", specification, (char *)NULL);
+        _exit(RETURN_FAIL);
+    }
+    close(sockets[1]);
+    instance->fd = sockets[0];
+    instance->window_pid = child;
+    (void)fcntl(instance->fd, F_SETFD, FD_CLOEXEC);
+    ace_console_channel_attach(&instance->channel, instance->fd, instance->fd);
+    return instance;
+}
+
 BPTR native_console_open(const char *specification)
 {
     struct native_console_handle *handle;
+    struct native_console_instance *instance = NULL;
 
     native_init_stdio_handles();
     handle = calloc(1, sizeof(*handle));
@@ -760,17 +878,50 @@ BPTR native_console_open(const char *specification)
         return BNULL;
     }
     handle->magic = NATIVE_CONSOLE_MAGIC;
-    handle->input = stdin;
-    handle->output = stdout;
-    handle->channel = &native_current_console_channel;
     snprintf(handle->specification, sizeof(handle->specification), "%s",
              specification ? specification : "CON:");
+    if (native_console_current_specification(handle->specification)) {
+        handle->input = stdin;
+        handle->output = stdout;
+        handle->channel = &native_current_console_channel;
+        return handle;
+    }
+    instance = native_console_create_instance(handle->specification);
+    if (!instance) {
+        free(handle);
+        return BNULL;
+    }
+    handle->instance = instance;
+    handle->channel = &instance->channel;
+    handle->input = fdopen(dup(instance->fd), "rb");
+    handle->output = fdopen(dup(instance->fd), "wb");
+    if (!handle->input || !handle->output) {
+        if (handle->input)
+            fclose(handle->input);
+        if (handle->output)
+            fclose(handle->output);
+        close(instance->fd);
+        ace_console_channel_close(&instance->channel);
+        free(instance);
+        free(handle);
+        native_ioerr = errno;
+        return BNULL;
+    }
+    (void)setvbuf(handle->input, NULL, _IONBF, 0);
+    (void)setvbuf(handle->output, NULL, _IONBF, 0);
     return handle;
 }
 
 int native_console_is_handle(BPTR handle)
 {
     return native_console_pointer(handle) != NULL;
+}
+
+int native_console_is_instance(BPTR handle)
+{
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    return console && console->instance != NULL;
 }
 
 const char *native_console_specification(BPTR handle)
@@ -780,10 +931,50 @@ const char *native_console_specification(BPTR handle)
     return console ? console->specification : NULL;
 }
 
+const char *native_console_session(BPTR handle)
+{
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    return console && console->instance ? console->instance->session : NULL;
+}
+
+static int native_console_duplicate(BPTR handle)
+{
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    if (!console || !console->instance) {
+        errno = EBADF;
+        return -1;
+    }
+    return dup(console->instance->fd);
+}
+
+int native_console_dup_input(BPTR handle)
+{
+    return native_console_duplicate(handle);
+}
+
+int native_console_dup_output(BPTR handle)
+{
+    return native_console_duplicate(handle);
+}
+
 void native_console_close(BPTR handle)
 {
-    if (native_console_is_handle(handle))
-        free(handle);
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    if (!console)
+        return;
+    if (console->instance) {
+        struct native_console_instance *instance = console->instance;
+
+        fclose(console->input);
+        fclose(console->output);
+        close(instance->fd);
+        ace_console_channel_close(&instance->channel);
+        free(instance);
+    }
+    free(console);
 }
 
 static struct ace_console_channel *native_channel_for_handle(BPTR handle)
@@ -2128,7 +2319,8 @@ LONG WaitForChar(BPTR handle, LONG timeout)
          native_input_prefix_position < native_input_prefix_length) ||
         native_editor_line_position < native_editor_line_length)
         return DOSTRUE;
-    result = ace_console_channel_wait(&native_current_console_channel,
+    result = ace_console_channel_wait(console ? console->channel :
+                                      &native_current_console_channel,
                                       timeout);
     return result > 0 ? DOSTRUE : DOSFALSE;
 }
