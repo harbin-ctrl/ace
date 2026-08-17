@@ -9,6 +9,18 @@ matters.
 
 Smaller items found alongside the above, in rough order of value.
 
+**Continue the current-console channel roadmap.** Stage 1 is now in
+`src/console_channel.[ch]`: ACE's current GUI stream has an explicit channel
+boundary, geometry state, raw-mode state, and opt-in raw byte tracing through
+`ACE_DBGCON`/`ACE_DBGCON_INPUT`; ET obtains its size through the public
+`CSI 0 q` query. The continuation is documented in `HANDOFF.md` under
+"Current-console roadmap". Stage 2 should bind DOS `SetMode()`,
+`WaitForChar()`, geometry, and resize notifications to the same native handle
+state. Stage 3 should give each `CON:` window specification its own channel;
+Stage 4 should separate Shell/CLI from the handler and add the remaining
+console.device packet boundary. Keep the Amiga `tools/amiga-debugcon` trace
+format byte-for-byte compatible with the ACE output trace while doing so.
+
 **Make the Wayward beep transport backward-compatible.** ACE's new `Beep`
 command validates only that `LABWC_PID` names a labwc process, then sends
 `SIGUSR1`. New onscreen labwc installs a private handler, but Raspberry Pi's

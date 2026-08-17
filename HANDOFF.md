@@ -355,6 +355,100 @@ them, which is the same shape as the `IoErr()` storage bug above: an ACE stub
 that is merely *wrong* stays harmless until upstream code that depends on it
 gets compiled in.
 
+## Current-console roadmap
+
+The console architecture is being built in stages. The target model is the
+Amiga one: a Shell/CLI process talks to a CON: handler through DOS file
+handles, the handler owns cooked input and window-specific state, and
+console.device owns the terminal protocol and rendering. ACE's current GUI
+already has a useful subset of that path, but it is a Unix socket between a
+shell child and the GTK/AROS console renderer. This roadmap keeps that subset
+honest while making it possible to replace pieces incrementally.
+
+### Stage 1: current-console channel (implemented)
+
+Stage 1 is the smallest useful channel boundary for ET and other full-screen
+programs. It has one owner, one byte stream, and no new-window semantics:
+
+```text
+child stdout/stderr ──► current-console channel ──► console.device renderer
+child stdin       ◄─── current-console channel ◄─── GUI keyboard
+```
+
+The channel is represented by `src/console_channel.[ch]`. It now owns:
+
+- the stream send/receive operations;
+- current character-grid rows and columns, refreshed after opening and
+  resizing the ACE console window;
+- an explicit raw-mode state field for the later DOS mode-control seam; and
+- optional byte tracing at the channel boundary.
+
+The trace is deliberately raw, with no record headers, so it can be compared
+directly with the Amiga-side `tools/amiga-debugcon` output:
+
+```sh
+ACE_DBGCON=/tmp/et-console.bin ace-shell
+ACE_DBGCON_INPUT=/tmp/et-keyboard.bin ace-shell
+```
+
+`ACE_DBGCON` records bytes received from the child immediately before ACE
+passes them to the console parser. `ACE_DBGCON_INPUT`, when requested,
+records bytes sent by the GUI keyboard path. Each file is replaced when the
+console process starts. Tracing is disabled unless the variable is set and
+never adds bytes to the emulated console stream.
+
+ET no longer receives geometry through the ACE-only `ACE_CONSOLE_ROWS` and
+`ACE_CONSOLE_COLS` environment variables. In an ACE console session it sends
+the public `CSI 0 q` console size query and parses the reply from the current
+console. Its raw-mode state is explicit in the TINE console backend and ends
+when `tine_endwin()` restores the stream. The existing resize event remains
+the notification path: ACE's console renderer injects the Amiga
+`IECLASS_SIZEWINDOW` report, and ET handles it as `KEY_RESIZE`.
+
+Stage 1 intentionally does **not** create a second socket, implement a new
+window specification, or claim that the GTK socket is a full CON: handler.
+The standard DOS current handles (`CONSOLE:`, `CON:`, and `*`) still use the
+native ACE current-console implementation. The point of this stage is to
+give that path a named, testable boundary and a byte-level observation point
+without changing ET's working stream protocol.
+
+### Stage 2: handler-facing current console
+
+Move the current-console state into the native DOS handle layer. `Open()`,
+`Read()`, `Write()`, `SetMode()`, `WaitForChar()`, geometry queries, and
+resize notifications should all reach the same channel object. The raw flag
+must then be changed by DOS `SetMode()` rather than being independently
+remembered by each consumer. Keep `CONSOLE:`/`*` as aliases for the current
+console and retain the Stage 1 trace at the channel boundary.
+
+### Stage 3: real CON: instances
+
+Add a separate channel instance for each `CON:x/y/w/h/title/...` window
+specification. `CON:` opens or creates that instance; `CONSOLE:` and `*`
+refer to the current one. The GUI may still provide the actual host window,
+but the DOS handle must select the instance rather than silently sharing the
+current stream. This is the point at which NEWCLI can be made faithful: it
+opens its requested CON: handle and passes it as `SYS_Input`, with output and
+error allowed to follow the same handler.
+
+### Stage 4: Shell/CLI and console.device boundaries
+
+Separate the launcher role of CLI from the Shell process and route the
+handler's file-handle operations through the console.device packet boundary.
+Compile or adapt the remaining `console.c` task/`BeginIO` layer only when a
+caller needs `OpenDevice()`/`DoIO()` semantics. DBGCON should then observe
+the same `CMD_WRITE` bytes on ACE and on a real Amiga, rather than relying on
+the current direct renderer call.
+
+### Stage 5: ET fidelity pass
+
+Use the staged channel and trace corpus to compare ET against AmigaOS 3.1
+ED: startup, raw-mode entry/exit, public size queries, resize reports, mode
+switching, cursor movement, screen redraws, and shutdown. Any byte-level
+exception should be documented as either an intentional ACE transport detail
+or corrected in the appropriate channel/handler/device layer, not patched
+inside ET to compensate for a lower-layer mismatch.
+
 ## Child-side console input and raw mode
 
 The GUI now sends each key sequence directly to the child socket. The AROS
