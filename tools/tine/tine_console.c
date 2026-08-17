@@ -454,6 +454,7 @@ flush_window_row(WINDOW *window, int row, bool force)
     size_t offset = (size_t)row * (size_t)window->cols;
     int last = -1;
     int x;
+    bool status = false;
 
     for (x = 0; x < window->cols; x++) {
         size_t index = offset + (size_t)x;
@@ -466,11 +467,18 @@ flush_window_row(WINDOW *window, int row, bool force)
     if (last < 0)
         return false;
 
+    /* Real Ed selects the status pen before it moves to the command row.
+     * The row is then cleared and rewritten from column zero.  Applying the
+     * first cell's attribute here preserves that ordering while still
+     * allowing ordinary rows to use the same retained-screen path. */
+    apply_attr(window->cell_attrs[offset]);
     move_absolute(window->top + row, 0);
     emit(SCREEN_CSI "1K");
     for (x = 0; x <= last; x++) {
         size_t index = offset + (size_t)x;
 
+        if (window->cell_attrs[index] & TINE_A_STATUS)
+            status = true;
         apply_attr(window->cell_attrs[index]);
         write_wchar(window->cells[index]);
     }
@@ -479,6 +487,10 @@ flush_window_row(WINDOW *window, int row, bool force)
         window->shown_cells[index] = window->cells[index];
         window->shown_attrs[index] = window->cell_attrs[index];
     }
+    /* Ed restores the ordinary pen as part of finishing the status write,
+     * even when the next frame contains no ordinary text. */
+    if (status)
+        apply_attr(TINE_A_NORMAL);
     return true;
 }
 
