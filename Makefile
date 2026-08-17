@@ -569,8 +569,8 @@ $(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h src/broker_client.h 
 $(BUILD)/amiga_shell.o: src/amiga_shell.c src/broker_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_console.o: src/amiga_console.c src/console_channel.h src/console_device_bridge.h src/ace_appmenu_wayland.h | $(BUILD)
-	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -Isrc -c $< -o $@
+$(BUILD)/amiga_console.o: src/amiga_console.c src/console_channel.h src/console_device_bridge.h src/ace_appmenu_wayland.h compat/include/libraries/iffparse.h compat/include/proto/iffparse.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/console_channel.o: src/console_channel.c src/console_channel.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
@@ -1016,7 +1016,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/iffparse-clipboard.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@

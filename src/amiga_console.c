@@ -3,10 +3,14 @@
 
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
+#include <datatypes/textclass.h>
+#include <libraries/iffparse.h>
+#include <proto/iffparse.h>
 #include <errno.h>
 #include <limits.h>
 #include <pango/pango.h>
 #include <signal.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1178,17 +1182,143 @@ static void show_copy_status(struct console_window *console,
     gtk_widget_queue_draw(console->drawing_area);
 }
 
+static int write_clipboard_text(const char *text, size_t length)
+{
+    struct IFFHandle *iff = NULL;
+    struct ClipboardHandle *clipboard = NULL;
+    int result = -1;
+
+    if (!text || length > (size_t)LONG_MAX)
+        return -1;
+    iff = AllocIFF();
+    if (!iff)
+        goto done;
+    clipboard = OpenClipboard(0);
+    if (!clipboard)
+        goto done;
+    iff->iff_Stream = (IPTR)clipboard;
+    InitIFFasClip(iff);
+    if (OpenIFF(iff, IFFF_WRITE) != 0 ||
+        PushChunk(iff, ID_FTXT, ID_FORM, IFFSIZE_UNKNOWN) != 0 ||
+        PushChunk(iff, 0, ID_CHRS, IFFSIZE_UNKNOWN) != 0 ||
+        WriteChunkBytes(iff, (APTR)text, (LONG)length) != (LONG)length ||
+        PopChunk(iff) != 0 || PopChunk(iff) != 0)
+        goto close_iff;
+    result = 0;
+
+close_iff:
+    CloseIFF(iff);
+done:
+    if (clipboard)
+        CloseClipboard(clipboard);
+    if (iff)
+        FreeIFF(iff);
+    return result;
+}
+
+static char *read_clipboard_text(size_t *length_out)
+{
+    struct IFFHandle *iff = NULL;
+    struct ClipboardHandle *clipboard = NULL;
+    struct ContextNode *chunk;
+    LONG stops[] = {ID_FTXT, ID_CHRS};
+    char *text = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    int found = 0;
+    int success = 0;
+
+    if (length_out)
+        *length_out = 0;
+    iff = AllocIFF();
+    if (!iff)
+        goto done;
+    clipboard = OpenClipboard(0);
+    if (!clipboard)
+        goto done;
+    iff->iff_Stream = (IPTR)clipboard;
+    InitIFFasClip(iff);
+    if (OpenIFF(iff, IFFF_READ) != 0 ||
+        StopChunk(iff, ID_FTXT, ID_CHRS) != 0)
+        goto close_iff;
+    for (;;) {
+        LONG error = ParseIFF(iff, IFFPARSE_SCAN);
+
+        if (error == IFFERR_EOF)
+            break;
+        if (error == IFFERR_EOC)
+            continue;
+        if (error != 0)
+            goto close_iff;
+        chunk = CurrentChunk(iff);
+        if (!chunk || chunk->cn_Type != stops[0] ||
+            chunk->cn_ID != stops[1])
+            continue;
+        found = 1;
+        while (chunk->cn_Size > 0) {
+            unsigned char buffer[4096];
+            size_t remaining = (size_t)chunk->cn_Size;
+            size_t wanted = remaining < sizeof(buffer) ? remaining :
+                            sizeof(buffer);
+            LONG actual = ReadChunkBytes(iff, buffer, (LONG)wanted);
+
+            if (actual != (LONG)wanted ||
+                length > SIZE_MAX - (size_t)actual - 1)
+                goto close_iff;
+            if (length + (size_t)actual + 1 > capacity) {
+                size_t new_capacity = capacity ? capacity : 256;
+
+                while (new_capacity < length + (size_t)actual + 1) {
+                    if (new_capacity > SIZE_MAX / 2)
+                        goto close_iff;
+                    new_capacity *= 2;
+                }
+                text = realloc(text, new_capacity);
+                if (!text)
+                    goto close_iff;
+                capacity = new_capacity;
+            }
+            memcpy(text + length, buffer, (size_t)actual);
+            length += (size_t)actual;
+            text[length] = '\0';
+            chunk->cn_Size -= actual;
+        }
+    }
+    if (!found)
+        goto close_iff;
+    if (!text) {
+        text = malloc(1);
+        if (!text)
+            goto close_iff;
+        text[0] = '\0';
+    }
+    if (length_out)
+        *length_out = length;
+    success = 1;
+
+close_iff:
+    CloseIFF(iff);
+done:
+    if (clipboard)
+        CloseClipboard(clipboard);
+    if (iff)
+        FreeIFF(iff);
+    if (!success) {
+        free(text);
+        text = NULL;
+        if (length_out)
+            *length_out = 0;
+    }
+    return text;
+}
+
 static void put_clipboard(struct console_window *console, char *text,
                           size_t length)
 {
-    GtkClipboard *clipboard;
-
     if (!text)
         return;
-    clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gtk_clipboard_set_text(clipboard, text, (gint)length);
-    gtk_clipboard_store(clipboard);
-    show_copy_status(console, text, length);
+    if (write_clipboard_text(text, length) == 0)
+        show_copy_status(console, text, length);
     free(text);
 }
 
@@ -1218,13 +1348,13 @@ static void copy_selection(struct console_window *console)
 
 static void paste_clipboard(struct console_window *console)
 {
-    GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gchar *text = gtk_clipboard_wait_for_text(clipboard);
+    size_t length = 0;
+    char *text = read_clipboard_text(&length);
 
     if (!text)
         return;
-    (void)send_input(console, text, strlen(text));
-    g_free(text);
+    (void)send_input(console, text, length);
+    free(text);
 }
 
 static void leave_scrollback(struct console_window *console)
