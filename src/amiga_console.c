@@ -133,6 +133,7 @@ struct console_window {
     int title_state;
     char title_buffer[1024];
     size_t title_length;
+    char current_title[1024];
     gboolean menu_type_hint_restored;
     gboolean menu_wayland_live;
     gboolean fullscreen;
@@ -162,6 +163,7 @@ struct console_window {
 
 static void clear_selection(struct console_window *console);
 static void copy_selection(struct console_window *console);
+static void refresh_console_title(struct console_window *console);
 
 static void update_channel_geometry(struct console_window *console)
 {
@@ -378,6 +380,7 @@ static void choose_font(GtkWidget *widget, gpointer data)
     console->font_family = g_strdup(family);
     console->font_size = pixel_size;
     save_config(console);
+    refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
     gtk_widget_destroy(dialog);
 }
@@ -617,6 +620,7 @@ static void choose_palette(GtkWidget *widget, gpointer data)
         }
         memcpy(console->palette, palette, sizeof(console->palette));
         save_config(console);
+        refresh_console_title(console);
         gtk_widget_queue_draw(console->drawing_area);
     }
     gtk_widget_destroy(dialog);
@@ -872,17 +876,6 @@ static void draw_text_overlay(struct console_window *console, cairo_t *cr,
     g_object_unref(layout);
 }
 
-static void draw_scrollback_overlay(struct console_window *console, cairo_t *cr,
-                                    int width, int height)
-{
-    char text[128];
-
-    snprintf(text, sizeof(text),
-             "SCROLLBACK: %d lines back  (press a key to return)",
-             ace_console_device_scrollback_lines(console->device));
-    draw_text_overlay(console, cr, width, height, text, FALSE);
-}
-
 static void draw_selection(struct console_window *console, cairo_t *cr,
                            int width, int height)
 {
@@ -943,6 +936,24 @@ static void draw_selection(struct console_window *console, cairo_t *cr,
     cairo_fill(cr);
 }
 
+static void draw_scrollback_frame(struct console_window *console, cairo_t *cr,
+                                  int width, int height)
+{
+    GdkRGBA color = palette_rgba(console->palette[2]);
+    const double line_width = 2.0;
+
+    if (width <= (int)line_width || height <= (int)line_width)
+        return;
+    /* Keep the indicator thinner than a character cell and inside the
+     * viewport, so it identifies the whole console without hiding text. */
+    color.alpha = 0.5;
+    gdk_cairo_set_source_rgba(cr, &color);
+    cairo_set_line_width(cr, line_width);
+    cairo_rectangle(cr, line_width / 2.0, line_width / 2.0,
+                    width - line_width, height - line_width);
+    cairo_stroke(cr);
+}
+
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     struct console_window *console = data;
@@ -991,11 +1002,11 @@ static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
     cairo_paint(cr);
     cairo_restore(cr);
     draw_selection(console, cr, width, height);
-    if (scrollback_active)
-        draw_scrollback_overlay(console, cr, width, height);
     if (console->copy_status[0] != '\0')
         draw_text_overlay(console, cr, width, height, console->copy_status,
                           TRUE);
+    if (scrollback_active)
+        draw_scrollback_frame(console, cr, width, height);
     return FALSE;
 }
 
@@ -1015,14 +1026,33 @@ static gboolean apply_pending_resize(gpointer data)
     }
     update_channel_geometry(console);
     ace_console_device_notify_resize(console->device);
+    refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
     return G_SOURCE_REMOVE;
+}
+
+static void refresh_console_title(struct console_window *console)
+{
+    const char *base = console->current_title[0] != '\0'
+                           ? console->current_title
+                           : "ACE Shell";
+    char title[sizeof(console->current_title) + 96];
+
+    if (ace_console_device_scrollback_active(console->device)) {
+        snprintf(title, sizeof(title), "%s — SCROLLBACK (%d lines back)", base,
+                 ace_console_device_scrollback_lines(console->device));
+        gtk_window_set_title(GTK_WINDOW(console->window), title);
+    } else {
+        gtk_window_set_title(GTK_WINDOW(console->window), base);
+    }
 }
 
 static void set_console_title(struct console_window *console)
 {
     console->title_buffer[console->title_length] = '\0';
-    gtk_window_set_title(GTK_WINDOW(console->window), console->title_buffer);
+    g_strlcpy(console->current_title, console->title_buffer,
+              sizeof(console->current_title));
+    refresh_console_title(console);
 }
 
 static void output_console_byte(struct console_window *console,
@@ -1364,6 +1394,7 @@ static void leave_scrollback(struct console_window *console)
     if (!ace_console_device_scrollback_active(console->device))
         return;
     ace_console_device_clear_scrollback(console->device);
+    refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
 }
 
@@ -1573,6 +1604,7 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
     clear_selection(console);
     if (!ace_console_device_scrollback_active(console->device)) {
         (void)ace_console_device_set_scrollback(console->device, 0);
+        refresh_console_title(console);
         gtk_widget_queue_draw(console->drawing_area);
         return TRUE;
     }
@@ -1582,6 +1614,7 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
         ace_console_device_clear_scrollback(console->device);
     else
         (void)ace_console_device_set_scrollback(console->device, requested);
+    refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
     return TRUE;
 }
@@ -1811,6 +1844,8 @@ int main(int argc, char **argv)
     console.stream_fd = -1;
     console.child_pid = -1;
     console.font_size = DEFAULT_FONT_SIZE;
+    g_strlcpy(console.current_title, "ACE Shell",
+              sizeof(console.current_title));
     memcpy(console.palette, default_palette, sizeof(console.palette));
     console.font_family = g_strdup(default_font_candidates[0]);
     for (i = 0; default_font_candidates[i]; i++) {
@@ -1892,7 +1927,7 @@ int main(int argc, char **argv)
     gtk_init(&argc, &argv);
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     console.window = window;
-    gtk_window_set_title(GTK_WINDOW(window), "ACE Shell");
+    refresh_console_title(&console);
     gtk_window_set_icon_name(GTK_WINDOW(window), ACE_ICON_NAME);
     gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_UTILITY);
     gtk_window_set_default_size(GTK_WINDOW(window), CONSOLE_WIDTH, CONSOLE_HEIGHT);
