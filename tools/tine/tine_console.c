@@ -706,12 +706,30 @@ special_sequence(const char *sequence, size_t length)
     }
 }
 
+static bool
+is_window_size_reply(const char *sequence, size_t length)
+{
+    char copy[sizeof("1;1;2147483647;2147483647 r")];
+    int rows;
+    int cols;
+    int consumed = 0;
+
+    if (length == 0 || length >= sizeof(copy))
+        return false;
+    memcpy(copy, sequence, length);
+    copy[length] = '\0';
+    if (sscanf(copy, "1;1;%d;%d r%n", &rows, &cols, &consumed) != 2)
+        return false;
+    return consumed == (int)length && rows > 1 && cols > 0;
+}
+
 static int
 read_special(wint_t *character, unsigned char first)
 {
     char sequence[32];
     size_t length = 0;
     unsigned char byte;
+    bool possible_window_size_reply = false;
 
     if (first == '\033') {
         if (read_byte(&byte, 30) != 1) {
@@ -730,6 +748,7 @@ read_special(wint_t *character, unsigned char first)
     }
     sequence[length++] = (char)byte;
     if (byte >= '0' && byte <= '9') {
+        possible_window_size_reply = byte == '1';
         /* Amiga special-key reports are numeric and have no terminator
          * (CSI 0 is F1, CSI 40 is Insert, CSI 41 is Page Up, etc.).
          * Keep reading digits and report punctuation, but leave the first
@@ -738,6 +757,16 @@ read_special(wint_t *character, unsigned char first)
         while (length < sizeof(sequence) - 1) {
             if (read_byte(&byte, 100) != 1)
                 break;
+            if (possible_window_size_reply &&
+                (byte == ';' || byte == ' ' ||
+                 (byte >= '0' && byte <= '9'))) {
+                sequence[length++] = (char)byte;
+                continue;
+            }
+            if (possible_window_size_reply && byte == 'r') {
+                sequence[length++] = (char)byte;
+                break;
+            }
             if ((byte >= '0' && byte <= '9') || byte == ';' ||
                 byte == '~' || (byte == '|' && strchr(sequence, ';'))) {
                 sequence[length++] = (char)byte;
@@ -757,6 +786,17 @@ read_special(wint_t *character, unsigned char first)
         }
     }
     sequence[length] = '\0';
+    if (possible_window_size_reply &&
+        is_window_size_reply(sequence, length)) {
+        /* A response that arrives after the query reader has already
+         * completed is still console traffic, not an F-key followed by
+         * ordinary text.  This occurs when the window's initial resize event
+         * races the first ET frame.  Discard it without returning KEY_RESIZE:
+         * there was no new resize to process, and a resize callback would
+         * erase a startup diagnostic such as "Creating new file". */
+        *character = 0;
+        return TINE_ERR;
+    }
     if (length >= 3 && sequence[0] == '1' && sequence[1] == '2' &&
         sequence[2] == ';' && sequence[length - 1] == '|') {
         if (ace_console) {

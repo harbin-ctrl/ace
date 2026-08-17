@@ -1104,5 +1104,6 @@ test-dir-sort: all
 
 test-tine: all tine
 	sh tests/tine_test.sh
+	python3 tests/tine_console_query_test.py
 
 .PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
