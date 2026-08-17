@@ -119,6 +119,30 @@ int main(void)
     device = ace_console_device_open(width, height, font_candidates, 16);
     assert(device != NULL);
 
+    /* AmigaOS console.device emits native C1 CSI, not ESC [.  In
+     * particular, the line editor uses CSI P to delete a character.  The
+     * retained/copy path must interpret both bytes as control input rather
+     * than leaking them into scrollback text. */
+    {
+        static const unsigned char delete_character[] = {
+            'A', 'B', 'C', '\b', 0x9b, 'P', '\n'
+        };
+        struct ace_console_device *controls;
+        char *copied;
+        size_t copied_length;
+
+        controls = ace_console_device_open(width, height, font_candidates, 16);
+        assert(controls != NULL);
+        ace_console_device_write(controls, delete_character,
+                                 sizeof(delete_character));
+        copied = ace_console_device_copy_all(controls, &copied_length);
+        assert(copied != NULL);
+        assert(copied_length == 3);
+        assert(strcmp(copied, "AB\n") == 0);
+        free(copied);
+        ace_console_device_close(controls);
+    }
+
     /* A fresh console has been painted, so it has damage to report; taking it
      * consumes it. */
     assert(ace_console_device_take_damage(device, &x, &y, &w, &h) == 1);

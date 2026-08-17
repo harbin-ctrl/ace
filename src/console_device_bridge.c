@@ -714,6 +714,26 @@ static void text_csi(struct console_text_document *document, int final,
     case 'K':
         text_erase_line(document, csi_argument(parameters, count, 0, 0));
         break;
+    case 'P':
+        amount = csi_argument(parameters, count, 0, 1);
+        if (ensure_text_line(document, document->cursor_y) != 0)
+            break;
+        {
+            struct console_text_line *line =
+                &document->lines[document->cursor_y];
+            size_t available;
+
+            if (document->cursor_x >= line->length)
+                break;
+            available = line->length - document->cursor_x;
+            if ((size_t)amount > available)
+                amount = (int)available;
+            memmove(line->data + document->cursor_x,
+                    line->data + document->cursor_x + amount,
+                    line->length - document->cursor_x - (size_t)amount);
+            line->length -= (size_t)amount;
+        }
+        break;
     case 's':
         document->saved_x = document->cursor_x;
         document->saved_y = document->cursor_y;
@@ -728,40 +748,52 @@ static void text_csi(struct console_text_document *document, int final,
     }
 }
 
+static size_t text_skip_csi(struct console_text_document *document,
+                            const unsigned char *data, size_t length,
+                            size_t index)
+{
+    int parameters[16] = {0};
+    int count = 0;
+    int value = -1;
+
+    for (; index < length; index++) {
+        unsigned char byte = data[index];
+
+        if (byte >= '0' && byte <= '9') {
+            if (value < 0)
+                value = 0;
+            if (value <= (INT_MAX - (byte - '0')) / 10)
+                value = value * 10 + (byte - '0');
+        } else if (byte == ';') {
+            if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
+                parameters[count++] = value;
+            value = -1;
+        } else if (byte >= 0x40 && byte <= 0x7e) {
+            if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
+                parameters[count++] = value;
+            text_csi(document, byte, parameters, count);
+            return index + 1;
+        }
+    }
+    return length;
+}
+
 static size_t text_skip_escape(struct console_text_document *document,
                                const unsigned char *data, size_t length,
                                size_t position)
 {
     size_t index = position + 1;
 
+    /* Amiga console.device uses the single-byte C1 CSI introducer.  Keep
+     * accepting ESC [ as well for the ANSI-compatible paths, but make the
+     * native form first-class so copied history never exposes 0x9b or its
+     * final byte as text. */
+    if (data[position] == 0x9b)
+        return text_skip_csi(document, data, length, index);
     if (index >= length)
         return length;
-    if (data[index] == '[') {
-        int parameters[16] = {0};
-        int count = 0;
-        int value = -1;
-
-        for (index++; index < length; index++) {
-            unsigned char byte = data[index];
-
-            if (byte >= '0' && byte <= '9') {
-                if (value < 0)
-                    value = 0;
-                if (value <= (INT_MAX - (byte - '0')) / 10)
-                    value = value * 10 + (byte - '0');
-            } else if (byte == ';') {
-                if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
-                    parameters[count++] = value;
-                value = -1;
-            } else if (byte >= 0x40 && byte <= 0x7e) {
-                if (count < (int)(sizeof(parameters) / sizeof(parameters[0])))
-                    parameters[count++] = value;
-                text_csi(document, byte, parameters, count);
-                return index + 1;
-            }
-        }
-        return length;
-    }
+    if (data[index] == '[')
+        return text_skip_csi(document, data, length, index + 1);
     if (data[index] == ']') {
         for (index++; index < length; index++) {
             if (data[index] == '\a')
@@ -796,7 +828,7 @@ static int build_text_document(struct ace_console_device *device,
     for (size_t index = start; index < end; index++) {
         unsigned char byte = device->history[index];
 
-        if (byte == '\033') {
+        if (byte == '\033' || byte == 0x9b) {
             index = text_skip_escape(document, device->history, end, index);
             if (index == 0)
                 break;
