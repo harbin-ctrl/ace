@@ -143,7 +143,18 @@ int main(void)
         char *copied;
         size_t copied_length;
 
+        assert(ace_console_device_scrollback_active(device) == 0);
+        assert(ace_console_device_set_scrollback(device, 0) == 0);
+        assert(ace_console_device_scrollback_active(device) == 1);
+        assert(ace_console_device_scrollback_lines(device) == 0);
+        assert(ace_console_device_scrollback_surface(device) != NULL);
+        assert(ace_console_device_scrollback_surface(device) != live);
+        ace_console_device_clear_scrollback(device);
+        assert(ace_console_device_scrollback_active(device) == 0);
+        assert(ace_console_device_scrollback_surface(device) == NULL);
+
         assert(ace_console_device_set_scrollback(device, 1) == 1);
+        assert(ace_console_device_scrollback_active(device) == 1);
         assert(ace_console_device_scrollback_lines(device) == 1);
         assert(ace_console_device_scrollback_surface(device) != NULL);
         assert(ace_console_device_scrollback_surface(device) != live);
@@ -165,6 +176,7 @@ int main(void)
         ace_console_device_write(device, "output while scrolled\n", 22);
         assert(ace_console_device_scrollback_lines(device) == 1);
         ace_console_device_clear_scrollback(device);
+        assert(ace_console_device_scrollback_active(device) == 0);
         assert(ace_console_device_scrollback_lines(device) == 0);
         assert(ace_console_device_scrollback_surface(device) == NULL);
     }

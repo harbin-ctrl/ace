@@ -71,11 +71,14 @@ void ace_console_device_set_pen_rgb(struct ace_console_device *device,
                                     int pen, uint32_t rgb);
 
 /* Builds a frozen historical view at the requested number of lines back.
+   Zero is a valid offset: it freezes the current screen without moving back.
    Returns the actual offset, clamped to the retained history, or zero when
-   no historical view could be built. */
+   no historical view could be built. Use scrollback_active() to distinguish
+   a successful zero-offset view from live mode. */
 int ace_console_device_set_scrollback(struct ace_console_device *device,
                                       int lines);
 void ace_console_device_clear_scrollback(struct ace_console_device *device);
+int ace_console_device_scrollback_active(struct ace_console_device *device);
 int ace_console_device_scrollback_lines(struct ace_console_device *device);
 
 /* Returns the exact pixel dimensions of one console character cell. */

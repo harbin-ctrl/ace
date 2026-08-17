@@ -822,7 +822,7 @@ static void queue_console_damage(struct console_window *console)
     /* Output continues through the live device while a frozen historical
      * surface is displayed. Keep its damage pending until a key returns to
      * the live view. */
-    if (ace_console_device_scrollback_lines(console->device) != 0)
+    if (ace_console_device_scrollback_active(console->device))
         return;
     if (ace_console_device_take_damage(console->device, &x, &y, &width,
                                        &height))
@@ -897,7 +897,7 @@ static void draw_selection(struct console_window *console, cairo_t *cr,
     int end_row;
 
     if (!console->selection_valid ||
-        ace_console_device_scrollback_lines(console->device) == 0 ||
+        !ace_console_device_scrollback_active(console->device) ||
         ace_console_device_cell_size(console->device, &cell_width,
                                      &cell_height) != 0)
         return;
@@ -946,14 +946,15 @@ static void draw_selection(struct console_window *console, cairo_t *cr,
 static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
 {
     struct console_window *console = data;
-    int scrollback_lines = ace_console_device_scrollback_lines(console->device);
-    cairo_surface_t *surface = scrollback_lines != 0
+    int scrollback_active =
+        ace_console_device_scrollback_active(console->device);
+    cairo_surface_t *surface = scrollback_active
                                    ? ace_console_device_scrollback_surface(
                                          console->device)
                                    : ace_console_device_surface(console->device);
     GdkRGBA background = palette_rgba(console->palette[0]);
     GtkAllocation allocation;
-    int origin_y = scrollback_lines != 0
+    int origin_y = scrollback_active
                        ? ace_console_device_scrollback_origin_y(console->device)
                        : ace_console_device_origin_y(console->device);
     int width;
@@ -990,7 +991,7 @@ static gboolean draw_console(GtkWidget *widget, cairo_t *cr, gpointer data)
     cairo_paint(cr);
     cairo_restore(cr);
     draw_selection(console, cr, width, height);
-    if (scrollback_lines != 0)
+    if (scrollback_active)
         draw_scrollback_overlay(console, cr, width, height);
     if (console->copy_status[0] != '\0')
         draw_text_overlay(console, cr, width, height, console->copy_status,
@@ -1360,7 +1361,7 @@ static void paste_clipboard(struct console_window *console)
 static void leave_scrollback(struct console_window *console)
 {
     clear_selection(console);
-    if (ace_console_device_scrollback_lines(console->device) == 0)
+    if (!ace_console_device_scrollback_active(console->device))
         return;
     ace_console_device_clear_scrollback(console->device);
     gtk_widget_queue_draw(console->drawing_area);
@@ -1493,7 +1494,7 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
     (void)widget;
     if ((modifiers & GDK_CONTROL_MASK) &&
         (key == GDK_KEY_c || key == GDK_KEY_C) &&
-        ace_console_device_scrollback_lines(console->device) != 0) {
+        ace_console_device_scrollback_active(console->device)) {
         if (console->selection_valid)
             copy_selection(console);
         else
@@ -1570,6 +1571,11 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
         return TRUE;
 
     clear_selection(console);
+    if (!ace_console_device_scrollback_active(console->device)) {
+        (void)ace_console_device_set_scrollback(console->device, 0);
+        gtk_widget_queue_draw(console->drawing_area);
+        return TRUE;
+    }
     current = ace_console_device_scrollback_lines(console->device);
     requested = current + direction * SCROLLBACK_LINES_PER_WHEEL;
     if (requested <= 0)
@@ -1614,7 +1620,7 @@ static gboolean button_press(GtkWidget *widget, GdkEventButton *event,
     struct console_window *console = data;
 
     if (event->button != 1 ||
-        ace_console_device_scrollback_lines(console->device) == 0)
+        !ace_console_device_scrollback_active(console->device))
         return FALSE;
     pointer_cell(console, event->x, event->y,
                  &console->selection_start_column,

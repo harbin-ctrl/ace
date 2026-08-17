@@ -88,6 +88,7 @@ struct ace_console_device {
     struct Window scrollback_window;
     struct RastPort *scrollback_rp;
     Object *scrollback_unit;
+    int scrollback_active;
     int scrollback_lines;
     size_t scrollback_start;
     size_t scrollback_end;
@@ -382,6 +383,7 @@ static void destroy_scrollback_view(struct ace_console_device *device)
         ace_gfx_destroy_rastport(device->scrollback_rp);
     device->scrollback_unit = NULL;
     device->scrollback_rp = NULL;
+    device->scrollback_active = 0;
     device->scrollback_lines = 0;
     device->scrollback_start = 0;
     device->scrollback_end = 0;
@@ -996,7 +998,7 @@ char *ace_console_device_copy_selection(struct ace_console_device *device,
     if (start_row > end_row || start_column > end_column)
         return NULL;
 
-    if (device->scrollback_lines != 0) {
+    if (device->scrollback_active) {
         start = device->scrollback_start;
         end = device->scrollback_end;
     } else {
@@ -1089,7 +1091,7 @@ int ace_console_device_set_scrollback(struct ace_console_device *device,
     size_t end;
     int actual;
 
-    if (!device || lines <= 0 || !device->history_valid ||
+    if (!device || lines < 0 || !device->history_valid ||
         device->history_length == 0) {
         if (device)
             destroy_scrollback_view(device);
@@ -1097,8 +1099,9 @@ int ace_console_device_set_scrollback(struct ace_console_device *device,
     }
     end = history_end_for_lines(device, lines, &actual);
     destroy_scrollback_view(device);
-    if (actual == 0 || create_scrollback_view(device, end) != 0)
+    if (create_scrollback_view(device, end) != 0)
         return 0;
+    device->scrollback_active = 1;
     device->scrollback_lines = actual;
     return actual;
 }
@@ -1107,6 +1110,11 @@ void ace_console_device_clear_scrollback(struct ace_console_device *device)
 {
     if (device)
         destroy_scrollback_view(device);
+}
+
+int ace_console_device_scrollback_active(struct ace_console_device *device)
+{
+    return device ? device->scrollback_active : 0;
 }
 
 int ace_console_device_scrollback_lines(struct ace_console_device *device)
