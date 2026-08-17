@@ -22,6 +22,7 @@
 #include "ace_appmenu_wayland.h"
 #include "console_channel.h"
 #include "console_device_bridge.h"
+#include "console_spec.h"
 
 #define INPUT_MAX 4096
 
@@ -1844,8 +1845,13 @@ int main(int argc, char **argv)
     char directory[PATH_MAX];
     char shell_path[PATH_MAX];
     const char *session;
+    const char *specification = NULL;
     const char *font_candidates[5];
     int sockets[2];
+    int external_fd = -1;
+    struct ace_console_spec window_spec;
+    int gtk_argc = 1;
+    char **gtk_argv = (char *[]){ argv[0], NULL };
     int i;
 
     memset(&console, 0, sizeof(console));
@@ -1855,6 +1861,46 @@ int main(int argc, char **argv)
     g_strlcpy(console.current_title, "ACE Shell",
               sizeof(console.current_title));
     memcpy(console.palette, default_palette, sizeof(console.palette));
+    memset(&window_spec, 0, sizeof(window_spec));
+    if (argc < 3 || strcmp(argv[1], "--session") != 0) {
+        fprintf(stderr, "usage: %s --session SESSION [--fd FD --spec CON:... ]\n",
+                argv[0]);
+        return 20;
+    }
+    session = argv[2];
+    for (i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--fd") == 0 && i + 1 < argc) {
+            char *end;
+            long value;
+
+            errno = 0;
+            value = strtol(argv[++i], &end, 10);
+            if (errno != 0 || end == argv[i] || *end != '\0' ||
+                value < 0 || value > INT_MAX) {
+                fprintf(stderr, "ace-console: invalid --fd\n");
+                return 20;
+            }
+            external_fd = (int)value;
+        } else if (strcmp(argv[i], "--spec") == 0 && i + 1 < argc) {
+            specification = argv[++i];
+            if (ace_console_spec_parse(specification, &window_spec) != 0) {
+                fprintf(stderr, "ace-console: invalid CON: specification\n");
+                return 20;
+            }
+        } else {
+            fprintf(stderr, "ace-console: unknown argument: %s\n", argv[i]);
+            return 20;
+        }
+    }
+    if ((external_fd >= 0) != (specification != NULL)) {
+        fprintf(stderr, "ace-console: --fd and --spec must be paired\n");
+        return 20;
+    }
+    if (external_fd >= 0)
+        console.current_title[0] = '\0';
+    if (window_spec.title[0] != '\0')
+        g_strlcpy(console.current_title, window_spec.title,
+                  sizeof(console.current_title));
     console.font_family = g_strdup(default_font_candidates[0]);
     for (i = 0; default_font_candidates[i]; i++) {
         if (ace_gfx_font_family_complete(default_font_candidates[i])) {
@@ -1866,7 +1912,9 @@ int main(int argc, char **argv)
     load_config(&console);
     build_font_candidates(console.font_family, default_font_candidates,
                           font_candidates, G_N_ELEMENTS(font_candidates));
-    console.device = ace_console_device_open(CONSOLE_WIDTH, CONSOLE_HEIGHT,
+    console.device = ace_console_device_open(
+        window_spec.has_size ? window_spec.width : CONSOLE_WIDTH,
+        window_spec.has_size ? window_spec.height : CONSOLE_HEIGHT,
                                              font_candidates, console.font_size);
     if (!console.device) {
         fprintf(stderr, "ace-console: failed to set up console.device\n");
@@ -1879,50 +1927,49 @@ int main(int argc, char **argv)
     }
     ace_console_channel_init(&console.channel, -1);
     update_channel_geometry(&console, FALSE);
-    if (argc != 3 || strcmp(argv[1], "--session") != 0) {
-        fprintf(stderr, "usage: %s --session SESSION\n", argv[0]);
-        return 20;
-    }
-    session = argv[2];
-    if (executable_directory(argv[0], directory, sizeof(directory)) != 0)
-        return 20;
-    if (snprintf(shell_path, sizeof(shell_path), "%s/ace-user-shell", directory) >=
-        (int)sizeof(shell_path))
-        return 20;
-
     /* ACE runs as a native Wayland console, even when DISPLAY is also set.
      * ACE owns the exported menu/action pair; GtkMenuBar remains the local
      * fallback when no appmenu compositor is available. */
     setenv("GDK_BACKEND", "wayland", 1);
     prepare_appmenu_environment();
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
-        return 20;
-    console.child_pid = fork();
-    if (console.child_pid < 0)
-        return 20;
-    if (console.child_pid == 0) {
-        close(sockets[0]);
-        /* Everything the shell runs shares one process group, so the console
-         * can hang up on all of it at once when the window closes. */
-        (void)setpgid(0, 0);
-        if (dup2(sockets[1], STDIN_FILENO) < 0 ||
-            dup2(sockets[1], STDOUT_FILENO) < 0 ||
-            dup2(sockets[1], STDERR_FILENO) < 0)
+    if (external_fd >= 0) {
+        console.stream_fd = external_fd;
+        console.child_pid = -1;
+    } else {
+        if (executable_directory(argv[0], directory, sizeof(directory)) != 0)
+            return 20;
+        if (snprintf(shell_path, sizeof(shell_path), "%s/ace-user-shell", directory) >=
+            (int)sizeof(shell_path))
+            return 20;
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
+            return 20;
+        console.child_pid = fork();
+        if (console.child_pid < 0)
+            return 20;
+        if (console.child_pid == 0) {
+            close(sockets[0]);
+            /* Everything the shell runs shares one process group, so the console
+             * can hang up on all of it at once when the window closes. */
+            (void)setpgid(0, 0);
+            if (dup2(sockets[1], STDIN_FILENO) < 0 ||
+                dup2(sockets[1], STDOUT_FILENO) < 0 ||
+                dup2(sockets[1], STDERR_FILENO) < 0)
+                _exit(20);
+            if (sockets[1] > STDERR_FILENO)
+                close(sockets[1]);
+            setenv("ACE_SESSION", session, 1);
+            setenv("ACE_CONSOLE_INTERACTIVE", "1", 1);
+            /* This is an Amiga console.device stream, not the host terminal
+             * inherited by the GUI launcher. Unchanged Amiga programs use the
+             * standard TERM value to select their console backend; in particular
+             * Vim's __AROS__ size query is enabled only for TERM=amiga. */
+            setenv("TERM", "amiga", 1);
+            execl(shell_path, shell_path, (char *)NULL);
             _exit(20);
-        if (sockets[1] > STDERR_FILENO)
-            close(sockets[1]);
-        setenv("ACE_SESSION", session, 1);
-        setenv("ACE_CONSOLE_INTERACTIVE", "1", 1);
-        /* This is an Amiga console.device stream, not the host terminal
-         * inherited by the GUI launcher. Unchanged Amiga programs use the
-         * standard TERM value to select their console backend; in particular
-         * Vim's __AROS__ size query is enabled only for TERM=amiga. */
-        setenv("TERM", "amiga", 1);
-        execl(shell_path, shell_path, (char *)NULL);
-        _exit(20);
+        }
+        close(sockets[1]);
+        console.stream_fd = sockets[0];
     }
-    close(sockets[1]);
-    console.stream_fd = sockets[0];
     ace_console_channel_set_fd(&console.channel, console.stream_fd);
     ace_console_device_set_input_fd(console.device, console.stream_fd);
 
@@ -1932,13 +1979,16 @@ int main(int argc, char **argv)
     g_set_prgname(ACE_ICON_NAME);
     g_set_application_name("ACE Shell");
     gdk_set_program_class(ACE_ICON_NAME);
-    gtk_init(&argc, &argv);
+    gtk_init(&gtk_argc, &gtk_argv);
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     console.window = window;
     refresh_console_title(&console);
     gtk_window_set_icon_name(GTK_WINDOW(window), ACE_ICON_NAME);
     gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_UTILITY);
-    gtk_window_set_default_size(GTK_WINDOW(window), CONSOLE_WIDTH, CONSOLE_HEIGHT);
+    gtk_window_set_default_size(
+        GTK_WINDOW(window),
+        window_spec.has_size ? window_spec.width : CONSOLE_WIDTH,
+        window_spec.has_size ? window_spec.height : CONSOLE_HEIGHT);
     g_signal_connect(window, "destroy", G_CALLBACK(console_destroy), &console);
     console.drawing_area = gtk_drawing_area_new();
     gtk_widget_set_can_focus(console.drawing_area, TRUE);
@@ -1966,6 +2016,8 @@ int main(int argc, char **argv)
     gtk_container_add(GTK_CONTAINER(window), box);
     (void)export_dbus_menu(&console);
     gtk_widget_show_all(window);
+    if (window_spec.has_position)
+        gtk_window_move(GTK_WINDOW(window), window_spec.x, window_spec.y);
     gtk_widget_grab_focus(console.drawing_area);
     console.menu_probe_source = g_timeout_add(250, update_menu_visibility,
                                               &console);
