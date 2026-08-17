@@ -34,12 +34,10 @@ iffparse.library  -- parses and writes IFF streams
     |
     v
 clipboard.device  -- raw byte-stream and transaction semantics
-    |
-    v
-ACE clipboard manager
     |                         |
+    | unit 0                  | units 0..255
     v                         v
-Linux text clipboard       CLIPS: units 0..255
+Linux text clipboard       CLIPS:clip0..clip255
 ```
 
 The device should retain the raw IFF representation. A text clipboard is
@@ -56,9 +54,14 @@ future ACE clients exchange data other than text. An optional text-only
 compatibility backend can be added if a host environment cannot retain raw
 IFF.
 
-The device layer must not call GTK or another GUI toolkit directly. Host
-clipboard ownership belongs to the ACE GUI/broker bridge, with IPC if the
-device-serving process is headless.
+The device layer must not call GTK or another GUI toolkit directly. ACE's
+unit-0 bridge uses the host clipboard command available in the session
+(`wl-paste`/`wl-copy`, `xclip`, or `xsel`). A deterministic
+`ACE_CLIPBOARD_HOST_FILE` backend is available for tests and headless setups.
+The device handler's cross-process equivalent is a per-unit `flock()` lock
+file plus an atomic temporary-file rename. This is intentionally simple: ACE
+is a compatibility connection point, not a latency-critical clipboard
+server.
 
 ## Implementation stages
 
@@ -113,34 +116,49 @@ The parser must honor IFF's big-endian four-byte IDs and lengths, nested
 composite forms, unknown chunks, even-byte padding, multiple `CHRS` chunks,
 malformed input, and truncated streams.
 
-### Stage 4 — host bridge and `CLIPS:`
+### Stage 4 — host bridge and `CLIPS:` (implemented)
 
-Make unit 0 synchronize with the Linux clipboard. Import host text as
-`FORM FTXT/CHRS`, publish Amiga text back to Linux, detect external clipboard
-changes, and generate the corresponding post/change notifications.
+Unit 0 now synchronizes with the Linux clipboard. Host text is imported as
+`FORM FTXT/CHRS`, Amiga text is published back to the host, and an external
+host change is detected on the next unit-0 read and becomes a new clipboard
+device generation. The normal host commands are discovered in this order:
+Wayland (`wl-paste`/`wl-copy`), X11 (`xclip`), then X11 (`xsel`). ACE can use
+`ACE_CLIPBOARD_HOST_FILE` instead, which is useful for tests and machines
+without a desktop clipboard service.
 
-Provide an ACE-owned `CLIPS:` backing namespace for units 0 through 255. It
-must support the file-visible behavior used by `Clip`: existence, deletion,
-counting, and notification. Writes should be committed atomically.
+All 256 units have ACE-owned backing files named `clip0` through `clip255`.
+The default directory is `$XDG_RUNTIME_DIR/ace/clips`, the volatile
+`T:`-like area already used by ACE; `/tmp/aros` is the fallback. The
+`ACE_CLIPBOARD_DIR` environment variable overrides it. `CLIPS:` is assigned
+to this directory, so the file-visible behavior used by `Clip`—existence,
+deletion, and counting—works across separate ACE command processes. Unit 0
+also mirrors its text to Linux. Deleting `CLIPS:0` clears the host text
+clipboard when the host backend permits it. Writes use a per-unit lock and
+atomic replacement.
 
 The text encoding boundary must be explicit. `CHRS` is a byte stream while
-Linux clipboard text is usually UTF-8; the initial implementation should
-preserve raw IFF bytes and document the chosen Amiga-byte-to-UTF-8 policy
-rather than silently corrupting high-bit data.
+Linux clipboard text is usually UTF-8. ACE currently treats the host bytes as
+UTF-8 without recoding them: the bytes are preserved in `CHRS`, and no
+silent high-bit conversion is performed. A future locale-aware Amiga charset
+policy can be added at this boundary.
 
-### Stage 5 — clients
+### Stage 5 — clients (acepaste slice implemented)
 
 Run the existing AROS `Clip` command unchanged against ACE. Move console
 selection/paste and ET copy/paste behind the same clipboard path.
 
-Add `acepaste` as the Linux-facing text adapter. With no raw mode, it always
-extracts text: it concatenates `CHRS` chunks from `FORM FTXT` on reads and
-wraps stdin as `FORM FTXT/CHRS` on writes. It should use the ACE clipboard
-manager/device path rather than reading `CLIPS:` files or GTK directly:
+`acepaste` is now the Linux-facing text adapter. It concatenates `CHRS`
+chunks from `FORM FTXT` on reads and wraps stdin as `FORM FTXT/CHRS` on
+writes. It uses the ACE clipboard device/library path rather than reading
+`CLIPS:` files or GTK directly. It defaults to unit 0, accepts `--unit N` or
+`-u N`, and selects read mode for a terminal stdin and write mode for piped
+stdin; `--get` and `--set` make the choice explicit:
 
 ```sh
 acepaste > clipboard.txt
 cat replacement.txt | acepaste
+acepaste --unit 7 --get > alternate.txt
+cat alternate.txt | acepaste --unit 7 --set
 ```
 
 It must not add a newline or separators between chunks. Non-text clipboard

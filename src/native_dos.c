@@ -33,6 +33,7 @@
 #include "broker_protocol.h"
 #include "aros_dos_path.h"
 #include "aros_console_editor.h"
+#include "clipboard_bridge.h"
 
 struct CommandLineInterface *Cli(void);
 
@@ -1766,8 +1767,10 @@ LONG DeleteFile(CONST_STRPTR name)
        allows EPERM), and an empty one is then rmdir()'s job; a directory
        that still has children stays refused, which is what makes Delete
        recurse into it before trying again. */
-    if (unlink(resolved) == 0)
+    if (unlink(resolved) == 0) {
+        ace_clipboard_store_deleted_path(resolved);
         return DOSTRUE;
+    }
     if ((errno == EISDIR || errno == EPERM) && rmdir(resolved) == 0)
         return DOSTRUE;
     set_native_broker_error();

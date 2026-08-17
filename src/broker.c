@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "broker_protocol.h"
+#include "clipboard_bridge.h"
 #include "dos_devices.h"
 
 #include <errno.h>
@@ -348,6 +349,7 @@ static void seed_boot_assigns(struct broker_session *session)
 {
     char volatile_path[PATH_MAX];
     char path[PATH_MAX];
+    char clips_path[PATH_MAX];
 
     set_directory_assign(session, "SYS", system_root);
     add_boot_assign(session, "C", "C");
@@ -375,6 +377,9 @@ static void seed_boot_assigns(struct broker_session *session)
         (void)make_directory_path(path);
         set_directory_assign(session, "T", path);
     }
+    if (ace_clipboard_store_prepare() == 0 &&
+        ace_clipboard_store_root(clips_path, sizeof(clips_path)) == 0)
+        set_directory_assign(session, "CLIPS", clips_path);
 }
 
 /*
@@ -1289,12 +1294,31 @@ static int resolve_path(struct broker_session *session, const char *input,
             assign_name[name_length] = '\0';
             struct assign_entry *assign = find_assign(session, assign_name);
             if (assign) {
+                char clips_component[32];
+
                 relative = colon + 1;
                 while (*relative == '/')
                     relative++;
                 if (resolve_assign_target(session, assign, base,
                                           sizeof(base)) != 0)
                     return -1;
+                /* The real CLIPS: handler presents unit names as 0..255,
+                 * while ACE keeps the backing files visibly separate from
+                 * its lock files as clip0..clip255. Keep that spelling
+                 * translation at the DOS handler seam so ordinary clients
+                 * continue to use CLIPS:7. */
+                if (strcasecmp(assign_name, "CLIPS") == 0 && *relative) {
+                    char *end;
+                    unsigned long unit;
+
+                    errno = 0;
+                    unit = strtoul(relative, &end, 10);
+                    if (!errno && *end == '\0' && unit < 256) {
+                        snprintf(clips_component, sizeof(clips_component),
+                                 "clip%lu", unit);
+                        relative = clips_component;
+                    }
+                }
                 return normalize_mapped_path_beneath(base, relative, result,
                                                      result_size);
             }

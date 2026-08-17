@@ -270,10 +270,10 @@ AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault 
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
-HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
+HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 # ET (Edified Tine) is a guest program, so its build is deliberately separate
 # from the core command graph.  Install invokes it after ACE itself is built; this
@@ -510,6 +510,7 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-console-editor.o \
                     $(BUILD)/aros-con-support.o \
                     $(BUILD)/aros-exec-runtime.o \
+                    $(BUILD)/clipboard-bridge.o \
                     $(BUILD)/clipboard-device.o \
                     $(BUILD)/iffparse-clipboard.o \
                     $(BUILD)/native-list-compat.o \
@@ -555,7 +556,7 @@ $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_c
 # be told where this build was installed. An uninstalled broker finds neither
 # this path nor an ACE_SYS_DIR in its environment and falls back to its own
 # directory, which for a build tree is where the commands are.
-$(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -DACE_SYS_DIR='"$(SYSDIR)"' -Isrc -c $< -o $@
 
 $(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h | $(BUILD)
@@ -644,7 +645,10 @@ $(BUILD)/console-channel-test: $(BUILD)/console-channel-test.o $(BUILD)/console_
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
-$(BUILD)/clipboard-device.o: src/clipboard_device.c src/clipboard_device.h | $(BUILD)
+$(BUILD)/clipboard-bridge.o: src/clipboard_bridge.c src/clipboard_bridge.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
+
+$(BUILD)/clipboard-device.o: src/clipboard_device.c src/clipboard_device.h src/clipboard_bridge.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/iffparse-clipboard.o: src/iffparse_clipboard.c src/aros_exec_runtime.h | $(BUILD)
@@ -667,14 +671,24 @@ $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_devic
 
 $(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c \
                                  $(BUILD)/aros-exec-runtime.o \
-                                 $(BUILD)/clipboard-device.o
+                                 $(BUILD)/clipboard-device.o \
+                                 $(BUILD)/clipboard-bridge.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
 
 $(BUILD)/iffparse-clipboard-test: tests/iffparse_clipboard_test.c \
                                   $(BUILD)/aros-exec-runtime.o \
                                   $(BUILD)/clipboard-device.o \
+                                  $(BUILD)/clipboard-bridge.o \
                                   $(BUILD)/iffparse-clipboard.o
 	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc $^ -o $@
+
+$(BUILD)/acepaste.o: src/acepaste.c | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/acepaste: $(BUILD)/acepaste.o $(BUILD)/aros-exec-runtime.o \
+                   $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o \
+                   $(BUILD)/iffparse-clipboard.o
+	$(CC) $(CFLAGS) -pthread $^ -o $@
 
 $(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
                             $(BUILD)/native_dos.o $(BUILD)/native_command.o \
@@ -989,14 +1003,15 @@ $(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/n
 $(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-$(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o
+$(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o \
+                     $(BUILD)/clipboard-bridge.o
 	$(CC) $(CFLAGS) $^ $(BLKID_LIBS) -o $@
 
 $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
@@ -1104,6 +1119,27 @@ test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 test-iffparse-clipboard: $(BUILD)/iffparse-clipboard-test
 	$(BUILD)/iffparse-clipboard-test
 
+test-acepaste: $(BUILD)/acepaste
+	set -eu; clip_dir=$$(mktemp -d); host_file=$$(mktemp); \
+	trap 'rm -rf "$$clip_dir" "$$host_file"' EXIT; \
+	printf 'from host' >"$$host_file"; \
+	ACE_CLIPBOARD_DIR="$$clip_dir" ACE_CLIPBOARD_HOST_FILE="$$host_file" \
+		$(BUILD)/acepaste --get >"$$clip_dir/get-before"; \
+	test "$$(cat "$$clip_dir/get-before")" = 'from host'; \
+	printf 'primary text' | ACE_CLIPBOARD_DIR="$$clip_dir" \
+		ACE_CLIPBOARD_HOST_FILE="$$host_file" $(BUILD)/acepaste --set; \
+	test "$$(cat "$$host_file")" = 'primary text'; \
+	test -f "$$clip_dir/clip0"; \
+	printf 'alternate text' | ACE_CLIPBOARD_DIR="$$clip_dir" \
+		ACE_CLIPBOARD_HOST_FILE="$$host_file" $(BUILD)/acepaste --unit 7 --set; \
+	test -f "$$clip_dir/clip7"; \
+	ACE_CLIPBOARD_DIR="$$clip_dir" ACE_CLIPBOARD_HOST_FILE="$$host_file" \
+		$(BUILD)/acepaste --unit 7 --get >"$$clip_dir/get-seven"; \
+	test "$$(cat "$$clip_dir/get-seven")" = 'alternate text'; \
+	count=0; for unit in $$(seq 0 255); do \
+		test -f "$$clip_dir/clip$$unit" && count=$$((count + 1)); \
+	done; test "$$count" -eq 2
+
 test-aros-console-editor: $(BUILD)/aros-console-editor-test
 	$(BUILD)/aros-console-editor-test
 
@@ -1161,4 +1197,4 @@ test-tine: all tine
 	sh tests/tine_test.sh
 	python3 tests/tine_console_query_test.py
 
-.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-tine test-system-assigns test-aros-exec-runtime test-iffparse-clipboard test-acepaste test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics

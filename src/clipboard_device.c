@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "clipboard_bridge.h"
 #include "clipboard_device.h"
 
+#include <errno.h>
 #include <stddef.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -12,7 +14,6 @@
 #include <exec/devices.h>
 #include <utility/hooks.h>
 
-#define ACE_CLIPBOARD_UNIT_COUNT 256
 #define ACE_CLIPBOARD_HOOK_COUNT 32
 #define ACE_CLIPBOARD_NS_QUERY 0x4000
 #define ACE_CLIPBOARD_TYPE 9
@@ -124,6 +125,53 @@ static LONG next_id(LONG id)
 }
 
 static void notify_hooks(struct ace_clipboard_unit *unit, LONG command,
+                         LONG clip_id);
+
+/* Commands are separate host processes in ACE. The Amiga device's handler
+ * serialized those processes behind one device task; the bridge's per-unit
+ * lock and atomic rename provide the same transaction boundary here. Refresh
+ * a unit before a new read so a clip written by another command process is
+ * visible without relying on this process's old cache. */
+static int refresh_unit_from_store(struct ace_clipboard_unit *unit)
+{
+    unsigned char *data = NULL;
+    size_t size = 0;
+    int valid;
+    int changed = 0;
+    LONG clip_id = 0;
+
+    if (ace_clipboard_store_load(unit->public_unit.cu_UnitNum, &data,
+                                 &size) == 0) {
+        valid = 1;
+    } else if (errno == ENOENT) {
+        valid = 0;
+    } else {
+        return -1;
+    }
+    pthread_mutex_lock(&unit->lock);
+    if (valid != unit->committed_valid ||
+        (valid && (size != unit->committed_size ||
+                   memcmp(data, unit->committed, size) != 0))) {
+        unsigned char *old_data = unit->committed;
+
+        unit->committed = data;
+        unit->committed_size = size;
+        unit->committed_valid = valid;
+        unit->write_id = next_id(unit->write_id);
+        unit->post_id = 0;
+        clip_id = unit->write_id;
+        pthread_cond_broadcast(&unit->condition);
+        data = old_data;
+        changed = 1;
+    }
+    pthread_mutex_unlock(&unit->lock);
+    free(data);
+    if (changed)
+        notify_hooks(unit, CBD_POST, clip_id);
+    return 0;
+}
+
+static void notify_hooks(struct ace_clipboard_unit *unit, LONG command,
                          LONG clip_id)
 {
     struct ClipHookMsg message = {
@@ -187,6 +235,13 @@ static LONG read_clip(struct ace_clipboard_unit *unit,
 {
     size_t remaining;
     size_t actual;
+
+    if (request->io_ClipID == 0) {
+        if (unit->public_unit.cu_UnitNum == PRIMARY_CLIP)
+            (void)ace_clipboard_host_refresh();
+        if (refresh_unit_from_store(unit) != 0)
+            return ACE_CLIPBOARD_IOERR_BADLENGTH;
+    }
 
     pthread_mutex_lock(&unit->lock);
     if (request->io_ClipID == 0) {
@@ -285,6 +340,11 @@ static LONG update_clip(struct ace_clipboard_unit *unit,
         request->io_ClipID = -1;
         return ACE_CLIPBOARD_IOERR_ABORTED;
     }
+    if (ace_clipboard_store_commit(unit->public_unit.cu_UnitNum,
+                                   unit->pending, unit->pending_size) != 0) {
+        pthread_mutex_unlock(&unit->lock);
+        return ACE_CLIPBOARD_IOERR_BADLENGTH;
+    }
     old_data = unit->committed;
     unit->committed = unit->pending;
     unit->committed_size = unit->pending_size;
@@ -382,12 +442,18 @@ LONG ace_clipboard_device_io(struct IORequest *request,
         error = 0;
         break;
     case CBD_CURRENTREADID:
+        if (unit->public_unit.cu_UnitNum == PRIMARY_CLIP)
+            (void)ace_clipboard_host_refresh();
+        (void)refresh_unit_from_store(unit);
         pthread_mutex_lock(&unit->lock);
-        clip_request->io_ClipID = unit->write_id;
+        clip_request->io_ClipID = unit->read_id;
         pthread_mutex_unlock(&unit->lock);
         error = 0;
         break;
     case CBD_CURRENTWRITEID:
+        if (unit->public_unit.cu_UnitNum == PRIMARY_CLIP)
+            (void)ace_clipboard_host_refresh();
+        (void)refresh_unit_from_store(unit);
         pthread_mutex_lock(&unit->lock);
         clip_request->io_ClipID = unit->write_id;
         pthread_mutex_unlock(&unit->lock);
