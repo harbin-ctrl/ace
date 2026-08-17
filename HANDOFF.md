@@ -467,7 +467,7 @@ The full AROS `console.c` task/`BeginIO` implementation is still unnecessary;
 the adapter supplies the `OpenDevice()`/`DoIO()` semantics callers currently
 need. The next work is Stage 5's byte and visual comparison against Ed.
 
-### Stage 5: ET fidelity pass
+### Stage 5: ET fidelity pass (implemented slice)
 
 Use the staged channel and trace corpus to compare ET against AmigaOS 3.1
 ED: startup, raw-mode entry/exit, public size queries, resize reports, mode
@@ -475,6 +475,16 @@ switching, cursor movement, screen redraws, and shutdown. Any byte-level
 exception should be documented as either an intentional ACE transport detail
 or corrected in the appropriate channel/handler/device layer, not patched
 inside ET to compensate for a lower-layer mismatch.
+
+The first saved-buffer comparison is now real rather than inferred. The fresh
+FS-UAE AmigaOS 3.1 ED 2.00 probe in `tools/ed-amiga-probe` established that a
+missing file starts with one blank line, that `X` saves that line, and that
+`U` does not partially undo an `I`/`A` structural line insertion. ET now
+matches those bytes at the editor/buffer boundary. `tests/tine_test.sh`
+replays the golden cases for a new file, `I`/`A`, `U` after `I`, and the
+existing ED compatibility corpus. The public size-query and duplicate-reply
+PTY test remains separate because its bytes belong to the staged console
+channel rather than the editor buffer.
 
 ## Child-side console input and raw mode
 

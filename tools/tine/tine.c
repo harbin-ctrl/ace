@@ -64,9 +64,15 @@ loadfile(const char *fn)
     errno = 0;
     cmd_if(editor, &editor->docview, &a);
     int saved_errno = errno;
-    if (saved_errno == ENOENT)
+    if (saved_errno == ENOENT) {
+        /* ED opens a missing file as a one-line blank document.  Keeping
+         * that sentinel line matters even when the first operation is X:
+         * a newly created file then contains its terminating blank line,
+         * and I/A/U retain ED's line-relative behavior. */
+        if (!insertline(editor->docview.b, 0))
+            quit("Out of memory\n", EXIT_FAILURE);
         error(editor, "Creating new file");
-    else if (saved_errno == EILSEQ)
+    } else if (saved_errno == EILSEQ)
         error(editor, "Binary file");
     free(s);
 }

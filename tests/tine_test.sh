@@ -92,9 +92,41 @@ env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
     ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-ed-args \
     "$repo_dir/build/ED" FROM SYS:C/from.txt WITH SYS:C/with.cmd TABS 5 \
     > /dev/null 2>&1 || fail 'ED argument compatibility failed'
-printf 'a    b\n' > "$test_dir/expected"
+printf 'a    b\n\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/from.txt" "$test_dir/expected" ||
     fail 'ED FROM/WITH/TABS produced the wrong file'
+
+# ED 2.00 opens a missing file with one blank line.  Its line insertion
+# commands preserve that line, and U does not partially undo a structural
+# I/A insertion.  These bytes are the golden results from the real
+# AmigaOS 3.1 ED 2.00 probe in tools/ed-amiga-probe.
+printf 'I/alpha/\nA/beta/\nX\n' > "$sys_dir/C/new-file.cmd"
+env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
+    ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-new-file-corpus \
+    "$repo_dir/build/ED" FROM SYS:C/new-file.txt WITH SYS:C/new-file.cmd \
+    > /dev/null 2>&1 || fail 'ED new-file corpus session failed'
+printf 'alpha\nbeta\n\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/new-file.txt" "$test_dir/expected" ||
+    fail 'ED new-file line insertion differs from AmigaOS 3.1'
+
+printf 'X\n' > "$sys_dir/C/new-empty.cmd"
+env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
+    ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-new-empty-corpus \
+    "$repo_dir/build/ED" FROM SYS:C/new-empty.txt WITH SYS:C/new-empty.cmd \
+    > /dev/null 2>&1 || fail 'ED empty-new-file corpus session failed'
+printf '\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/new-empty.txt" "$test_dir/expected" ||
+    fail 'ED empty new-file output differs from AmigaOS 3.1'
+
+printf 'I/abc/\nU\nX\n' > "$sys_dir/C/undo-insert.cmd"
+env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
+    ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-undo-insert-corpus \
+    "$repo_dir/build/ED" FROM SYS:C/undo-insert.txt \
+    WITH SYS:C/undo-insert.cmd > /dev/null 2>&1 ||
+    fail 'ED undo-insert corpus session failed'
+printf 'abc\n\n' > "$test_dir/expected"
+cmp -s "$sys_dir/C/undo-insert.txt" "$test_dir/expected" ||
+    fail 'ED U partially undid a line insertion'
 
 # A missing file is a normal ED session, not an input-file error.
 printf 'Q\n' > "$sys_dir/C/quit.cmd"

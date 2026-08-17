@@ -317,6 +317,21 @@ undo(BUFFER *b, lineno line, POS *p)
         b->j->a == IL || b->j->a == DL)
         return false;
 
+    /* ED treats inserting or deleting a whole line as an indivisible
+     * structural change.  The journal for I/A contains an IT record above
+     * the IL record, so checking only the newest record would incorrectly
+     * undo the text while leaving the inserted line behind.  U must fail
+     * without changing the buffer when the current edit group contains a
+     * line operation. */
+    bool structural = false;
+    JOURNAL *j = b->j;
+    for (; j && j->a != MA && j->p.l == line; j = j->prev) {
+        if (j->a == IL || j->a == DL)
+            structural = true;
+    }
+    if (structural && j && j->a == MA)
+        return false;
+
     bool rc = true;
     while (b->j && b->j->a != MA && b->j->p.l == line &&
            (b->j->a == IT || b->j->a == DT) && rc){

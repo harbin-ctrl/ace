@@ -1152,10 +1152,13 @@ COMMAND(ty, NOFLAGS) /* type in characters */
 END
 
 COMMAND(u, CLEARSBLOCK) /* undo */
-    if (!b->j)
-        ERROR("Nothing to undo");
-    if (!undo(b, p.l, &p))
-        ERROR("Nothing to undo");
+    /* ED reports that there is nothing to undo, but a WITH command file
+     * continues to its following command.  In particular, U after I/A must
+     * leave the inserted line intact and still allow a later X to save it. */
+    if (!b->j || !undo(b, p.l, &p)) {
+        error(e, "Nothing to undo");
+        goto endfunc;
+    }
     v->p = p;
 END
 
