@@ -1919,6 +1919,99 @@ BPTR OpenFromLock(BPTR handle)
     return (BPTR)file;
 }
 
+BPTR DupLockFromFH(BPTR fh)
+{
+    if (!fh)
+        return BNULL;
+
+    int fd = fileno((FILE *)fh);
+    if (fd < 0)
+        return BNULL;
+
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+
+    char link_path[PATH_MAX];
+    ssize_t link_len = readlink(proc_path, link_path, sizeof(link_path) - 1);
+    if (link_len <= 0)
+        return BNULL;
+    link_path[link_len] = '\0';
+
+    return native_lock_host_path(link_path);
+}
+
+LONG NameFromFH(BPTR fh, STRPTR buffer, LONG length)
+{
+    if (!fh || !buffer || length <= 0)
+        return 0;
+
+    int fd = fileno((FILE *)fh);
+    if (fd < 0)
+        return 0;
+
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+
+    char link_path[PATH_MAX];
+    ssize_t link_len = readlink(proc_path, link_path, sizeof(link_path) - 1);
+    if (link_len <= 0)
+        return 0;
+    link_path[link_len] = '\0';
+
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    if (runtime_dir) {
+        char pipe_prefix[PATH_MAX];
+        snprintf(pipe_prefix, sizeof(pipe_prefix), "%s/ace-pipes/", runtime_dir);
+        size_t prefix_len = strlen(pipe_prefix);
+        if (strncmp(link_path, pipe_prefix, prefix_len) == 0) {
+            snprintf((char *)buffer, length, "PIPE:%s", link_path + prefix_len);
+            return DOSTRUE;
+        }
+    }
+    return 0;
+}
+
+static BPTR native_pipe_open(CONST_STRPTR name, LONG mode)
+{
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    if (!runtime_dir) {
+        native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        return BNULL;
+    }
+
+    char pipe_dir[PATH_MAX];
+    snprintf(pipe_dir, sizeof(pipe_dir), "%s/ace-pipes", runtime_dir);
+    mkdir(pipe_dir, 0700);
+
+    char pipe_path[PATH_MAX];
+    if (strcmp((const char *)name, "PIPE:") == 0 || strcmp((const char *)name, "PIPE:*") == 0) {
+        static int pipe_counter = 1;
+        snprintf(pipe_path, sizeof(pipe_path), "%.4000s/pipe-%d-%d", pipe_dir, getpid(), pipe_counter++);
+    } else {
+        snprintf(pipe_path, sizeof(pipe_path), "%.4000s/%.50s", pipe_dir, name + 5);
+    }
+
+    mkfifo(pipe_path, 0600);
+
+    int fd = open(pipe_path, O_RDWR);
+    if (fd < 0) {
+        native_ioerr = errno;
+        return BNULL;
+    }
+
+    const char *access = mode == MODE_NEWFILE ? "wb" :
+                         mode == MODE_READWRITE ? "r+b" : "rb";
+    FILE *file = fdopen(fd, access);
+    if (!file) {
+        native_ioerr = errno;
+        close(fd);
+        return BNULL;
+    }
+
+    native_ioerr = 0;
+    return (BPTR)file;
+}
+
 BPTR Open(CONST_STRPTR name, LONG mode)
 {
     const char *access = mode == MODE_NEWFILE ? "wb" :
@@ -1931,6 +2024,9 @@ BPTR Open(CONST_STRPTR name, LONG mode)
        something else, and errno is only meaningful immediately after the call
        that set it. */
     int open_errno = 0;
+
+    if (name && strncasecmp((const char *)name, "PIPE:", 5) == 0)
+        return native_pipe_open(name, mode);
 
     if (name && (strncasecmp(name, "CON:", 4) == 0 ||
                  strncasecmp(name, "CONSOLE:", 8) == 0 ||

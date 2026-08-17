@@ -21,6 +21,8 @@
 
 #include <exec/types.h>
 #include <dos/dos.h>
+#include <dos/dostags.h>
+#include <utility/tagitem.h>
 
 /* AROS puts the entry point in its own section and keeps the version string
    alive against the linker; neither applies here. __unused is the one that

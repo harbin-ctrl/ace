@@ -9,6 +9,7 @@ struct TagItem {
 };
 
 #define TAG_DONE 0
+#define TAG_END TAG_DONE
 #define TAG_USER 0x80000000UL
 
 #endif
