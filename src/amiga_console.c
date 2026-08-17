@@ -1603,6 +1603,8 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event,
 
     clear_selection(console);
     if (!ace_console_device_scrollback_active(console->device)) {
+        if (direction < 0)
+            return TRUE;
         (void)ace_console_device_set_scrollback(console->device, 0);
         refresh_console_title(console);
         gtk_widget_queue_draw(console->drawing_area);
