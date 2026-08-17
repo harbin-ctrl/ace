@@ -68,6 +68,50 @@
 #define DOS_RDARGS       2
 #define DOS_EXALLCONTROL 3
 
+/* Volume information has two AROS-compatible forms.  Classic AmigaDOS
+   callers use the 32-bit block counters; ACE's wider host-facing path uses
+   the 64-bit counters from dos64.library while keeping the rest of the
+   structure compatible. */
+#define ID_WRITE_PROTECTED 80
+#define ID_VALIDATING      81
+#define ID_VALIDATED       82
+
+#define ID_NO_DISK_PRESENT  ((LONG)-1)
+#define ID_UNREADABLE_DISK  ((LONG)0x42414400u)
+#define ID_DOS_DISK         ((LONG)0x444f5300u)
+#define ID_FFS_DISK         ((LONG)0x444f5301u)
+#define ID_NOT_REALLY_DOS   ((LONG)0x4e444f53u)
+#define ID_FAT_DISK         ((LONG)0x46415400u)
+#define ID_EXT2_DISK        ((LONG)0x45585432u)
+
+struct InfoData64 {
+    LONG  id_NumSoftErrors;
+    LONG  id_UnitNumber;
+    LONG  id_DiskState;
+    UQUAD id_NumBlocks;
+    UQUAD id_NumBlocksUsed;
+    LONG  id_BytesPerBlock;
+    LONG  id_DiskType;
+    BPTR  id_VolumeNode;
+    IPTR  id_InUse;
+};
+
+struct InfoData32 {
+    LONG  id_NumSoftErrors;
+    LONG  id_UnitNumber;
+    LONG  id_DiskState;
+    LONG  id_NumBlocks;
+    LONG  id_NumBlocksUsed;
+    LONG  id_BytesPerBlock;
+    LONG  id_DiskType;
+    BPTR  id_VolumeNode;
+    IPTR  id_InUse;
+};
+
+/* ACE implements the classic AmigaDOS ABI here.  A future dos64.library
+   surface can select InfoData64 exactly as AROS does with __DOS64. */
+#define InfoData InfoData32
+
 #define BNULL ((BPTR)0)
 
 #define LOCK_SAME         0
@@ -241,6 +285,8 @@ LONG UnLock(BPTR lock);
 BPTR CreateDir(CONST_STRPTR name);
 LONG ChangeMode(LONG type, BPTR object, LONG mode);
 LONG Examine(BPTR lock, struct FileInfoBlock *fib);
+LONG Info(BPTR lock, struct InfoData *parameter_block);
+LONG Info64(BPTR lock, struct InfoData64 *parameter_block);
 BPTR CurrentDir(BPTR lock);
 LONG NameFromLock(BPTR lock, STRPTR buffer, LONG length);
 void SetCurrentDirName(CONST_STRPTR name);

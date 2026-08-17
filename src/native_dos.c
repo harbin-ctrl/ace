@@ -8,6 +8,8 @@
 #include <stdarg.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/vfs.h>
 #include <sys/xattr.h>
 #include <string.h>
 #include <strings.h>
@@ -1254,6 +1256,95 @@ BPTR native_lock_host_path(const char *path)
     native_init_lock(lock, path, SHARED_LOCK);
     native_ioerr = 0;
     return lock;
+}
+
+static struct native_lock *native_info_lock(BPTR handle)
+{
+    if (handle)
+        return handle;
+    if (!native_current_dir && native_sync_current_dir() != 0)
+        return NULL;
+    return native_current_dir;
+}
+
+static LONG native_info_disk_type(const char *path)
+{
+    struct statfs filesystem;
+
+    if (statfs(path, &filesystem) != 0)
+        return ID_NOT_REALLY_DOS;
+    /* Linux filesystem magic values are deliberately kept here rather than
+       exposed through the public DOS structure.  The AROS IDs are the useful
+       compatibility description for the two families ACE currently mounts. */
+    switch ((unsigned long)filesystem.f_type) {
+    case 0xEF53: /* ext2/ext3/ext4 */
+        return ID_EXT2_DISK;
+    case 0x0000EF51: /* old VFAT/MS-DOS magic */
+    case 0x4d44:     /* MSDOS filesystem */
+        return ID_FAT_DISK;
+    default:
+        return ID_NOT_REALLY_DOS;
+    }
+}
+
+static LONG native_fill_info64(BPTR handle, struct InfoData64 *info)
+{
+    struct native_lock *lock = native_info_lock(handle);
+    struct statvfs statistics;
+    uint64_t block_size;
+    uint64_t free_blocks;
+
+    if (!lock || !info || statvfs(lock->path, &statistics) != 0) {
+        native_ioerr = errno ? errno : ERROR_INVALID_LOCK;
+        return DOSFALSE;
+    }
+    memset(info, 0, sizeof(*info));
+    block_size = statistics.f_frsize ? statistics.f_frsize :
+                 (statistics.f_bsize ? statistics.f_bsize : 1);
+    free_blocks = (uint64_t)statistics.f_bfree;
+    info->id_NumSoftErrors = 0;
+    info->id_UnitNumber = 0;
+    info->id_DiskState = (statistics.f_flag & ST_RDONLY) ?
+                         ID_WRITE_PROTECTED : ID_VALIDATED;
+    info->id_NumBlocks = (uint64_t)statistics.f_blocks;
+    info->id_NumBlocksUsed = info->id_NumBlocks >= free_blocks ?
+                             info->id_NumBlocks - free_blocks : 0;
+    info->id_BytesPerBlock = block_size > INT32_MAX ? INT32_MAX :
+                             (LONG)block_size;
+    info->id_DiskType = native_info_disk_type(lock->path);
+    info->id_VolumeNode = NULL;
+    info->id_InUse = 1;
+    native_ioerr = 0;
+    return DOSTRUE;
+}
+
+LONG Info64(BPTR handle, struct InfoData64 *parameter_block)
+{
+    return native_fill_info64(handle, parameter_block);
+}
+
+LONG Info(BPTR handle, struct InfoData *parameter_block)
+{
+    struct InfoData64 wide;
+
+    if (!parameter_block) {
+        native_ioerr = ERROR_INVALID_LOCK;
+        return DOSFALSE;
+    }
+    if (native_fill_info64(handle, &wide) == DOSFALSE)
+        return DOSFALSE;
+    parameter_block->id_NumSoftErrors = wide.id_NumSoftErrors;
+    parameter_block->id_UnitNumber = wide.id_UnitNumber;
+    parameter_block->id_DiskState = wide.id_DiskState;
+    /* This is the same narrowing AROS performs when Info64() falls back to
+       a classic handler: preserve the low 32 bits for AmigaDOS callers. */
+    parameter_block->id_NumBlocks = (LONG)(ULONG)wide.id_NumBlocks;
+    parameter_block->id_NumBlocksUsed = (LONG)(ULONG)wide.id_NumBlocksUsed;
+    parameter_block->id_BytesPerBlock = wide.id_BytesPerBlock;
+    parameter_block->id_DiskType = wide.id_DiskType;
+    parameter_block->id_VolumeNode = wide.id_VolumeNode;
+    parameter_block->id_InUse = wide.id_InUse;
+    return DOSTRUE;
 }
 
 static void free_cli_path_list(BPTR head)
