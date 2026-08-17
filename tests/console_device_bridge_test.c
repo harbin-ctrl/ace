@@ -103,6 +103,25 @@ static void write_text(struct ace_console_device *device, const char *text)
     ace_console_device_write(device, text, strlen(text));
 }
 
+static void assert_clear_copy(const unsigned char *sequence, size_t length,
+                              const char *expected, int width, int height,
+                              const char *const *font_candidates)
+{
+    struct ace_console_device *device;
+    char *copied;
+    size_t copied_length;
+
+    device = ace_console_device_open(width, height, font_candidates, 16);
+    assert(device != NULL);
+    ace_console_device_write(device, sequence, length);
+    copied = ace_console_device_copy_all(device, &copied_length);
+    assert(copied != NULL);
+    assert(copied_length == strlen(expected));
+    assert(strcmp(copied, expected) == 0);
+    free(copied);
+    ace_console_device_close(device);
+}
+
 int main(void)
 {
     struct ace_console_device *device;
@@ -141,6 +160,47 @@ int main(void)
         assert(strcmp(copied, "AB\n") == 0);
         free(copied);
         ace_console_device_close(controls);
+    }
+
+    /* These are the documented AmigaOS clear-screen spellings.  The native
+     * and ESC-[ CSI introducers must produce the same retained text, and
+     * RESET TO INITIAL STATE must be treated as a clear even though the
+     * imported AROS class does not implement that command. */
+    {
+        static const unsigned char form_feed[] = {
+            'b', 'e', 'f', 'o', 'r', 'e', '\n', 0x0c,
+            'a', 'f', 't', 'e', 'r', '\n'
+        };
+        static const unsigned char native_home_erase[] = {
+            'b', 'e', 'f', 'o', 'r', 'e', '\n', 0x9b, 'H',
+            0x9b, 'J', 'a', 'f', 't', 'e', 'r', '\n'
+        };
+        static const unsigned char ansi_home_erase[] = {
+            'b', 'e', 'f', 'o', 'r', 'e', '\n', '\033', '[', '0', ';', '0', 'H',
+            '\033', '[', 'J', 'a', 'f', 't', 'e', 'r', '\n'
+        };
+        static const unsigned char reset_display[] = {
+            'b', 'e', 'f', 'o', 'r', 'e', '\n', '\033', 'c',
+            'a', 'f', 't', 'e', 'r', '\n'
+        };
+        static const unsigned char parameterized_erase[] = {
+            'b', 'e', 'f', 'o', 'r', 'e', '\n', 0x9b, '2', 'J',
+            'a', 'f', 't', 'e', 'r', '\n'
+        };
+
+        assert_clear_copy(form_feed, sizeof(form_feed), "after\n", width,
+                          height, font_candidates);
+        assert_clear_copy(native_home_erase, sizeof(native_home_erase),
+                          "after\n", width, height, font_candidates);
+        assert_clear_copy(ansi_home_erase, sizeof(ansi_home_erase), "after\n",
+                          width, height, font_candidates);
+        assert_clear_copy(reset_display, sizeof(reset_display), "after\n",
+                          width, height, font_candidates);
+        /* CSI 2J is not the AmigaOS 3.1 ED command; it must not silently
+         * acquire later ANSI semantics in the retained model. */
+        assert_clear_copy(parameterized_erase, sizeof(parameterized_erase),
+                          "before\nafter\n", width, height,
+                          font_candidates);
     }
 
     /* A fresh console has been painted, so it has damage to report; taking it

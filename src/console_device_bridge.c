@@ -620,6 +620,14 @@ static int text_newline(struct console_text_document *document)
 
 static void text_clear_all(struct console_text_document *document)
 {
+    for (size_t index = 1; index < document->line_count; index++) {
+        free(document->lines[index].data);
+        document->lines[index].data = NULL;
+        document->lines[index].length = 0;
+        document->lines[index].capacity = 0;
+    }
+    if (document->line_count != 0)
+        document->line_count = 1;
     for (size_t index = 0; index < document->line_count; index++)
         document->lines[index].length = 0;
     document->cursor_x = 0;
@@ -649,6 +657,25 @@ static void text_erase_line(struct console_text_document *document, int mode)
     } else if (document->cursor_x < line->length) {
         line->length = document->cursor_x;
     }
+}
+
+static void text_erase_display(struct console_text_document *document)
+{
+    struct console_text_line *line;
+
+    if (ensure_text_line(document, document->cursor_y) != 0)
+        return;
+    line = &document->lines[document->cursor_y];
+    if (document->cursor_x < line->length)
+        line->length = document->cursor_x;
+    for (size_t index = document->cursor_y + 1;
+         index < document->line_count; index++) {
+        free(document->lines[index].data);
+        document->lines[index].data = NULL;
+        document->lines[index].length = 0;
+        document->lines[index].capacity = 0;
+    }
+    document->line_count = document->cursor_y + 1;
 }
 
 static void text_csi(struct console_text_document *document, int final,
@@ -708,8 +735,13 @@ static void text_csi(struct console_text_document *document, int final,
         (void)ensure_text_line(document, document->cursor_y);
         break;
     case 'J':
-        if (csi_argument(parameters, count, 0, 0) == 2)
-            text_clear_all(document);
+        /* AmigaOS 3.1's ED command is parameterless and erases from the
+         * cursor through the end of the display.  A home followed by CSI J
+         * is therefore the native full-window clear idiom.  Do not import
+         * later ANSI CSI 2J semantics here: the Amiga console parser does
+         * not define a parameter for J. */
+        if (count == 0 || (count == 1 && parameters[0] < 0))
+            text_erase_display(document);
         break;
     case 'K':
         text_erase_line(document, csi_argument(parameters, count, 0, 0));
@@ -811,6 +843,9 @@ static size_t text_skip_escape(struct console_text_document *document,
         document->cursor_x = document->saved_x;
         document->cursor_y = document->saved_y;
         (void)ensure_text_line(document, document->cursor_y);
+    } else if (data[index] == 'c') {
+        /* RIS is the other documented Amiga clear-screen spelling. */
+        text_clear_all(document);
     }
     return index + 1;
 }
@@ -838,6 +873,9 @@ static int build_text_document(struct ace_console_device *device,
                 goto fail;
         } else if (byte == '\r') {
             document->cursor_x = 0;
+        } else if (byte == 0x0c) {
+            /* FORM FEED clears the window and homes the cursor. */
+            text_clear_all(document);
         } else if (byte == '\b') {
             if (document->cursor_x != 0)
                 document->cursor_x--;
