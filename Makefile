@@ -299,7 +299,7 @@ $(LHA_AROS_SOURCE_STAMP): $(LHA_AROS_ARCHIVE) | $(BUILD)
 	$(TAR) --extract --gzip --file "$<" --strip-components=1 --directory "$(LHA_AROS_DIR)"
 	touch "$@"
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h src/native_console_endpoint.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_amiga_posix.h \
@@ -516,7 +516,9 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/iffparse-clipboard.o \
                     $(BUILD)/native-list-compat.o \
                     $(BUILD)/ace-vim-runtime.o \
-                    $(BUILD)/console_channel.o | $(BUILD)
+                    $(BUILD)/console_channel.o \
+                    $(BUILD)/console_device.o $(BUILD)/con_handler.o \
+                    $(BUILD)/native_console_endpoint.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
 
 $(BUILD)/native-list-compat.o: src/native_list_compat.c | $(BUILD)
@@ -586,6 +588,12 @@ $(BUILD)/console_device.o: src/console_device.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
 
 $(BUILD)/con_handler.o: src/con_handler.c | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
+
+$(BUILD)/native_console_endpoint.o: src/native_console_endpoint.c \
+                                    src/native_console_endpoint.h \
+                                    src/con_handler.h src/console_device.h \
+                                    src/console_channel.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -Isrc -c $< -o $@
 
 $(BUILD)/aros-con-handler.o: $(AROS_CON_HANDLER_SRC) compat/aros-real/include/ace_handler_types.h | $(BUILD)

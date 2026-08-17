@@ -39,6 +39,8 @@
 #include "aros_exec_runtime.h"
 #include "clipboard_bridge.h"
 #include "console_channel.h"
+#include "console_device.h"
+#include "native_console_endpoint.h"
 
 struct CommandLineInterface *Cli(void);
 
@@ -117,6 +119,9 @@ static int native_input_prefix_loaded;
 static struct ace_aros_console_editor *native_console_editor;
 static int native_console_editor_attempted;
 static struct ace_console_channel native_current_console_channel;
+static struct native_console_endpoint *native_current_console_endpoint;
+static struct native_console_endpoint *native_selected_input_endpoint;
+static struct native_console_endpoint *native_selected_output_endpoint;
 /*
  * A shell started to run one script and then stop is not interactive, even
  * though its standard input is the same kind of handle an interactive one
@@ -165,6 +170,8 @@ static void native_init_stdio_handles(void)
     ace_console_channel_attach(&native_current_console_channel,
                                fileno(stdin), fileno(stdout));
     native_stdio_initialized = 1;
+    native_current_console_endpoint = native_console_endpoint_open(
+        &native_current_console_channel);
 }
 
 static bool native_input_is_raw(void)
@@ -209,7 +216,7 @@ static void native_console_editor_output(void)
 {
     unsigned char output[4096];
     size_t length;
-    FILE *file = selected_output();
+    BPTR handle = Output();
 
     if (!native_console_editor)
         return;
@@ -217,13 +224,11 @@ static void native_console_editor_output(void)
         length = ace_aros_console_editor_take_output(
             native_console_editor, output, sizeof(output));
         if (length != 0) {
-            if (fwrite(output, 1, length, file) != length) {
-                native_ioerr = errno;
+            if (Write(handle, output, (LONG)length) != (LONG)length)
                 return;
-            }
             /* Keystroke echo has to reach the GUI before the next byte is
                read. The normal shell output path may remain buffered. */
-            fflush(file);
+            (void)Flush(handle);
         }
     } while (length != 0);
 }
@@ -728,6 +733,7 @@ struct native_console_handle {
     FILE *input;
     FILE *output;
     struct ace_console_channel *channel;
+    struct native_console_endpoint *endpoint;
     struct native_console_instance *instance;
     char specification[PATH_MAX];
 };
@@ -885,6 +891,7 @@ BPTR native_console_open(const char *specification)
         handle->input = stdin;
         handle->output = stdout;
         handle->channel = &native_current_console_channel;
+        handle->endpoint = native_current_console_endpoint;
         return handle;
     }
     instance = native_console_create_instance(handle->specification);
@@ -894,6 +901,15 @@ BPTR native_console_open(const char *specification)
     }
     handle->instance = instance;
     handle->channel = &instance->channel;
+    handle->endpoint = native_console_endpoint_open(handle->channel);
+    if (!handle->endpoint) {
+        close(instance->fd);
+        ace_console_channel_close(&instance->channel);
+        free(instance);
+        free(handle);
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return BNULL;
+    }
     handle->input = fdopen(dup(instance->fd), "rb");
     handle->output = fdopen(dup(instance->fd), "wb");
     if (!handle->input || !handle->output) {
@@ -901,6 +917,7 @@ BPTR native_console_open(const char *specification)
             fclose(handle->input);
         if (handle->output)
             fclose(handle->output);
+        native_console_endpoint_close(handle->endpoint);
         close(instance->fd);
         ace_console_channel_close(&instance->channel);
         free(instance);
@@ -971,6 +988,7 @@ void native_console_close(BPTR handle)
 
         fclose(console->input);
         fclose(console->output);
+        native_console_endpoint_close(console->endpoint);
         close(instance->fd);
         ace_console_channel_close(&instance->channel);
         free(instance);
@@ -989,6 +1007,39 @@ static struct ace_console_channel *native_channel_for_handle(BPTR handle)
         handle == (BPTR)&native_stdin_handle.amiga ||
         handle == (BPTR)&native_stdout_handle.amiga)
         return &native_current_console_channel;
+    return NULL;
+}
+
+static struct native_console_endpoint *native_endpoint_for_handle(BPTR handle)
+{
+    struct native_console_handle *console = native_console_pointer(handle);
+
+    native_init_stdio_handles();
+    if (console)
+        return console->endpoint;
+    if (handle == (BPTR)stdin || handle == (BPTR)stdout ||
+        handle == (BPTR)stderr || handle == (BPTR)&native_stdin_handle.amiga ||
+        handle == (BPTR)&native_stdout_handle.amiga ||
+        handle == (BPTR)&native_stderr_handle.amiga)
+        return native_current_console_endpoint;
+    if (native_selected_input_endpoint &&
+        native_input && handle == (BPTR)native_input)
+        return native_selected_input_endpoint;
+    if (native_selected_output_endpoint &&
+        native_output && handle == (BPTR)native_output)
+        return native_selected_output_endpoint;
+    return NULL;
+}
+
+static struct native_console_endpoint *native_endpoint_for_file(FILE *file)
+{
+    native_init_stdio_handles();
+    if (file == stdin || file == stdout || file == stderr)
+        return native_current_console_endpoint;
+    if (native_selected_input_endpoint && file == native_input)
+        return native_selected_input_endpoint;
+    if (native_selected_output_endpoint && file == native_output)
+        return native_selected_output_endpoint;
     return NULL;
 }
 
@@ -2381,10 +2432,17 @@ void native_set_interactive(int interactive)
 LONG SetMode(BPTR handle, LONG mode)
 {
     struct ace_console_channel *channel = native_channel_for_handle(handle);
+    struct native_console_endpoint *endpoint =
+        native_endpoint_for_handle(handle);
 
     if (channel && (native_console_is_handle(handle) ||
                     handle == (BPTR)&native_stdin_handle.amiga ||
                     handle == (BPTR)stdin)) {
+        if (endpoint && native_console_endpoint_set_raw(endpoint, mode != 0) !=
+            AMIGA_IOERR_OK) {
+            native_ioerr = ERROR_ACTION_NOT_KNOWN;
+            return DOSFALSE;
+        }
         ace_console_channel_set_raw(channel, mode != 0);
         return DOSTRUE;
     }
@@ -2425,12 +2483,18 @@ LONG WaitForChar(BPTR handle, LONG timeout)
 LONG FPutC(BPTR handle, LONG character)
 {
     struct native_console_handle *console = native_console_pointer(handle);
+    struct native_console_endpoint *endpoint =
+        native_endpoint_for_handle(handle);
     unsigned char byte = (unsigned char)character;
     FILE *file;
 
-    if (console) {
-        if (ace_console_channel_send(console->channel, &byte, 1) != 0) {
-            native_ioerr = errno;
+    if (console || endpoint) {
+        size_t actual = 0;
+        int error = native_console_endpoint_write(endpoint, &byte, 1,
+                                                  &actual);
+
+        if (error != AMIGA_IOERR_OK || actual != 1) {
+            native_ioerr = error != AMIGA_IOERR_OK ? error : ERROR_WRITE_PROTECTED;
             return -1;
         }
         return character;
@@ -2446,12 +2510,18 @@ LONG FPutC(BPTR handle, LONG character)
 LONG FPuts(BPTR handle, CONST_STRPTR string)
 {
     struct native_console_handle *console = native_console_pointer(handle);
+    struct native_console_endpoint *endpoint =
+        native_endpoint_for_handle(handle);
     FILE *file;
 
-    if (console) {
-        if (ace_console_channel_send(console->channel, string,
-                                     strlen((const char *)string)) != 0) {
-            native_ioerr = errno;
+    if (console || endpoint) {
+        size_t actual = 0;
+        size_t length = strlen((const char *)string);
+        int error = native_console_endpoint_write(endpoint, string, length,
+                                                  &actual);
+
+        if (error != AMIGA_IOERR_OK || actual != length) {
+            native_ioerr = error != AMIGA_IOERR_OK ? error : ERROR_WRITE_PROTECTED;
             return -1;
         }
         return 0;
@@ -2501,9 +2571,11 @@ STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 LONG Flush(BPTR handle)
 {
     struct native_console_handle *console = native_console_pointer(handle);
+    struct native_console_endpoint *endpoint =
+        native_endpoint_for_handle(handle);
     FILE *file;
 
-    if (console)
+    if (console || endpoint)
         return DOSTRUE;
     file = as_file(handle);
 
@@ -2852,7 +2924,7 @@ BOOL SetPrompt(CONST_STRPTR prompt)
  */
 static LONG native_vprintf(CONST_STRPTR format, const IPTR *data)
 {
-    FILE *output = selected_output();
+    BPTR output = Output();
     LONG written = 0;
     size_t argument = 0;
 
@@ -2869,7 +2941,7 @@ static LONG native_vprintf(CONST_STRPTR format, const IPTR *data)
         char conversion;
 
         if (*format != '%') {
-            if (fputc((unsigned char)*format++, output) == EOF)
+            if (FPutC(output, (unsigned char)*format++) < 0)
                 return DOSFALSE;
             written++;
             continue;
@@ -3001,27 +3073,27 @@ static LONG native_vprintf(CONST_STRPTR format, const IPTR *data)
             length = maximum;
         if (!left) {
             while (length < minimum) {
-                if (fputc(fill, output) == EOF)
+                if (FPutC(output, fill) < 0)
                     return DOSFALSE;
                 written++;
                 minimum--;
             }
         }
         for (ULONG i = 0; i < length; i++) {
-            if (fputc((unsigned char)text[i], output) == EOF)
+            if (FPutC(output, (unsigned char)text[i]) < 0)
                 return DOSFALSE;
             written++;
         }
         if (left) {
             while (length < minimum) {
-                if (fputc(fill, output) == EOF)
+                if (FPutC(output, fill) < 0)
                     return DOSFALSE;
                 written++;
                 minimum--;
             }
         }
     }
-    return written;
+    return Flush(output) == DOSFALSE ? DOSFALSE : written;
 }
 
 LONG VPrintf(CONST_STRPTR format, APTR arguments)
@@ -3236,21 +3308,39 @@ BOOL DeleteVar(CONST_STRPTR name, LONG flags)
 LONG Printf(CONST_STRPTR format, ...)
 {
     va_list arguments;
-    int result;
+    va_list copy;
+    int length;
+    char *output;
+    LONG written;
 
     va_start(arguments, format);
-    result = vfprintf(selected_output(), format, arguments);
+    va_copy(copy, arguments);
+    length = vsnprintf(NULL, 0, format, copy);
+    va_end(copy);
+    if (length < 0) {
+        va_end(arguments);
+        native_ioerr = ERROR_LINE_TOO_LONG;
+        return DOSFALSE;
+    }
+    output = malloc((size_t)length + 1);
+    if (!output) {
+        va_end(arguments);
+        native_ioerr = ERROR_NO_FREE_STORE;
+        return DOSFALSE;
+    }
+    (void)vsnprintf(output, (size_t)length + 1, format, arguments);
     va_end(arguments);
-    return result < 0 ? DOSFALSE : result;
+    written = Write(Output(), output, length);
+    free(output);
+    return written == length ? written : DOSFALSE;
 }
 
 LONG PutStr(CONST_STRPTR string)
 {
-    if (fputs(string, selected_output()) == EOF) {
-        native_ioerr = errno;
-        return DOSFALSE;
-    }
-    return DOSTRUE;
+    LONG length = string ? (LONG)strlen((const char *)string) : 0;
+
+    return Write(Output(), (APTR)string, length) == length ?
+           DOSTRUE : DOSFALSE;
 }
 
 #include "aros_fault.c"
@@ -3260,9 +3350,26 @@ LONG FGetC(BPTR handle)
     struct native_console_handle *console = native_console_pointer(handle);
     FILE *file = console ? console->input :
         (handle ? as_file(handle) : selected_input());
+    struct native_console_endpoint *endpoint = console ? console->endpoint :
+        (handle ? native_endpoint_for_handle(handle) :
+         native_endpoint_for_file(file));
     int character;
 
-    character = native_input_getc(file);
+    if (endpoint && (file != stdin || native_input_is_raw())) {
+        unsigned char byte;
+        size_t actual = 0;
+        int error = native_console_endpoint_read(endpoint, &byte, 1,
+                                                 &actual);
+
+        if (error != AMIGA_IOERR_OK || actual == 0) {
+            native_ioerr = error != AMIGA_IOERR_OK ? error :
+                           ERROR_OBJECT_NOT_FOUND;
+            return ENDSTREAMCH;
+        }
+        character = byte;
+    } else {
+        character = native_input_getc(file);
+    }
 
     if (character == EOF) {
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
@@ -3276,16 +3383,26 @@ LONG FGetC(BPTR handle)
 LONG Read(BPTR handle, APTR buffer, LONG length)
 {
     struct native_console_handle *console = native_console_pointer(handle);
+    struct native_console_endpoint *endpoint;
     size_t result;
     FILE *file = console ? console->input :
         (handle ? as_file(handle) : selected_input());
 
-    if (console) {
-        file = console->input;
-    }
+    endpoint = console ? console->endpoint :
+        (handle ? native_endpoint_for_handle(handle) :
+         native_endpoint_for_file(file));
 
     if (!buffer || length <= 0)
         return 0;
+    if (endpoint && (file != stdin || native_input_is_raw())) {
+        size_t actual = 0;
+        int error = native_console_endpoint_read(endpoint, buffer,
+                                                 (size_t)length, &actual);
+
+        if (error != AMIGA_IOERR_OK)
+            native_ioerr = error;
+        return (LONG)actual;
+    }
     if (file == stdin) {
         size_t index;
 
@@ -3405,6 +3522,10 @@ BPTR SelectInput(BPTR handle)
 
     native_input = console ? console->input : (handle ? as_file(handle) :
                                                stdin);
+    native_selected_input_endpoint = console ? console->endpoint :
+        ((handle == (BPTR)stdin ||
+          handle == (BPTR)&native_stdin_handle.amiga) ?
+         native_current_console_endpoint : NULL);
     return old;
 }
 
@@ -3415,6 +3536,10 @@ BPTR SelectOutput(BPTR handle)
 
     native_output = console ? console->output : (handle ? as_file(handle) :
                                                  stdout);
+    native_selected_output_endpoint = console ? console->endpoint :
+        ((handle == (BPTR)stdout ||
+          handle == (BPTR)&native_stdout_handle.amiga) ?
+         native_current_console_endpoint : NULL);
     return old;
 }
 
