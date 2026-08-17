@@ -510,6 +510,7 @@ $(DOS_RUNTIME_OBJ): $(BUILD)/assign_compat.o \
                     $(BUILD)/aros-console-editor.o \
                     $(BUILD)/aros-con-support.o \
                     $(BUILD)/aros-exec-runtime.o \
+                    $(BUILD)/clipboard-device.o \
                     $(BUILD)/native-list-compat.o \
                     $(BUILD)/ace-vim-runtime.o | $(BUILD)
 	$(CC) $(CFLAGS) -r $^ -o $@
@@ -642,6 +643,9 @@ $(BUILD)/console-channel-test: $(BUILD)/console-channel-test.o $(BUILD)/console_
 $(BUILD)/aros-exec-runtime.o: src/aros_exec_runtime.c src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
+$(BUILD)/clipboard-device.o: src/clipboard_device.c src/clipboard_device.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
+
 $(BUILD)/aros-console-editor.o: src/aros_console_editor.c src/aros_console_editor.h $(AROS_CON_SUPPORT_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) -c $< -o $@
 
@@ -657,7 +661,9 @@ $(BUILD)/exec_compat_bindings.o: src/exec_compat_bindings.c | $(BUILD)
 $(BUILD)/console-device-test: tests/console_device_test.c $(BUILD)/console_device.o $(BUILD)/con_handler.o
 	$(CC) $(CFLAGS) -pthread -Isrc $^ -o $@
 
-$(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c $(BUILD)/aros-exec-runtime.o
+$(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c \
+                                 $(BUILD)/aros-exec-runtime.o \
+                                 $(BUILD)/clipboard-device.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
 
 $(BUILD)/native-input-test: tests/native_input_test.c $(DOS_RUNTIME_OBJ) \
@@ -980,7 +986,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@

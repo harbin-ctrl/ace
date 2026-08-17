@@ -3,12 +3,17 @@
 #include <assert.h>
 #include <string.h>
 
+#include <devices/clipboard.h>
+
 int main(void)
 {
     struct MsgPort *port;
     struct Message message = {0};
     struct IOStdReq *request;
+    struct IOClipReq *clip_writer;
+    struct IOClipReq *clip_reader;
     char buffer[32] = {0};
+    char clip_buffer[32] = {0};
     void *console;
 
     port = CreateMsgPort();
@@ -39,6 +44,64 @@ int main(void)
     assert(WaitIO((struct IORequest *)request) == 0);
     assert(request->io_Actual == 6);
     assert(memcmp(buffer, "input\n", 6) == 0);
+
+    clip_writer = CreateIORequest(port, sizeof(*clip_writer));
+    assert(clip_writer != NULL);
+    assert(OpenDevice("clipboard.device", 0,
+                      (struct IORequest *)clip_writer, 0) == 0);
+
+    clip_writer->io_Command = CMD_WRITE;
+    clip_writer->io_Data = (STRPTR)"FORM";
+    clip_writer->io_Length = 4;
+    clip_writer->io_Offset = 0;
+    clip_writer->io_ClipID = 0;
+    assert(DoIO((struct IORequest *)clip_writer) == 0);
+    assert(clip_writer->io_Actual == 4);
+    assert(clip_writer->io_ClipID != 0);
+
+    clip_writer->io_Data = (STRPTR)"FTXT";
+    clip_writer->io_Length = 4;
+    assert(DoIO((struct IORequest *)clip_writer) == 0);
+    assert(clip_writer->io_Actual == 4);
+
+    clip_writer->io_Command = CMD_UPDATE;
+    clip_writer->io_Data = NULL;
+    clip_writer->io_Length = 0;
+    assert(DoIO((struct IORequest *)clip_writer) == 0);
+    assert(clip_writer->io_ClipID == -1);
+
+    clip_reader = CreateIORequest(port, sizeof(*clip_reader));
+    assert(clip_reader != NULL);
+    assert(OpenDevice("clipboard.device", 0,
+                      (struct IORequest *)clip_reader, 0) == 0);
+
+    clip_reader->io_Command = CMD_READ;
+    clip_reader->io_Data = NULL;
+    clip_reader->io_Length = sizeof(clip_buffer);
+    clip_reader->io_Offset = 0;
+    clip_reader->io_ClipID = 0;
+    assert(DoIO((struct IORequest *)clip_reader) == 0);
+    assert(clip_reader->io_Actual == 8);
+    assert(clip_reader->io_Offset == 8);
+
+    clip_reader->io_Data = clip_buffer;
+    clip_reader->io_Length = sizeof(clip_buffer);
+    clip_reader->io_Offset = 0;
+    clip_reader->io_ClipID = 0;
+    assert(DoIO((struct IORequest *)clip_reader) == 0);
+    assert(clip_reader->io_Actual == 8);
+    assert(memcmp(clip_buffer, "FORMFTXT", 8) == 0);
+
+    clip_reader->io_Data = clip_buffer;
+    clip_reader->io_Length = sizeof(clip_buffer);
+    assert(DoIO((struct IORequest *)clip_reader) == 0);
+    assert(clip_reader->io_Actual == 0);
+    assert(clip_reader->io_ClipID == -1);
+
+    CloseDevice((struct IORequest *)clip_reader);
+    CloseDevice((struct IORequest *)clip_writer);
+    DeleteIORequest((struct IORequest *)clip_reader);
+    DeleteIORequest((struct IORequest *)clip_writer);
 
     CloseDevice((struct IORequest *)request);
     DeleteIORequest((struct IORequest *)request);

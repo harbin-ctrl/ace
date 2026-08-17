@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "aros_exec_runtime.h"
+#include "clipboard_device.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -43,6 +44,7 @@ struct ace_host_unit {
 struct ace_io_state {
     struct IORequest *request;
     struct ace_host_unit *unit;
+    int clipboard;
     pthread_t worker;
     pthread_mutex_t lock;
     pthread_cond_t condition;
@@ -294,6 +296,17 @@ static int host_read(struct ace_io_state *state, void *data, size_t length,
     return 0;
 }
 
+static int io_state_cancelled(void *context)
+{
+    struct ace_io_state *state = context;
+    int aborted;
+
+    pthread_mutex_lock(&state->lock);
+    aborted = state->aborted;
+    pthread_mutex_unlock(&state->lock);
+    return aborted;
+}
+
 static void *io_worker(void *context)
 {
     struct ace_io_state *state = context;
@@ -301,7 +314,11 @@ static void *io_worker(void *context)
     size_t actual = 0;
     LONG error = 0;
 
-    if (state->unit->timer && request->io_Command == TR_ADDREQUEST) {
+    if (state->clipboard) {
+        error = ace_clipboard_device_io(
+            state->request, io_state_cancelled, state);
+        actual = ((struct IOStdReq *)request)->io_Actual;
+    } else if (state->unit->timer && request->io_Command == TR_ADDREQUEST) {
         struct timerequest *timer = (struct timerequest *)request;
         struct timespec delay = {
             .tv_sec = timer->tr_time.tv_secs,
@@ -375,6 +392,8 @@ LONG OpenDevice(CONST_STRPTR name, ULONG unit_number,
     (void)flags;
     if (!name || !request)
         return -1;
+    if (strcmp(name, "clipboard.device") == 0)
+        return ace_clipboard_device_open(unit_number, request);
     if (strcmp(name, "console.device") == 0)
         unit = new_unit(0);
     else if (strcmp(name, TIMERNAME) == 0)
@@ -394,6 +413,10 @@ void CloseDevice(struct IORequest *request)
 
     if (!request)
         return;
+    if (ace_clipboard_device_owns_request(request)) {
+        ace_clipboard_device_close(request);
+        return;
+    }
     unit = unit_from_request(request);
     if (!unit)
         return;
@@ -412,6 +435,11 @@ static struct ace_io_state *new_io_state(struct IORequest *request)
         return NULL;
     state->request = request;
     state->unit = unit_from_request(request);
+    state->clipboard = ace_clipboard_device_owns_request(request);
+    if (!state->unit && !state->clipboard) {
+        free(state);
+        return NULL;
+    }
     pthread_mutex_init(&state->lock, NULL);
     pthread_cond_init(&state->condition, NULL);
     pthread_mutex_lock(&io_lock);
@@ -428,7 +456,7 @@ void SendIO(struct IORequest *request)
     if (!request || !request->io_Unit)
         return;
     state = new_io_state(request);
-    if (!state || !state->unit)
+    if (!state)
         return;
     request->io_Error = 0;
     ((struct IOStdReq *)request)->io_Actual = 0;
@@ -506,6 +534,10 @@ void AbortIO(struct IORequest *request)
     pthread_mutex_lock(&state->lock);
     state->aborted = 1;
     pthread_mutex_unlock(&state->lock);
+    if (state->clipboard) {
+        ace_clipboard_device_abort(state->request);
+        return;
+    }
     unit = state->unit;
     if (unit) {
         pthread_mutex_lock(&unit->lock);
