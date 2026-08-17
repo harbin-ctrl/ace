@@ -441,14 +441,31 @@ streams; omitted output/error handles follow the input console. A
 return to interactive input. The remaining handler packet split belongs to
 Stage 4.
 
-### Stage 4: Shell/CLI and console.device boundaries
+### Stage 4: Shell/CLI and console.device boundaries (implemented)
 
-Separate the launcher role of CLI from the Shell process and route the
-handler's file-handle operations through the console.device packet boundary.
-Compile or adapt the remaining `console.c` task/`BeginIO` layer only when a
-caller needs `OpenDevice()`/`DoIO()` semantics. DBGCON should then observe
-the same `CMD_WRITE` bytes on ACE and on a real Amiga, rather than relying on
-the current direct renderer call.
+The launcher/Shell split is now explicit in the host layout: `ace-shell`
+launches the console window, `ace-console` owns the window and its host event
+loop, and `ace-user-shell` is the Shell process that owns the DOS CLI state.
+The Shell is not the window or the renderer, just as CLI is not CON: on an
+Amiga.
+
+`src/native_console_endpoint.[ch]` is the DOS-side adapter for the remaining
+boundary. Each current-console alias and each parameterised `CON:` instance
+owns (or refers to) an `amiga_console_device`/`amiga_con_handler` pair. Native
+DOS `SetMode()`, `Read()`, `FGetC()`, `FGets()`, `FRead()`, `FPutC()`, `FPuts()`,
+`PutStr()`, `Printf()`, `VPrintf()`, and the shell editor's echo now pass
+through handler operations, which submit `CMD_READ`/`CMD_WRITE` requests to
+the packet worker. Current aliases still share raw state; separate `CON:`
+windows still have independent handler state.
+
+The endpoint's read callback waits in short, cancellable intervals, so closing
+a console cannot strand a worker in a host `read(2)`. The GUI remains the
+thread-affine consumer of the channel: its main loop receives the same raw
+write bytes and hands them to the AROS console renderer. `ACE_DBGCON` therefore
+sees the bytes at the channel boundary without adding a private record format.
+The full AROS `console.c` task/`BeginIO` implementation is still unnecessary;
+the adapter supplies the `OpenDevice()`/`DoIO()` semantics callers currently
+need. The next work is Stage 5's byte and visual comparison against Ed.
 
 ### Stage 5: ET fidelity pass
 
