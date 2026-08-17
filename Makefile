@@ -105,6 +105,8 @@ AROS_PROTECT_SRC := $(AROS_ROOT)/workbench/c/Protect.c
 AROS_FILENOTE_SRC := $(AROS_ROOT)/workbench/c/Filenote.c
 AROS_COPY_SRC := $(AROS_ROOT)/workbench/c/Copy.c
 AROS_LIST_SRC := $(AROS_ROOT)/workbench/c/List.c
+AROS_SORT_SRC := $(AROS_ROOT)/workbench/c/Sort.c
+AROS_SEARCH_SRC := $(AROS_ROOT)/workbench/c/Search.c
 AROS_TOUCH_SRC := $(AROS_ROOT)/workbench/c/Touch.c
 AROS_BEEP_SRC := $(AROS_ROOT)/workbench/c/Beep.c
 LHA_AROS_VERSION := 1.14i.1
@@ -262,9 +264,8 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
                         -I$(AROS_ALIB_DIR)
 # The AmigaDOS commands: what a user types at the shell, and what SYS:C is a
 # drawer of. C: is the loader's last resort, so a command reachable by name
-# and nothing else has to be in here.
 AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias Beep \
-                  FailAt Why Prompt MakeDir MakeLink Join Eval Edit ED Copy List Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
+                  FailAt Why Prompt MakeDir MakeLink Join Eval Edit ED Copy List Sort Search Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
                   If Else EndIf EndSkip Lab Quit Skip Execute Setenv Unsetenv LhA
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
@@ -272,7 +273,7 @@ AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault 
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Copy $(BUILD)/List $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 # ET (Edified Tine) is a guest program, so its build is deliberately separate
 # from the core command graph.  Install invokes it after ACE itself is built; this
@@ -376,6 +377,16 @@ $(BUILD)/copy_entry.o: src/copy_entry.c | $(BUILD)
 
 $(BUILD)/List.o: $(AROS_LIST_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-compare-distinct-pointer-types \
+	    -I$(COMPAT) -I$(AROS_ROOT)/compiler/include \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Sort.o: $(AROS_SORT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-compare-distinct-pointer-types -Wno-sign-compare \
+	    -I$(COMPAT) -I$(AROS_ROOT)/compiler/include \
+	    -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Search.o: $(AROS_SEARCH_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -Wno-compare-distinct-pointer-types -Wno-sign-compare \
 	    -I$(COMPAT) -I$(AROS_ROOT)/compiler/include \
 	    -Dmain=ace_command_entry_main -c $< -o $@
 
@@ -806,6 +817,18 @@ $(BUILD)/Copy: $(BUILD)/Copy.o $(BUILD)/copy_entry.o $(AROS_DOSPAT_OBJS) \
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/List: $(BUILD)/List.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) \
+	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	             $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Sort: $(BUILD)/Sort.o $(BUILD)/native_command_entry.o \
+	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	             $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Search: $(BUILD)/Search.o $(BUILD)/native_command_entry.o $(AROS_DOSPAT_OBJS) \
 	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
 	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
 	             $(BUILD)/broker_client.o

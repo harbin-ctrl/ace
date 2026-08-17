@@ -28,6 +28,7 @@ typedef uint64_t UQUAD;
 typedef intptr_t SIPTR;
 typedef char TEXT;
 typedef void *RAWARG;
+typedef void VOID;
 
 #ifndef TRUE
 #define TRUE 1

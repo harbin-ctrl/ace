@@ -1361,6 +1361,13 @@ LONG ChangeMode(LONG type, BPTR object, LONG mode)
     return DOSTRUE;
 }
 
+LONG WriteChars(CONST_STRPTR buf, ULONG buflen)
+{
+    BPTR out = Output();
+    if (!out) return 0;
+    return Write(out, buf, buflen);
+}
+
 LONG Examine(BPTR handle, struct FileInfoBlock *fib)
 {
     struct native_lock *lock = handle;
@@ -1523,6 +1530,31 @@ BPTR Output(void)
 BPTR Input(void)
 {
     return handle_for_file(selected_input());
+}
+
+BPTR OpenFromLock(BPTR handle)
+{
+    struct native_lock *lock = handle;
+    if (!lock)
+        return BNULL;
+    
+    FILE *file = fopen(lock->path, "rb");
+    if (!file) {
+        native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+        return BNULL;
+    }
+
+    struct stat information;
+    int descriptor = fileno(file);
+    if (descriptor >= 0 && fstat(descriptor, &information) == 0 &&
+        S_ISDIR(information.st_mode)) {
+        fclose(file);
+        native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+        return BNULL;
+    }
+    
+    native_ioerr = 0;
+    return (BPTR)file;
 }
 
 BPTR Open(CONST_STRPTR name, LONG mode)
