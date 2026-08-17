@@ -338,8 +338,14 @@ tine_endwin(void)
 {
     if (!active)
         return;
-    if (ace_console)
+    if (ace_console) {
+        /* ET enables the four Amiga raw event classes used by a full-screen
+         * editor.  Reset the same set on exit so the next command on the
+         * shared CON: does not inherit stale resize/refresh/activation
+         * reports. */
         emit(NATIVE_CSI "12}");
+        emit(NATIVE_CSI "2}" NATIVE_CSI "10}" NATIVE_CSI "11}");
+    }
     emit(SCREEN_CSI "0m" NATIVE_CSI " p" "\n");
     if (have_termios)
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);

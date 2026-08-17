@@ -467,7 +467,7 @@ The full AROS `console.c` task/`BeginIO` implementation is still unnecessary;
 the adapter supplies the `OpenDevice()`/`DoIO()` semantics callers currently
 need. The next work is Stage 5's byte and visual comparison against Ed.
 
-### Stage 5: ET fidelity pass (implemented slice)
+### Stage 5: ET fidelity pass (implemented)
 
 Use the staged channel and trace corpus to compare ET against AmigaOS 3.1
 ED: startup, raw-mode entry/exit, public size queries, resize reports, mode
@@ -476,15 +476,25 @@ exception should be documented as either an intentional ACE transport detail
 or corrected in the appropriate channel/handler/device layer, not patched
 inside ET to compensate for a lower-layer mismatch.
 
-The first saved-buffer comparison is now real rather than inferred. The fresh
-FS-UAE AmigaOS 3.1 ED 2.00 probe in `tools/ed-amiga-probe` established that a
-missing file starts with one blank line, that `X` saves that line, and that
-`U` does not partially undo an `I`/`A` structural line insertion. ET now
-matches those bytes at the editor/buffer boundary. `tests/tine_test.sh`
-replays the golden cases for a new file, `I`/`A`, `U` after `I`, and the
-existing ED compatibility corpus. The public size-query and duplicate-reply
-PTY test remains separate because its bytes belong to the staged console
-channel rather than the editor buffer.
+The saved-buffer comparison is real rather than inferred. The fresh FS-UAE
+AmigaOS 3.1 ED 2.00 probe in `tools/ed-amiga-probe` established that a missing
+file starts with one blank line, that `X` saves that line, and that `U` does
+not partially undo an `I`/`A` structural line insertion. ET matches those
+bytes at the editor/buffer boundary. `tests/tine_test.sh` replays the golden
+cases for a new file, `I`/`A`, `U` after `I`, and the existing ED compatibility
+corpus.
+
+The screen/channel pass is covered by
+`tests/tine_screen_trace_test.py`. It drives ET through a PTY while observing
+the same raw child-to-console boundary that `ACE_DBGCON` records. The fake
+console answers the public `CSI 0 q` query and injects one native
+`IECLASS_SIZEWINDOW` report, so the test exercises startup, raw-mode event
+setup, form-feed and row clearing, status-pen transitions, retained redraws,
+resize geometry, command-mode entry, and shutdown. ET now resets every raw
+event class it enables (`12`, `2`, `10`, and `11`) instead of leaving the
+shared CON: configured for the next command. The test is part of `make
+test-tine`; the real-Amiga `tools/amiga-debugcon` format remains the external
+reference when a 68K DBGCON run is available.
 
 ## Child-side console input and raw mode
 

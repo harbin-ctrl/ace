@@ -24,13 +24,13 @@ boundary, geometry state, raw-mode state, and opt-in raw byte tracing through
 `CSI 0 q` query. Stage 2 binds DOS `SetMode()` and current aliases to the
 shared native channel; Stage 3 gives each `CON:` window specification its own
 channel; Stage 4 separates the launcher, Shell, handler, and packet-facing
-console endpoint. Stage 5 now has its first implemented fidelity slice: the
-fresh AmigaOS 3.1 ED 2.00 probe is the golden source for missing-file
-initialization, structural line insertion, and current-line undo, and ET's
-regression corpus compares those saved bytes. Continue Stage 5 with captured
-screen traces and the remaining startup, resize, redraw, and shutdown
-comparisons; keep the Amiga `tools/amiga-debugcon` trace format byte-for-byte
-compatible with the ACE output trace.
+console endpoint. Stage 5 is implemented: the fresh AmigaOS 3.1 ED 2.00
+probe is the golden source for missing-file initialization, structural line
+insertion, and current-line undo, while `tests/tine_screen_trace_test.py`
+covers ET's startup, raw events, public size query, redraw, resize, mode
+switching, and shutdown bytes at the ACE trace boundary. Keep the Amiga
+`tools/amiga-debugcon` trace format byte-for-byte compatible with the ACE
+output trace for future direct 68K captures.
 
 **Make the Wayward beep transport backward-compatible.** ACE's new `Beep`
 command validates only that `LABWC_PID` names a labwc process, then sends
