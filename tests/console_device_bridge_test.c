@@ -203,6 +203,44 @@ int main(void)
                           font_candidates);
     }
 
+    /* ESC c is handled at ACE's boundary because the imported AROS class
+     * does not implement the Amiga reset command.  Test both a same-write
+     * sequence and the real stream boundary where ESC and c arrive apart. */
+    {
+        static const unsigned char reset_escape[] = { '\033' };
+        static const unsigned char reset_character[] = { 'c' };
+        static const unsigned char reset_sequence[] = { '\033', 'c' };
+        struct ace_console_device *controls;
+        uint8_t *reset_frame;
+        int cell_width;
+        int cell_height;
+
+        controls = ace_console_device_open(width, height, font_candidates, 16);
+        assert(controls != NULL);
+        write_text(controls, "before\n");
+        ace_console_device_write(controls, reset_escape,
+                                 sizeof(reset_escape));
+        ace_console_device_write(controls, reset_character,
+                                 sizeof(reset_character));
+        assert(ace_console_device_cell_size(controls, &cell_width,
+                                            &cell_height) == 0);
+        reset_frame = read_frame(controls, width, height);
+        assert(!region_has_ink(reset_frame, width, cell_width, 0,
+                               cell_width * 6 - 1, cell_height - 1,
+                               0x000000u));
+        free(reset_frame);
+
+        write_text(controls, "before\n");
+        ace_console_device_write(controls, reset_sequence,
+                                 sizeof(reset_sequence));
+        reset_frame = read_frame(controls, width, height);
+        assert(!region_has_ink(reset_frame, width, cell_width, 0,
+                               cell_width * 6 - 1, cell_height - 1,
+                               0x000000u));
+        free(reset_frame);
+        ace_console_device_close(controls);
+    }
+
     /* A fresh console has been painted, so it has damage to report; taking it
      * consumes it. */
     assert(ace_console_device_take_damage(device, &x, &y, &w, &h) == 1);

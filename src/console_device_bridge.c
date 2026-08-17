@@ -97,6 +97,9 @@ struct ace_console_device {
     size_t history_length;
     size_t history_capacity;
     int history_valid;
+    /* ESC c is a complete Amiga reset sequence, but its ESC may be the last
+     * byte in one CMD_WRITE and its c the first byte in the next. */
+    int pending_reset_escape;
     /* The grid the last SIZEWINDOW report described, so a drag that crosses
        many pixel steps inside one character cell reports once. */
     int reported_xmax;
@@ -375,6 +378,52 @@ static void write_direct(struct ace_console_device *device, Object *unit,
     }
 }
 
+/* AmigaOS defines ESC c as Reset to Initial State.  The imported AROS
+ * console classes expose the C_ESC token but do not implement that reset, so
+ * ACE handles this one documented sequence at the console-device boundary.
+ * Form Feed is the Amiga-native clear-and-home operation and is implemented
+ * by both the classic console and the imported renderer. */
+static void write_amiga_stream(struct ace_console_device *device, Object *unit,
+                               const void *data, size_t length,
+                               int *pending_reset_escape)
+{
+    const unsigned char *bytes = data;
+    unsigned char ordinary[8192];
+    size_t ordinary_length = 0;
+
+    while (length-- != 0) {
+        unsigned char byte = *bytes++;
+
+        if (*pending_reset_escape) {
+            if (byte == 'c') {
+                static const unsigned char form_feed = 0x0c;
+
+                if (ordinary_length != 0) {
+                    write_direct(device, unit, ordinary, ordinary_length);
+                    ordinary_length = 0;
+                }
+                write_direct(device, unit, &form_feed, sizeof(form_feed));
+                *pending_reset_escape = 0;
+                continue;
+            }
+            ordinary[ordinary_length++] = '\033';
+            *pending_reset_escape = 0;
+        }
+
+        if (byte == '\033') {
+            *pending_reset_escape = 1;
+            continue;
+        }
+        ordinary[ordinary_length++] = byte;
+        if (ordinary_length == sizeof(ordinary)) {
+            write_direct(device, unit, ordinary, ordinary_length);
+            ordinary_length = 0;
+        }
+    }
+    if (ordinary_length != 0)
+        write_direct(device, unit, ordinary, ordinary_length);
+}
+
 static void destroy_scrollback_view(struct ace_console_device *device)
 {
     if (device->scrollback_unit)
@@ -425,6 +474,7 @@ static int create_scrollback_view(struct ace_console_device *device,
     struct RastPort *rp;
     Object *unit;
     size_t start;
+    int pending_reset_escape = 0;
     struct TagItem tags[] = {
         { A_Console_Window, 0 },
         { TAG_DONE, 0 },
@@ -449,7 +499,8 @@ static int create_scrollback_view(struct ace_console_device *device,
     console_replaying++;
     start = replay_start_for_end(device, end);
     if (end > start)
-        write_direct(device, unit, device->history + start, end - start);
+        write_amiga_stream(device, unit, device->history + start, end - start,
+                           &pending_reset_escape);
     console_replaying--;
     device->scrollback_rp = rp;
     device->scrollback_unit = unit;
@@ -495,11 +546,13 @@ static size_t replay_start(struct ace_console_device *device)
 static void replay_history(struct ace_console_device *device, Object *unit)
 {
     size_t start = replay_start(device);
+    int pending_reset_escape = 0;
 
     console_replaying++;
     if (device->history_length > start)
-        write_direct(device, unit, device->history + start,
-                     device->history_length - start);
+        write_amiga_stream(device, unit, device->history + start,
+                           device->history_length - start,
+                           &pending_reset_escape);
     console_replaying--;
 }
 
@@ -1213,7 +1266,8 @@ void ace_console_device_write(struct ace_console_device *device,
     if (!device || !data || length == 0)
         return;
     (void)save_history(device, data, length);
-    write_direct(device, device->unit, data, length);
+    write_amiga_stream(device, device->unit, data, length,
+                       &device->pending_reset_escape);
 }
 
 int ace_console_device_set_font(struct ace_console_device *device,
