@@ -65,6 +65,7 @@ static const char *const startup_scripts[] = {
 static void run_startup_scripts(void)
 {
     const char *only = getenv(ACE_STARTUP_SCRIPT_VARIABLE);
+    const char *script_descriptor = getenv(ACE_SCRIPT_INPUT_VARIABLE);
     const char *const *scripts = startup_scripts;
     size_t script_count = sizeof(startup_scripts) /
                           sizeof(startup_scripts[0]);
@@ -81,6 +82,14 @@ static void run_startup_scripts(void)
         scripts = &only;
         script_count = 1;
         native_set_interactive(0);
+    }
+    /* SYS_ScriptInput is already an open CLI input stream. NewCLI supplies
+       it this way so the requested FROM file runs before the new shell's
+       interactive input. It takes precedence over ACE's startup bundle;
+       otherwise the bundle would replace the handler-selected script. */
+    if ((!only || !*only) && script_descriptor && *script_descriptor) {
+        if (native_cli_script_input())
+            return;
     }
     snprintf(name, sizeof(name), "T:Shell-Startup-%ld", (long)getpid());
     combined = Open(name, MODE_NEWFILE);
