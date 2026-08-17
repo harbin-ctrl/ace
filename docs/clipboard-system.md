@@ -15,7 +15,8 @@ The complete subsystem consists of:
 3. The `CLIPS:` DOS namespace used by `Clip` for unit existence, deletion,
    counting, and notification.
 4. An ACE host bridge connecting unit 0 to the Linux clipboard.
-5. Migration of ACE console and editor copy/paste paths to that common
+5. `acepaste`, a text-only Linux stdin/stdout adapter for the ACE clipboard.
+6. Migration of ACE console and editor copy/paste paths to that common
    device/library path.
 
 The existing AROS `Clip` command is the first compatibility client. The AROS
@@ -114,9 +115,23 @@ rather than silently corrupting high-bit data.
 ### Stage 5 — clients
 
 Run the existing AROS `Clip` command unchanged against ACE. Move console
-selection/paste and ET copy/paste behind the same clipboard path. Add other
-clipboard-aware commands or datatypes only after the device/library contract
-is working.
+selection/paste and ET copy/paste behind the same clipboard path.
+
+Add `acepaste` as the Linux-facing text adapter. With no raw mode, it always
+extracts text: it concatenates `CHRS` chunks from `FORM FTXT` on reads and
+wraps stdin as `FORM FTXT/CHRS` on writes. It should use the ACE clipboard
+manager/device path rather than reading `CLIPS:` files or GTK directly:
+
+```sh
+acepaste > clipboard.txt
+cat replacement.txt | acepaste
+```
+
+It must not add a newline or separators between chunks. Non-text clipboard
+data should produce an error rather than being emitted as opaque bytes.
+
+Add other clipboard-aware commands or datatypes only after the
+device/library contract is working.
 
 ### Stage 6 — verification
 
