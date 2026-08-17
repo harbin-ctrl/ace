@@ -13,6 +13,9 @@ void PutMsg(struct MsgPort *port, struct Message *message);
 struct Message *GetMsg(struct MsgPort *port);
 void WaitPort(struct MsgPort *port);
 ULONG Wait(ULONG signals);
+void ace_aros_runtime_signal(ULONG signals);
+ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask);
+ULONG ace_aros_runtime_check_signal(ULONG mask);
 
 APTR CreateIORequest(struct MsgPort *reply_port, ULONG size);
 void DeleteIORequest(struct IORequest *request);

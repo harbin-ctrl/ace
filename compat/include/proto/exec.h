@@ -19,6 +19,7 @@ APTR FindTask(CONST_STRPTR name);
 void ReplyMsg(struct Message *message);
 void Forbid(void);
 void Permit(void);
+ULONG Wait(ULONG signals);
 ULONG SetSignal(ULONG set_mask, ULONG clear_mask);
 ULONG CheckSignal(ULONG mask);
 LONG AllocSignal(LONG signal_number);

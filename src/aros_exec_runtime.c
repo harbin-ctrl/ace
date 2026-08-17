@@ -207,6 +207,41 @@ ULONG Wait(ULONG signals)
     while (!(pending_signals & signals))
         pthread_cond_wait(&signal_condition, &ports_lock);
     result = pending_signals & signals;
+    pending_signals &= ~result;
+    pthread_mutex_unlock(&ports_lock);
+    return result;
+}
+
+void ace_aros_runtime_signal(ULONG signals)
+{
+    if (!signals)
+        return;
+    pthread_mutex_lock(&ports_lock);
+    pending_signals |= signals;
+    pthread_cond_broadcast(&signal_condition);
+    pthread_mutex_unlock(&ports_lock);
+}
+
+ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask)
+{
+    ULONG old;
+
+    pthread_mutex_lock(&ports_lock);
+    old = pending_signals;
+    pending_signals |= set_mask;
+    pending_signals &= ~clear_mask;
+    if (set_mask)
+        pthread_cond_broadcast(&signal_condition);
+    pthread_mutex_unlock(&ports_lock);
+    return old;
+}
+
+ULONG ace_aros_runtime_check_signal(ULONG mask)
+{
+    ULONG result;
+
+    pthread_mutex_lock(&ports_lock);
+    result = pending_signals & mask;
     pthread_mutex_unlock(&ports_lock);
     return result;
 }

@@ -20,4 +20,14 @@ struct NotifyRequest {
     struct MsgPort *nr_Handler;
 };
 
+#define NRB_SEND_MESSAGE   0
+#define NRB_SEND_SIGNAL    1
+#define NRB_WAIT_REPLY     3
+#define NRB_NOTIFY_INITIAL 4
+
+#define NRF_SEND_MESSAGE   (1L << NRB_SEND_MESSAGE)
+#define NRF_SEND_SIGNAL    (1L << NRB_SEND_SIGNAL)
+#define NRF_WAIT_REPLY     (1L << NRB_WAIT_REPLY)
+#define NRF_NOTIFY_INITIAL (1L << NRB_NOTIFY_INITIAL)
+
 #endif

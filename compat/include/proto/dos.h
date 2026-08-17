@@ -2,6 +2,7 @@
 #define AMIGA_SHELL_PROTO_DOS_H
 
 #include <dos/dos.h>
+#include <dos/notify.h>
 #include <utility/tagitem.h>
 #include <stdarg.h>
 
@@ -10,6 +11,8 @@ extern struct DosLibrary *DOSBase;
 
 struct CommandLineInterface;
 APTR FindTask(CONST_STRPTR name);
+BOOL StartNotify(struct NotifyRequest *request);
+void EndNotify(struct NotifyRequest *request);
 
 struct CommandLineInterface *Cli(void);
 BOOL SetPrompt(CONST_STRPTR prompt);

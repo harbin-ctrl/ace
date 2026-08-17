@@ -27,12 +27,14 @@
 #include <dos/var.h>
 #include <exec/lists.h>
 #include <exec/execbase.h>
+#include <exec/libraries.h>
 #include <utility/utility.h>
 #include "broker_client.h"
 #include "native_host.h"
 #include "broker_protocol.h"
 #include "aros_dos_path.h"
 #include "aros_console_editor.h"
+#include "aros_exec_runtime.h"
 #include "clipboard_bridge.h"
 
 struct CommandLineInterface *Cli(void);
@@ -67,6 +69,7 @@ static int native_name_needs_mapping(const char *name)
 
 static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
+static struct Library native_iffparse_base;
 /* rn_Flags left at 0: '*' is a literal character, not also a wildcard for
    '#?', matching modern AmigaDOS's default (RNF_WILDSTAR off). Read by the
    real pattern-matching engine (rom/dos/patternmatching.c) this seam
@@ -94,6 +97,7 @@ static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
 static int native_cli_loaded;
 static int native_endcli_requested;
+static ULONG native_allocated_signals;
 
 #define NATIVE_LOCAL_VAR_LIMIT 128
 #define NATIVE_LOCAL_VAR_NAME 64
@@ -799,6 +803,8 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
     }
     if (name && strcasecmp(name, "utility.library") == 0)
         return (struct Library *)&native_utility_base;
+    if (name && strcasecmp(name, "iffparse.library") == 0)
+        return &native_iffparse_base;
     return NULL;
 }
 
@@ -1160,6 +1166,14 @@ static int native_union_candidate(CONST_STRPTR name, struct DevProc *device,
 {
     char base[PATH_MAX];
     char relative[PATH_MAX * 2];
+
+    /* CLIPS: presents unit numbers as virtual entries (0..255), while its
+       backing directory stores clip0..clip255.  The ordinary assign path
+       resolver deliberately does not know that presentation rule when it
+       resolves a path beneath an assign, so let the broker handle the
+       complete spelling here too. */
+    if (name && strncasecmp(name, "CLIPS:", 6) == 0)
+        return native_broker_resolve_path(name, result, result_size);
 
     if (native_device_base(device, base, sizeof(base)) != 0 ||
         native_device_relative(name, relative, sizeof(relative)) != 0)
@@ -2429,15 +2443,13 @@ UBYTE ToLower(ULONG character)
 
 ULONG SetSignal(ULONG set_mask, ULONG clear_mask)
 {
-    (void)set_mask;
-    (void)clear_mask;
-    return 0;
+    return ace_aros_runtime_set_signal(set_mask, clear_mask);
 }
 
 void Signal(struct Task *task, ULONG signal_set)
 {
     (void)task;
-    (void)signal_set;
+    ace_aros_runtime_signal(signal_set);
 }
 
 void SetMem(APTR destination, ULONG length, UBYTE value)
@@ -2448,18 +2460,36 @@ void SetMem(APTR destination, ULONG length, UBYTE value)
 
 ULONG CheckSignal(ULONG mask)
 {
-    (void)mask;
-    return 0;
+    return ace_aros_runtime_check_signal(mask);
 }
 
 LONG AllocSignal(LONG signal_number)
 {
-    return signal_number;
+    if (signal_number >= 0 && signal_number < 32) {
+        ULONG bit = 1UL << signal_number;
+
+        if (native_allocated_signals & bit)
+            return -1;
+        native_allocated_signals |= bit;
+        return signal_number;
+    }
+    if (signal_number == -1) {
+        for (LONG bit = 0; bit < 32; bit++) {
+            ULONG mask = 1UL << bit;
+
+            if (!(native_allocated_signals & mask)) {
+                native_allocated_signals |= mask;
+                return bit;
+            }
+        }
+    }
+    return -1;
 }
 
 void FreeSignal(LONG signal_number)
 {
-    (void)signal_number;
+    if (signal_number >= 0 && signal_number < 32)
+        native_allocated_signals &= ~(1UL << signal_number);
 }
 
 BOOL SetPrompt(CONST_STRPTR prompt)

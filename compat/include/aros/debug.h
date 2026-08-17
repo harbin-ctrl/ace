@@ -8,5 +8,8 @@
 #endif
 #define ASSERT_VALID_PTR(pointer) do { (void)(pointer); } while (0)
 #define ASSERT_VALID_PTR_OR_NULL(pointer) do { (void)(pointer); } while (0)
+#ifndef kprintf
+#define kprintf(...) ((void)0)
+#endif
 void bug(const char *format, ...);
 #endif
