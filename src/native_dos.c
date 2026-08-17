@@ -2538,6 +2538,28 @@ STRPTR FGets(BPTR handle, STRPTR buffer, LONG length)
 {
     struct native_console_handle *console = native_console_pointer(handle);
     FILE *file = console ? console->input : as_file(handle);
+    struct native_console_endpoint *endpoint = console ? console->endpoint :
+        (handle ? native_endpoint_for_handle(handle) :
+         native_endpoint_for_file(file));
+
+    if (endpoint && (file != stdin || native_input_is_raw())) {
+        if (!buffer || length <= 1)
+            return NULL;
+        for (LONG index = 0; index < length - 1; index++) {
+            unsigned char character;
+
+            if (Read(handle, &character, 1) != 1) {
+                if (index == 0)
+                    return NULL;
+                break;
+            }
+            buffer[index] = (char)character;
+            buffer[index + 1] = '\0';
+            if (character == '\n')
+                break;
+        }
+        return buffer;
+    }
 
     if (file != stdin) {
         if (!fgets(buffer, length, file)) {
@@ -3463,16 +3485,26 @@ LONG Read(BPTR handle, APTR buffer, LONG length)
 LONG FRead(BPTR handle, APTR buffer, LONG block_size, LONG block_count)
 {
     struct native_console_handle *console = native_console_pointer(handle);
+    struct native_console_endpoint *endpoint;
     size_t result;
     FILE *file = console ? console->input :
         (handle ? as_file(handle) : selected_input());
 
-    if (console) {
-        file = console->input;
-    }
+    endpoint = console ? console->endpoint :
+        (handle ? native_endpoint_for_handle(handle) :
+         native_endpoint_for_file(file));
 
     if (!buffer || block_size <= 0 || block_count <= 0)
         return 0;
+    if (endpoint && (file != stdin || native_input_is_raw())) {
+        size_t bytes = (size_t)block_size * (size_t)block_count;
+        LONG actual;
+
+        actual = Read(handle, buffer, (LONG)bytes);
+        if (actual <= 0)
+            return 0;
+        return actual / block_size;
+    }
     if (file == stdin) {
         size_t bytes = (size_t)block_size * (size_t)block_count;
         result = (size_t)Read(handle, buffer, (LONG)bytes) /
