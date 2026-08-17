@@ -45,6 +45,8 @@ int main(void)
     BPTR star;
     char input_byte = 0;
     char output_bytes[3];
+    int rows;
+    int cols;
 
     assert(pipe(input) == 0);
     assert(pipe(output) == 0);
@@ -63,24 +65,56 @@ int main(void)
     assert(strcmp(native_console_specification(console), "CONSOLE:") == 0);
     assert(IsInteractive(console) == DOSTRUE);
 
-    assert(SetMode(console, 1) == DOSTRUE);
-    write_all(input[1], "x", 1);
-    assert(WaitForChar(console, 1000000) != DOSFALSE);
-    assert(Read(console, &input_byte, 1) == 1);
-    assert(input_byte == 'x');
-    assert(SetMode(console, 0) == DOSTRUE);
-
-    assert(FPuts(console, "out") == 0);
-    assert(Flush(console) == DOSTRUE);
-    read_all(output[0], output_bytes, sizeof(output_bytes));
-    assert(memcmp(output_bytes, "out", sizeof(output_bytes)) == 0);
-
     alias = Open("CON:", MODE_READWRITE);
     star = Open("*", MODE_READWRITE);
     assert(alias != BNULL);
     assert(star != BNULL);
     assert(native_console_is_handle(alias));
     assert(native_console_is_handle(star));
+    assert(native_console_is_raw_mode(console) == 0);
+    assert(native_console_is_raw_mode(alias) == 0);
+    assert(native_console_is_raw_mode(star) == 0);
+    assert(native_console_is_raw_mode((BPTR)stdin) == 0);
+
+    assert(SetMode(alias, 1) == DOSTRUE);
+    assert(native_console_is_raw_mode(console) == 1);
+    assert(native_console_is_raw_mode(star) == 1);
+    assert(native_console_is_raw_mode((BPTR)stdin) == 1);
+    write_all(input[1], "x", 1);
+    assert(WaitForChar(console, 1000000) != DOSFALSE);
+    assert(Read(console, &input_byte, 1) == 1);
+    assert(input_byte == 'x');
+    assert(SetMode(star, 0) == DOSTRUE);
+    assert(native_console_is_raw_mode(console) == 0);
+    assert(native_console_is_raw_mode(alias) == 0);
+
+    assert(native_console_geometry(console, &rows, &cols) == 0);
+    assert(rows == 0);
+    assert(cols == 0);
+    assert(native_console_resize_generation(console) == 0);
+    assert(native_console_take_resize(alias) == 0);
+    native_console_notify_resize(24, 80);
+    assert(native_console_geometry(alias, &rows, &cols) == 0);
+    assert(rows == 24);
+    assert(cols == 80);
+    assert(native_console_geometry(star, &rows, &cols) == 0);
+    assert(rows == 24);
+    assert(cols == 80);
+    assert(native_console_resize_generation(console) == 1);
+    assert(native_console_resize_generation(alias) == 1);
+    assert(native_console_take_resize(star) == 1);
+    assert(native_console_take_resize(console) == 0);
+    native_console_notify_resize(24, 80);
+    assert(native_console_resize_generation(console) == 1);
+    native_console_notify_resize(25, 80);
+    assert(native_console_resize_generation(alias) == 2);
+    assert(native_console_take_resize(console) == 1);
+
+    assert(FPuts(console, "out") == 0);
+    assert(Flush(console) == DOSTRUE);
+    read_all(output[0], output_bytes, sizeof(output_bytes));
+    assert(memcmp(output_bytes, "out", sizeof(output_bytes)) == 0);
+
     assert(Close(alias) == DOSTRUE);
     assert(Close(star) == DOSTRUE);
     assert(Close(console) == DOSTRUE);
