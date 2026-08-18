@@ -620,7 +620,7 @@ $(BUILD)/boopsi-test.o: tests/boopsi_test.c src/aros_boopsi_runtime.h | $(BUILD)
 $(BUILD)/boopsi-test: $(BUILD)/boopsi-test.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 	$(CC) $(CFLAGS) -pthread $^ -o $@
 
-$(BUILD)/aros-console-%.o: $(AROS_GRAPHICS_DIR)/%.c compat/aros-real/include/ace_graphics_intern.h | $(BUILD)
+$(BUILD)/aros-console-%.o: $(AROS_GRAPHICS_DIR)/%.c compat/aros-real/include/ace_graphics_intern.h compat/aros-real/include/proto/exec.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_GRAPHICS_CFLAGS) $(AROS_GRAPHICS_INCLUDES) -c $< -o $@
 
 $(BUILD)/aros-arsupport-%.o: $(AROS_ARSUPPORT_DIR)/%.c | $(BUILD)

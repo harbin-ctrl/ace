@@ -162,6 +162,28 @@ int main(void)
         ace_console_device_close(controls);
     }
 
+    /* Socket reads may split the native CSI introducer from its final byte.
+     * The renderer must retain and then assemble CSI P without truncating
+     * the temporary allocation used for that assembly. */
+    {
+        static const unsigned char prefix[] = { 'X', '\b', 0x9b };
+        static const unsigned char suffix[] = { 'P', '\n' };
+        struct ace_console_device *controls;
+        char *copied;
+        size_t copied_length;
+
+        controls = ace_console_device_open(width, height, font_candidates, 16);
+        assert(controls != NULL);
+        ace_console_device_write(controls, prefix, sizeof(prefix));
+        ace_console_device_write(controls, suffix, sizeof(suffix));
+        copied = ace_console_device_copy_all(controls, &copied_length);
+        assert(copied != NULL);
+        assert(copied_length == 1);
+        assert(strcmp(copied, "\n") == 0);
+        free(copied);
+        ace_console_device_close(controls);
+    }
+
     /* These are the documented AmigaOS clear-screen spellings.  The native
      * and ESC-[ CSI introducers must produce the same retained text, and
      * RESET TO INITIAL STATE must be treated as a clear even though the

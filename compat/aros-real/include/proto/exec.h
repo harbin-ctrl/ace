@@ -6,7 +6,8 @@ struct MsgPort;
 
 struct Message *GetMsg(struct MsgPort *port);
 
-#if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_AROS_REAL_HANDLER_TYPES_H)
+#if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_AROS_REAL_HANDLER_TYPES_H) || \
+    defined(ACE_GRAPHICS_INTERN_H)
 
 #include <exec/types.h>
 #include <exec/nodes.h>
@@ -20,12 +21,10 @@ struct Message *GetMsg(struct MsgPort *port);
  * truncate them on a 64-bit host.  ACE implements them in
  * src/aros_boopsi_runtime.c.
  *
- * The console handler (ace_handler_types.h) shares this declaration set: it
- * links src/aros_console_editor.o into the same ace-console binary as the
- * BOOPSI/graphics seams from Phase 3 onward, and needs the same AllocMem/
- * FreeMem/AllocVec/FreeVec/AddTail/Remove -- one definition apiece, in
- * src/aros_boopsi_runtime.c, rather than a second copy in
- * aros_console_editor.c that would collide with it at link time.
+ * The console handler and console.device renderer share this declaration
+ * set. In particular, support.c assembles CSI sequences split across writes
+ * with AllocMem(); leaving that declaration implicit truncates its pointer
+ * return on a 64-bit host.
  */
 APTR AllocMem(ULONG byteSize, ULONG requirements);
 void FreeMem(APTR memoryBlock, ULONG byteSize);
@@ -46,7 +45,7 @@ void AddHead(struct List *list, struct Node *node);
 void AddTail(struct List *list, struct Node *node);
 void Remove(struct Node *node);
 
-#endif /* ACE_BOOPSI_INTERN_H || ACE_AROS_REAL_HANDLER_TYPES_H */
+#endif /* ACE_BOOPSI_INTERN_H || ACE_AROS_REAL_HANDLER_TYPES_H || ACE_GRAPHICS_INTERN_H */
 
 #if defined(ACE_GRAPHICS_INTERN_H) || defined(ACE_AROS_REAL_HANDLER_TYPES_H)
 
