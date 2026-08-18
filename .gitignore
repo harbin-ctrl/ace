@@ -1,5 +1,9 @@
 /build/
 
+# Scratch directories a test leaves behind if it is interrupted.
+/.ace-filesystem-mapping.*
+/.ace-file-commands.*
+
 # tine builds in its own source directory rather than into build/.
 /tools/tine/*.o
 /tools/tine/tine
