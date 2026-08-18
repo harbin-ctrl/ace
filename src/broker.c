@@ -1210,11 +1210,10 @@ static int normalize_amiga_path(struct broker_session *session,
         return -1;
     }
     strcpy(result, session->cwd);
-    /* AmigaDOS uses the first slash as the path separator and every
-       additional slash as a parent traversal: // is the parent, /// is the
-       grandparent.  This also makes an empty relative path the current
-       directory, rather than inventing a POSIX-style dot component. */
-    for (size_t index = 1; index < slashes; index++)
+    /* AmigaDOS uses each leading slash as a parent traversal: / is the
+       parent and // is the grandparent. An empty relative path is the
+       current directory, rather than inventing a POSIX-style dot component. */
+    for (size_t index = 0; index < slashes; index++)
         pop_host_component(result);
     while (*cursor) {
         const char *end = strchr(cursor, '/');

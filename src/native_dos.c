@@ -2316,7 +2316,7 @@ LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
 
 /* Linux stores relative symbolic-link targets with POSIX's dot components;
  * AmigaDOS has no current-directory dot and spells parent traversal with an
- * extra slash (// is the parent). Preserve the target's relative meaning
+ * slash (/ is the parent). Preserve the target's relative meaning
  * without resolving it: a dangling link must still report the exact path it
  * points at. */
 static int native_relative_link_target(const char *target, char *result,
@@ -2340,7 +2340,11 @@ static int native_relative_link_target(const char *target, char *result,
         } else if (length == 2 && cursor[0] == '.' && cursor[1] == '.') {
             parents++;
         } else {
-            size_t slashes = parents ? parents + 1 : (emitted ? 1 : 0);
+            /* At the start, each slash is a parent traversal. After a
+             * component, the first slash is its separator and the remaining
+             * slashes are parent traversals. */
+            size_t slashes = parents ? parents + (emitted ? 1 : 0) :
+                                       (emitted ? 1 : 0);
 
             if (slashes > result_size - used - 1 ||
                 length > result_size - used - slashes - 1)
@@ -2358,7 +2362,7 @@ static int native_relative_link_target(const char *target, char *result,
         cursor = end + 1;
     }
     if (parents != 0) {
-        size_t slashes = parents + 1;
+        size_t slashes = parents + (emitted ? 1 : 0);
 
         if (slashes > result_size - used - 1)
             return -1;

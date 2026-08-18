@@ -119,14 +119,15 @@ volume_name=${root_name%%:*}:
 volume_root=$(control resolve "$volume_name")
 [ "$(control resolve :)" = "$volume_root" ]
 
-# AmigaDOS uses the first slash as the path separator and every following
-# slash as a parent traversal: // is the parent and /// is the grandparent.
+# AmigaDOS uses each leading slash as a parent traversal: / is the parent and
+# // is the grandparent. Internal double slashes mean parent after the
+# preceding component.
 # Its current directory spelling is empty; . and .. are ordinary AmigaDOS
 # names represented by the otherwise-illegal Linux components : and ::.
 control cd "$root_name"
-[ "$(control resolve /)" = "$repo_dir" ]
-[ "$(control resolve //)" = "$(dirname "$repo_dir")" ]
-[ "$(control resolve ///)" = "$(dirname "$(dirname "$repo_dir")")" ]
+[ "$(control resolve /)" = "$(dirname "$repo_dir")" ]
+[ "$(control resolve //)" = "$(dirname "$(dirname "$repo_dir")")" ]
+[ "$(control resolve ///)" = "$(dirname "$(dirname "$(dirname "$repo_dir")")")" ]
 mapped_dot=$(control name "$mapping_dot_dir")
 mapped_dotdot=$(control name "$mapping_dotdot_dir")
 [ "${mapped_dot##*/}" = . ]
@@ -201,7 +202,7 @@ case "$softlink_types" in
 esac
 relative_softlink_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
     "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" relative-dangling)
-[ "$relative_softlink_target" = "//missing-target" ] || {
+[ "$relative_softlink_target" = "/missing-target" ] || {
     echo "relative softlink target was not translated to AmigaDOS: $relative_softlink_target" >&2
     exit 1
 }
