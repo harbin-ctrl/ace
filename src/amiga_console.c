@@ -1588,6 +1588,15 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
                     (void)kill(console->controller_pid, SIGUSR2);
                 return TRUE;
             }
+            if (character == 5 || character == 6) {
+                /* Ctrl-E and Ctrl-F are application-defined Amiga break
+                   signals.  Send them to the shell, which brokers them to
+                   its foreground task (or retains them for itself). */
+                if (console->controller_pid > 0)
+                    (void)kill(console->controller_pid,
+                               character == 5 ? SIGRTMIN : SIGRTMIN + 1);
+                return TRUE;
+            }
             char byte = (char)character;
 
             (void)send_input(console, &byte, 1);

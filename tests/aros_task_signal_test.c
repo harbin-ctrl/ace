@@ -56,6 +56,10 @@ int main(void)
         assert(Wait(1u << 12) == (1u << 12));
         assert(pthread_join(sender, NULL) == 0);
     }
+    assert(kill(getpid(), SIGRTMIN) == 0);
+    assert(Wait(1u << 14) == (1u << 14));
+    assert(kill(getpid(), SIGRTMIN + 1) == 0);
+    assert(Wait(1u << 15) == (1u << 15));
     ace_aros_runtime_free_signal(7);
     ace_aros_runtime_unregister_task(&second);
     assert(ace_aros_runtime_find_task("second-task") == NULL);

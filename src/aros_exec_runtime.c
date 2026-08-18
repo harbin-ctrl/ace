@@ -15,6 +15,7 @@
 
 #include <devices/timer.h>
 #include <exec/devices.h>
+#include <exec/lists.h>
 #include <exec/memory.h>
 #include <dos/dosextens.h>
 
@@ -61,6 +62,7 @@ struct ace_io_state {
     pthread_cond_t condition;
     int finished;
     int aborted;
+    int worker_started;
     struct ace_io_state *next;
 };
 
@@ -196,6 +198,10 @@ static void host_break_handler(int signal_number)
         host_pending_signals |= (sig_atomic_t)(1UL << 12); /* Ctrl-C */
     else if (signal_number == SIGUSR2)
         host_pending_signals |= (sig_atomic_t)(1UL << 13); /* Ctrl-D */
+    else if (signal_number == SIGRTMIN)
+        host_pending_signals |= (sig_atomic_t)(1UL << 14); /* Ctrl-E */
+    else if (signal_number == SIGRTMIN + 1)
+        host_pending_signals |= (sig_atomic_t)(1UL << 15); /* Ctrl-F */
     if (host_signal_pipe[1] >= 0)
         (void)write(host_signal_pipe[1], &notification, sizeof(notification));
 }
@@ -207,7 +213,9 @@ static void *host_signal_dispatch(void *unused)
     (void)unused;
     while (read(host_signal_pipe[0], &notification, sizeof(notification)) > 0) {
         ULONG signals = notification == SIGUSR1 ? 1UL << 12 :
-                        notification == SIGUSR2 ? 1UL << 13 : 0;
+                        notification == SIGUSR2 ? 1UL << 13 :
+                        notification == SIGRTMIN ? 1UL << 14 :
+                        notification == SIGRTMIN + 1 ? 1UL << 15 : 0;
         struct Task *target;
 
         if (!signals)
@@ -254,6 +262,8 @@ static void install_host_break_handler(void)
     }
     (void)sigaction(SIGUSR1, &action, NULL);
     (void)sigaction(SIGUSR2, &action, NULL);
+    (void)sigaction(SIGRTMIN, &action, NULL);
+    (void)sigaction(SIGRTMIN + 1, &action, NULL);
 }
 
 void ace_aros_runtime_raise_from_host(ULONG signals)
@@ -666,7 +676,7 @@ static int wait_for_timer_or_abort(struct ace_io_state *state,
     struct timespec deadline;
     int outcome = 0;
 
-    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0)
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
         return -1;
     deadline.tv_sec += timer->tr_time.tv_secs;
     deadline.tv_nsec += (long)timer->tr_time.tv_micro * 1000L;
@@ -790,6 +800,7 @@ LONG OpenDevice(CONST_STRPTR name, ULONG unit_number,
 void CloseDevice(struct IORequest *request)
 {
     struct ace_host_unit *unit;
+    struct ace_host_unit **cursor;
 
     if (!request)
         return;
@@ -805,6 +816,20 @@ void CloseDevice(struct IORequest *request)
     pthread_cond_broadcast(&unit->input_condition);
     pthread_cond_broadcast(&unit->output_condition);
     pthread_mutex_unlock(&unit->lock);
+    /* CloseDevice is only valid after outstanding I/O has completed. */
+    pthread_mutex_lock(&units_lock);
+    cursor = &units;
+    while (*cursor && *cursor != unit)
+        cursor = &(*cursor)->next;
+    if (*cursor)
+        *cursor = unit->next;
+    if (last_console == unit)
+        last_console = NULL;
+    pthread_mutex_unlock(&units_lock);
+    pthread_cond_destroy(&unit->input_condition);
+    pthread_cond_destroy(&unit->output_condition);
+    pthread_mutex_destroy(&unit->lock);
+    free(unit);
 }
 
 static struct ace_io_state *new_io_state(struct IORequest *request)
@@ -821,7 +846,23 @@ static struct ace_io_state *new_io_state(struct IORequest *request)
         return NULL;
     }
     pthread_mutex_init(&state->lock, NULL);
-    pthread_cond_init(&state->condition, NULL);
+    {
+        pthread_condattr_t attributes;
+
+        if (pthread_condattr_init(&attributes) != 0) {
+            pthread_mutex_destroy(&state->lock);
+            free(state);
+            return NULL;
+        }
+        if (pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC) != 0 ||
+            pthread_cond_init(&state->condition, &attributes) != 0) {
+            pthread_condattr_destroy(&attributes);
+            pthread_mutex_destroy(&state->lock);
+            free(state);
+            return NULL;
+        }
+        pthread_condattr_destroy(&attributes);
+    }
     pthread_mutex_lock(&io_lock);
     state->next = io_states;
     io_states = state;
@@ -846,7 +887,8 @@ void SendIO(struct IORequest *request)
         state->request->io_Error = -1;
         pthread_cond_broadcast(&state->condition);
         pthread_mutex_unlock(&state->lock);
-    }
+    } else
+        state->worker_started = 1;
 }
 
 static struct ace_io_state *find_io_state(struct IORequest *request)
@@ -861,10 +903,40 @@ static struct ace_io_state *find_io_state(struct IORequest *request)
     return state;
 }
 
+/* WaitIO may share a reply port with other requests.  Keep replies that do
+   not belong to this request and put them back at the front, in their original
+   order, before returning. */
+static void restore_reply_messages(struct MsgPort *port,
+                                   struct Message *last)
+{
+    struct ace_port_state *state = ensure_port(port);
+
+    if (!state)
+        return;
+    pthread_mutex_lock(&state->lock);
+    while (last) {
+        struct Message *previous = (struct Message *)last->mn_Node.ln_Pred;
+
+        {
+            struct Node *node = &last->mn_Node;
+            struct Node *head = port->mp_MsgList.lh_Head;
+
+            node->ln_Succ = head;
+            node->ln_Pred = (struct Node *)&port->mp_MsgList;
+            head->ln_Pred = node;
+            port->mp_MsgList.lh_Head = node;
+        }
+        last = previous;
+    }
+    pthread_cond_broadcast(&state->condition);
+    pthread_mutex_unlock(&state->lock);
+}
+
 LONG WaitIO(struct IORequest *request)
 {
     struct ace_io_state *state = find_io_state(request);
     struct Message *message;
+    struct Message *deferred_last = NULL;
 
     if (!state)
         return -1;
@@ -872,14 +944,23 @@ LONG WaitIO(struct IORequest *request)
         do {
             WaitPort(request->io_Message.mn_ReplyPort);
             message = GetMsg(request->io_Message.mn_ReplyPort);
+            if (message != &request->io_Message) {
+                message->mn_Node.ln_Pred = (struct Node *)deferred_last;
+                if (deferred_last)
+                    deferred_last->mn_Node.ln_Succ = &message->mn_Node;
+                deferred_last = message;
+            }
         } while (message != &request->io_Message);
+        restore_reply_messages(request->io_Message.mn_ReplyPort,
+                               deferred_last);
     } else {
         pthread_mutex_lock(&state->lock);
         while (!state->finished)
             pthread_cond_wait(&state->condition, &state->lock);
         pthread_mutex_unlock(&state->lock);
     }
-    pthread_join(state->worker, NULL);
+    if (state->worker_started)
+        pthread_join(state->worker, NULL);
     pthread_mutex_lock(&io_lock);
     if (io_states == state)
         io_states = state->next;

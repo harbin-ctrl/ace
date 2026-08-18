@@ -1921,10 +1921,20 @@ static int handle_client(struct broker_connection *connection)
                 status = ESRCH;
                 break;
             }
-            if (mask & (1U << 12)) /* SIGBREAKF_CTRL_C */
-                (void)kill(session->foreground_pid, SIGUSR1);
-            if (mask & (1U << 13)) /* SIGBREAKF_CTRL_D */
-                (void)kill(session->foreground_pid, SIGUSR2);
+            if ((mask & (1U << 12)) &&
+                kill(session->foreground_pid, SIGUSR1) != 0)
+                status = errno;
+            if (!status && (mask & (1U << 13)) &&
+                kill(session->foreground_pid, SIGUSR2) != 0)
+                status = errno;
+            if (!status && (mask & (1U << 14)) &&
+                kill(session->foreground_pid, SIGRTMIN) != 0)
+                status = errno;
+            if (!status && (mask & (1U << 15)) &&
+                kill(session->foreground_pid, SIGRTMIN + 1) != 0)
+                status = errno;
+            if (status == ESRCH)
+                session->foreground_pid = 0;
             break;
         }
         signal.magic = AMIGA_BROKER_MAGIC;

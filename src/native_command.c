@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
@@ -7,6 +8,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,21 +40,37 @@ static void *broker_break_dispatch(void *unused)
     (void)unused;
     while (read(break_pipe[0], &byte, sizeof(byte)) > 0) {
         pid_t child = (pid_t)foreground_child;
+        ULONG signals = byte == 'C' ? SIGBREAKF_CTRL_C :
+                        byte == 'D' ? SIGBREAKF_CTRL_D :
+                        byte == 'E' ? SIGBREAKF_CTRL_E :
+                        byte == 'F' ? SIGBREAKF_CTRL_F : 0;
+        int host_signal = byte == 'C' ? SIGUSR1 :
+                          byte == 'D' ? SIGUSR2 :
+                          byte == 'E' ? SIGRTMIN :
+                          byte == 'F' ? SIGRTMIN + 1 : 0;
 
-        if (child > 0 &&
-            native_broker_task_break_foreground(SIGBREAKF_CTRL_C) != 0)
-            (void)kill(child, SIGUSR1); /* broker outage: retain Ctrl-C */
+        if (child > 0 && signals &&
+            native_broker_task_break_foreground(signals) != 0)
+            (void)kill(child, host_signal); /* broker outage: retain break */
     }
     return NULL;
 }
 
 static void shell_break_handler(int signal_number)
 {
-    (void)signal_number;
+    unsigned char event = signal_number == SIGUSR1 ? 'C' :
+                          signal_number == SIGUSR2 ? 'D' :
+                          signal_number == SIGRTMIN ? 'E' :
+                          signal_number == SIGRTMIN + 1 ? 'F' : 0;
+
     if (foreground_child > 0 && break_pipe[1] >= 0)
-        (void)write(break_pipe[1], "C", 1);
-    else
+        (void)write(break_pipe[1], &event, 1);
+    else if (signal_number == SIGUSR1)
         ace_aros_runtime_raise_from_host(SIGBREAKF_CTRL_C);
+    else if (signal_number == SIGRTMIN)
+        ace_aros_runtime_raise_from_host(SIGBREAKF_CTRL_E);
+    else if (signal_number == SIGRTMIN + 1)
+        ace_aros_runtime_raise_from_host(SIGBREAKF_CTRL_F);
 }
 
 static void shell_script_break_handler(int signal_number)
@@ -73,7 +91,13 @@ void ace_shell_break_init(void)
     action.sa_flags = SA_RESTART;
     if (pipe(break_pipe) == 0 &&
         pthread_create(&break_thread, NULL, broker_break_dispatch, NULL) == 0)
+    {
+        int flags = fcntl(break_pipe[1], F_GETFL);
+
+        if (flags >= 0)
+            (void)fcntl(break_pipe[1], F_SETFL, flags | O_NONBLOCK);
         (void)pthread_detach(break_thread);
+    }
     else {
         if (break_pipe[0] >= 0)
             close(break_pipe[0]);
@@ -82,6 +106,8 @@ void ace_shell_break_init(void)
         break_pipe[0] = break_pipe[1] = -1;
     }
     (void)sigaction(SIGUSR1, &action, NULL);
+    (void)sigaction(SIGRTMIN, &action, NULL);
+    (void)sigaction(SIGRTMIN + 1, &action, NULL);
     action.sa_handler = shell_script_break_handler;
     (void)sigaction(SIGUSR2, &action, NULL);
 }
@@ -543,8 +569,9 @@ int native_run_background(const char *command, uint64_t *task_id)
     int argument_count;
     pid_t child;
     pid_t background_pid = 0;
-    int pid_pipe[2];
-    int status;
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    int outcome;
 
     if (task_id)
         *task_id = 0;
@@ -562,76 +589,32 @@ int native_run_background(const char *command, uint64_t *task_id)
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return -1;
     }
-    if (pipe(pid_pipe) != 0) {
+    tail = command_tail(command);
+    if (setenv("ACE_COMMAND_ARGUMENTS", tail, 1) != 0 ||
+        posix_spawn_file_actions_init(&actions) != 0 ||
+        posix_spawnattr_init(&attributes) != 0) {
         SetIoErr(ERROR_NO_FREE_STORE);
         return -1;
     }
-
-    /* Reap the first child here. Its child is detached from the shell's wait
-       relationship, which is the Unix equivalent of AROS's background CLI. */
-    child = fork();
-    if (child < 0) {
-        close(pid_pipe[0]);
-        close(pid_pipe[1]);
-        SetIoErr(ERROR_NO_FREE_STORE);
-        return -1;
-    }
-    if (child == 0) {
-        pid_t background = fork();
-
-        close(pid_pipe[0]);
-        if (background < 0) {
-            close(pid_pipe[1]);
-            _exit(RETURN_FAIL);
-        }
-        if (background > 0) {
-            (void)!write(pid_pipe[1], &background, sizeof(background));
-            close(pid_pipe[1]);
-            _exit(RETURN_OK);
-        }
-
-        close(pid_pipe[1]);
-
-        (void)setsid();
-        if (cwd[0] != '\0')
-            (void)chdir(cwd);
-        {
-            int null_input = open("/dev/null", O_RDONLY);
-
-            if (null_input >= 0) {
-                (void)dup2(null_input, STDIN_FILENO);
-                if (null_input != STDIN_FILENO)
-                    close(null_input);
-            }
-        }
-        tail = command_tail(command);
-        if (setenv("ACE_COMMAND_ARGUMENTS", tail, 1) != 0)
-            _exit(RETURN_FAIL);
-
-        /* split_arguments indexes the command at argv[1], while execv wants
-           argv[0] to be the executable and the remaining words as arguments.
-           Remove the command token in place. */
-        argv[0] = command_path;
-        for (int index = 1; index < argument_count; index++)
-            argv[index] = argv[index + 1];
-        argv[argument_count] = NULL;
-        execv(command_path, argv);
-        _exit(RETURN_FAIL);
-    }
-    close(pid_pipe[1]);
-    if (waitpid(child, &status, 0) < 0 ||
-        !WIFEXITED(status) || WEXITSTATUS(status) != RETURN_OK) {
-        close(pid_pipe[0]);
+    (void)posix_spawn_file_actions_addopen(&actions, STDIN_FILENO,
+                                            "/dev/null", O_RDONLY, 0);
+    if (cwd[0] != '\0')
+        (void)posix_spawn_file_actions_addchdir_np(&actions, cwd);
+    (void)posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID);
+    argv[0] = command_path;
+    for (int index = 1; index < argument_count; index++)
+        argv[index] = argv[index + 1];
+    argv[argument_count] = NULL;
+    outcome = posix_spawn(&child, command_path, &actions, &attributes, argv,
+                          environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    if (outcome != 0) {
+        errno = outcome;
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return -1;
     }
-    if (read(pid_pipe[0], &background_pid, sizeof(background_pid)) !=
-        (ssize_t)sizeof(background_pid)) {
-        close(pid_pipe[0]);
-        SetIoErr(ERROR_OBJECT_NOT_FOUND);
-        return -1;
-    }
-    close(pid_pipe[0]);
+    background_pid = child;
     if (task_id)
         *task_id = native_background_task_id(background_pid);
     return 0;
