@@ -1,9 +1,13 @@
 #include "aros_exec_runtime.h"
 
 #include <assert.h>
+#include <signal.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <devices/clipboard.h>
+#include <dos/dosextens.h>
+#include <proto/exec.h>
 
 int main(void)
 {
@@ -15,6 +19,29 @@ int main(void)
     char buffer[32] = {0};
     char clip_buffer[32] = {0};
     void *console;
+    struct Task first_task = {0};
+    struct Task second_task = {0};
+
+    /* SIGUSR1 is ACE's private host notification for a console Ctrl-C. */
+    assert(kill(getpid(), SIGUSR1) == 0);
+    assert((ace_aros_runtime_set_signal(0, 0) & (1u << 12)) != 0);
+    ace_aros_runtime_set_signal(0, 1u << 12);
+    assert(kill(getpid(), SIGUSR2) == 0);
+    assert((ace_aros_runtime_set_signal(0, 0) & (1u << 13)) != 0);
+    ace_aros_runtime_set_signal(0, 1u << 13);
+
+    /* Exec signals belong to the addressed task, rather than the process as
+       a whole.  This is the live runtime's task registry, not exec_compat's
+       separate unit-test implementation. */
+    ace_aros_runtime_set_current_task(&first_task);
+    assert(ace_aros_runtime_set_signal(1u << 4, 0) == 0);
+    ace_aros_runtime_set_current_task(&second_task);
+    assert(ace_aros_runtime_check_signal(~0u) == 0);
+    ace_aros_runtime_signal_task(&first_task, 1u << 5);
+    assert(ace_aros_runtime_check_signal(~0u) == 0);
+    ace_aros_runtime_set_current_task(&first_task);
+    assert(ace_aros_runtime_check_signal(~0u) == ((1u << 4) | (1u << 5)));
+    ace_aros_runtime_set_signal(0, (1u << 4) | (1u << 5));
 
     port = CreateMsgPort();
     assert(port != NULL);

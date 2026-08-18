@@ -4,7 +4,9 @@
 #include "clipboard_device.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,12 +16,21 @@
 #include <devices/timer.h>
 #include <exec/devices.h>
 #include <exec/memory.h>
+#include <dos/dosextens.h>
 
 struct ace_port_state {
     struct MsgPort *port;
+    struct Task *owner;
     pthread_mutex_t lock;
     pthread_cond_t condition;
     struct ace_port_state *next;
+};
+
+struct ace_task_state {
+    struct Task *task;
+    ULONG allocated_signals;
+    ULONG pending_signals;
+    struct ace_task_state *next;
 };
 
 struct ace_host_unit {
@@ -58,11 +69,205 @@ static pthread_mutex_t io_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t units_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t signal_condition = PTHREAD_COND_INITIALIZER;
 static struct ace_port_state *ports;
+static struct ace_task_state *tasks;
 static struct ace_io_state *io_states;
 static struct ace_host_unit *units;
-static ULONG pending_signals;
+/* A signal handler cannot take ports_lock.  It leaves its bits here for the
+   normal runtime path to merge while holding that lock. */
+static volatile sig_atomic_t host_pending_signals;
 static UBYTE next_signal_bit;
 static struct ace_host_unit *last_console;
+static _Thread_local struct Task *current_task;
+static _Thread_local unsigned char implicit_task_identity;
+static int host_signal_pipe[2] = {-1, -1};
+static pthread_t host_signal_thread;
+static struct Task *host_signal_target;
+
+static struct ace_task_state *task_state_locked(struct Task *task, int create);
+
+static struct Task *runtime_current_task(void)
+{
+    if (!current_task)
+        current_task = (struct Task *)&implicit_task_identity;
+    return current_task;
+}
+
+void ace_aros_runtime_set_current_task(struct Task *task)
+{
+    current_task = task;
+    if (task) {
+        pthread_mutex_lock(&ports_lock);
+        (void)task_state_locked(task, 1);
+        host_signal_target = task;
+        pthread_mutex_unlock(&ports_lock);
+    }
+}
+
+static struct ace_task_state *task_state_locked(struct Task *task, int create)
+{
+    struct ace_task_state *state;
+
+    if (!task)
+        task = runtime_current_task();
+    for (state = tasks; state; state = state->next) {
+        if (state->task == task)
+            return state;
+    }
+    if (!create)
+        return NULL;
+    state = calloc(1, sizeof(*state));
+    if (!state)
+        return NULL;
+    state->task = task;
+    state->next = tasks;
+    tasks = state;
+    return state;
+}
+
+int ace_aros_runtime_register_task(struct Task *task)
+{
+    int result;
+
+    if (!task)
+        return -1;
+    pthread_mutex_lock(&ports_lock);
+    result = task_state_locked(task, 1) ? 0 : -1;
+    pthread_mutex_unlock(&ports_lock);
+    return result;
+}
+
+void ace_aros_runtime_unregister_task(struct Task *task)
+{
+    struct ace_task_state **cursor;
+
+    if (!task)
+        return;
+    pthread_mutex_lock(&ports_lock);
+    cursor = &tasks;
+    while (*cursor && (*cursor)->task != task)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        struct ace_task_state *state = *cursor;
+
+        *cursor = state->next;
+        free(state);
+    }
+    if (host_signal_target == task)
+        host_signal_target = NULL;
+    for (struct ace_port_state *port = ports; port; port = port->next) {
+        if (port->owner == task)
+            port->owner = NULL;
+    }
+    pthread_mutex_unlock(&ports_lock);
+    if (current_task == task)
+        current_task = NULL;
+}
+
+struct Task *ace_aros_runtime_find_task(CONST_STRPTR name)
+{
+    struct ace_task_state *state;
+    struct Task *result = NULL;
+
+    if (!name)
+        return runtime_current_task();
+    pthread_mutex_lock(&ports_lock);
+    for (state = tasks; state; state = state->next) {
+        const char *task_name = state->task->tc_Node.ln_Name;
+
+        if (task_name && strcmp(task_name, name) == 0) {
+            result = state->task;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ports_lock);
+    return result;
+}
+
+static void host_break_handler(int signal_number)
+{
+    unsigned char notification = (unsigned char)signal_number;
+
+    if (signal_number == SIGUSR1)
+        host_pending_signals |= (sig_atomic_t)(1UL << 12); /* Ctrl-C */
+    else if (signal_number == SIGUSR2)
+        host_pending_signals |= (sig_atomic_t)(1UL << 13); /* Ctrl-D */
+    if (host_signal_pipe[1] >= 0)
+        (void)write(host_signal_pipe[1], &notification, sizeof(notification));
+}
+
+static void *host_signal_dispatch(void *unused)
+{
+    unsigned char notification;
+
+    (void)unused;
+    while (read(host_signal_pipe[0], &notification, sizeof(notification)) > 0) {
+        ULONG signals = notification == SIGUSR1 ? 1UL << 12 :
+                        notification == SIGUSR2 ? 1UL << 13 : 0;
+        struct Task *target;
+
+        if (!signals)
+            continue;
+        pthread_mutex_lock(&ports_lock);
+        target = host_signal_target;
+        pthread_mutex_unlock(&ports_lock);
+        if (target)
+            ace_aros_runtime_signal_task(target, signals);
+    }
+    return NULL;
+}
+
+static void install_host_break_handler(void) __attribute__((constructor));
+
+static void install_host_break_handler(void)
+{
+    struct sigaction action;
+
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = host_break_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    if (pipe(host_signal_pipe) == 0) {
+        int flags;
+
+        flags = fcntl(host_signal_pipe[1], F_GETFL);
+        if (flags >= 0)
+            (void)fcntl(host_signal_pipe[1], F_SETFL, flags | O_NONBLOCK);
+        flags = fcntl(host_signal_pipe[0], F_GETFD);
+        if (flags >= 0)
+            (void)fcntl(host_signal_pipe[0], F_SETFD, flags | FD_CLOEXEC);
+        flags = fcntl(host_signal_pipe[1], F_GETFD);
+        if (flags >= 0)
+            (void)fcntl(host_signal_pipe[1], F_SETFD, flags | FD_CLOEXEC);
+        if (pthread_create(&host_signal_thread, NULL, host_signal_dispatch,
+                           NULL) == 0)
+            (void)pthread_detach(host_signal_thread);
+        else {
+            close(host_signal_pipe[0]);
+            close(host_signal_pipe[1]);
+            host_signal_pipe[0] = host_signal_pipe[1] = -1;
+        }
+    }
+    (void)sigaction(SIGUSR1, &action, NULL);
+    (void)sigaction(SIGUSR2, &action, NULL);
+}
+
+void ace_aros_runtime_raise_from_host(ULONG signals)
+{
+    host_pending_signals |= (sig_atomic_t)signals;
+}
+
+static void merge_host_signals_locked(void)
+{
+    sig_atomic_t signals = host_pending_signals;
+    struct ace_task_state *state;
+
+    if (signals) {
+        host_pending_signals = 0;
+        state = task_state_locked(runtime_current_task(), 1);
+        if (state)
+            state->pending_signals |= (ULONG)signals;
+    }
+}
 
 static struct ace_port_state *find_port_locked(struct MsgPort *port)
 {
@@ -86,6 +291,7 @@ static struct ace_port_state *ensure_port(struct MsgPort *port)
         state = calloc(1, sizeof(*state));
         if (state) {
             state->port = port;
+            state->owner = runtime_current_task();
             pthread_mutex_init(&state->lock, NULL);
             pthread_cond_init(&state->condition, NULL);
             state->next = ports;
@@ -163,7 +369,12 @@ void PutMsg(struct MsgPort *port, struct Message *message)
     pthread_cond_broadcast(&state->condition);
     pthread_mutex_unlock(&state->lock);
     pthread_mutex_lock(&ports_lock);
-    pending_signals |= 1UL << port->mp_SigBit;
+    {
+        struct ace_task_state *owner = task_state_locked(state->owner, 1);
+
+        if (owner)
+            owner->pending_signals |= 1UL << port->mp_SigBit;
+    }
     pthread_cond_broadcast(&signal_condition);
     pthread_mutex_unlock(&ports_lock);
 }
@@ -180,7 +391,12 @@ struct Message *GetMsg(struct MsgPort *port)
     pthread_mutex_unlock(&state->lock);
     if (!node) {
         pthread_mutex_lock(&ports_lock);
-        pending_signals &= ~(1UL << port->mp_SigBit);
+        {
+            struct ace_task_state *owner = task_state_locked(state->owner, 0);
+
+            if (owner)
+                owner->pending_signals &= ~(1UL << port->mp_SigBit);
+        }
         pthread_mutex_unlock(&ports_lock);
     }
     return (struct Message *)node;
@@ -202,22 +418,43 @@ void WaitPort(struct MsgPort *port)
 ULONG Wait(ULONG signals)
 {
     ULONG result;
+    struct ace_task_state *state;
 
     pthread_mutex_lock(&ports_lock);
-    while (!(pending_signals & signals))
-        pthread_cond_wait(&signal_condition, &ports_lock);
-    result = pending_signals & signals;
-    pending_signals &= ~result;
+    merge_host_signals_locked();
+    state = task_state_locked(runtime_current_task(), 1);
+    if (!state) {
+        pthread_mutex_unlock(&ports_lock);
+        return 0;
+    }
+    while (!(state->pending_signals & signals)) {
+        /* The host-signal dispatcher broadcasts this condition after its
+           async-signal-safe pipe handoff, just like Exec wakes Wait(). */
+        (void)pthread_cond_wait(&signal_condition, &ports_lock);
+        merge_host_signals_locked();
+    }
+    result = state->pending_signals & signals;
+    state->pending_signals &= ~result;
     pthread_mutex_unlock(&ports_lock);
     return result;
 }
 
 void ace_aros_runtime_signal(ULONG signals)
 {
+    ace_aros_runtime_signal_task(runtime_current_task(), signals);
+}
+
+void ace_aros_runtime_signal_task(struct Task *task, ULONG signals)
+{
+    struct ace_task_state *state;
+
     if (!signals)
         return;
     pthread_mutex_lock(&ports_lock);
-    pending_signals |= signals;
+    merge_host_signals_locked();
+    state = task_state_locked(task, 0);
+    if (state)
+        state->pending_signals |= signals;
     pthread_cond_broadcast(&signal_condition);
     pthread_mutex_unlock(&ports_lock);
 }
@@ -225,11 +462,16 @@ void ace_aros_runtime_signal(ULONG signals)
 ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask)
 {
     ULONG old;
+    struct ace_task_state *state;
 
     pthread_mutex_lock(&ports_lock);
-    old = pending_signals;
-    pending_signals |= set_mask;
-    pending_signals &= ~clear_mask;
+    merge_host_signals_locked();
+    state = task_state_locked(runtime_current_task(), 1);
+    old = state ? state->pending_signals : 0;
+    if (state) {
+        state->pending_signals |= set_mask;
+        state->pending_signals &= ~clear_mask;
+    }
     if (set_mask)
         pthread_cond_broadcast(&signal_condition);
     pthread_mutex_unlock(&ports_lock);
@@ -239,11 +481,62 @@ ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask)
 ULONG ace_aros_runtime_check_signal(ULONG mask)
 {
     ULONG result;
+    struct ace_task_state *state;
 
     pthread_mutex_lock(&ports_lock);
-    result = pending_signals & mask;
+    merge_host_signals_locked();
+    state = task_state_locked(runtime_current_task(), 1);
+    result = state ? state->pending_signals & mask : 0;
     pthread_mutex_unlock(&ports_lock);
     return result;
+}
+
+LONG ace_aros_runtime_alloc_signal(LONG signal_number)
+{
+    struct ace_task_state *state;
+    LONG result = -1;
+
+    if (signal_number < -1 || signal_number >= 32)
+        return -1;
+    pthread_mutex_lock(&ports_lock);
+    state = task_state_locked(runtime_current_task(), 1);
+    if (state && signal_number >= 0) {
+        ULONG bit = 1UL << signal_number;
+
+        if (!(state->allocated_signals & bit)) {
+            state->allocated_signals |= bit;
+            result = signal_number;
+        }
+    } else if (state) {
+        for (LONG bit = 0; bit < 32; bit++) {
+            ULONG mask = 1UL << bit;
+
+            if (!(state->allocated_signals & mask)) {
+                state->allocated_signals |= mask;
+                result = bit;
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&ports_lock);
+    return result;
+}
+
+void ace_aros_runtime_free_signal(LONG signal_number)
+{
+    struct ace_task_state *state;
+
+    if (signal_number < 0 || signal_number >= 32)
+        return;
+    pthread_mutex_lock(&ports_lock);
+    state = task_state_locked(runtime_current_task(), 0);
+    if (state) {
+        ULONG bit = 1UL << signal_number;
+
+        state->allocated_signals &= ~bit;
+        state->pending_signals &= ~bit;
+    }
+    pthread_mutex_unlock(&ports_lock);
 }
 
 static struct ace_host_unit *unit_from_request(struct IORequest *request)
@@ -551,6 +844,19 @@ LONG WaitIO(struct IORequest *request)
     pthread_mutex_destroy(&state->lock);
     free(state);
     return request->io_Error;
+}
+
+struct IORequest *CheckIO(struct IORequest *request)
+{
+    struct ace_io_state *state = find_io_state(request);
+    int finished;
+
+    if (!state)
+        return request;
+    pthread_mutex_lock(&state->lock);
+    finished = state->finished;
+    pthread_mutex_unlock(&state->lock);
+    return finished ? request : NULL;
 }
 
 LONG DoIO(struct IORequest *request)

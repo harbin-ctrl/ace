@@ -102,7 +102,18 @@ static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
 static int native_cli_loaded;
 static int native_endcli_requested;
-static ULONG native_allocated_signals;
+static int native_task_registered;
+static int native_task_broker_registered;
+static uint64_t native_task_broker_id;
+static char native_task_name[64];
+
+#define NATIVE_REMOTE_TASK_LIMIT 32
+struct native_remote_task {
+    struct Task task;
+    uint64_t broker_id;
+    char name[64];
+};
+static struct native_remote_task native_remote_tasks[NATIVE_REMOTE_TASK_LIMIT];
 
 #define NATIVE_LOCAL_VAR_LIMIT 128
 #define NATIVE_LOCAL_VAR_NAME 64
@@ -149,8 +160,60 @@ static int native_stdio_initialized;
 static void set_native_broker_error(void);
 static FILE *selected_output(void);
 
+static void native_task_signal_from_broker(uint32_t signals, void *context)
+{
+    (void)context;
+    ace_aros_runtime_signal_task(&native_process.pr_Task, signals);
+}
+
+static void native_task_name_init(void)
+{
+    const char *name;
+    char executable[PATH_MAX];
+    ssize_t length;
+
+    if (native_task_name[0])
+        return;
+    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+    if (length > 0) {
+        executable[length] = '\0';
+        name = strrchr(executable, '/');
+        name = name ? name + 1 : executable;
+    } else {
+        name = "ACE-task";
+    }
+    strncpy(native_task_name, name, sizeof(native_task_name) - 1);
+    native_task_name[sizeof(native_task_name) - 1] = '\0';
+    native_process.pr_Task.tc_Node.ln_Name = native_task_name;
+}
+
+static void native_unregister_task(void)
+{
+    if (native_task_registered) {
+        ace_aros_runtime_unregister_task(&native_process.pr_Task);
+        native_task_registered = 0;
+    }
+}
+
+static void native_activate_task(void)
+{
+    native_task_name_init();
+    ace_aros_runtime_set_current_task(&native_process.pr_Task);
+    if (!native_task_registered &&
+        ace_aros_runtime_register_task(&native_process.pr_Task) == 0) {
+        native_task_registered = 1;
+        (void)atexit(native_unregister_task);
+    }
+    if (!native_task_broker_registered && native_broker_ensure() == 0 &&
+        native_broker_task_attach(native_task_name,
+                                  native_task_signal_from_broker, NULL,
+                                  &native_task_broker_id) == 0)
+        native_task_broker_registered = 1;
+}
+
 static void native_init_stdio_handles(void)
 {
+    native_activate_task();
     if (native_stdio_initialized)
         return;
     /* RunCommand() injects a command's arguments ahead of the existing
@@ -1117,15 +1180,41 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 
 APTR FindTask(CONST_STRPTR name)
 {
-    (void)name;
+    struct Task *local;
+
     SysBase = &native_exec_base;
+    native_activate_task();
     native_refresh_local_vars();
     /* Copy.c is an older AROS process entry point. It checks pr_CLI directly
        before it ever calls a DOS routine that would normally initialize the
        CLI, so make the host process look like the CLI-backed process it is. */
     if (!native_cli_loaded)
         (void)Cli();
-    return &native_process;
+    if (!name)
+        return &native_process;
+    local = ace_aros_runtime_find_task(name);
+    if (local)
+        return local;
+    {
+        uint64_t task_id;
+
+        if (native_broker_task_find(name, &task_id) == 0) {
+            for (size_t index = 0; index < NATIVE_REMOTE_TASK_LIMIT; index++) {
+                struct native_remote_task *remote = &native_remote_tasks[index];
+
+                if (remote->broker_id == task_id)
+                    return &remote->task;
+                if (!remote->broker_id) {
+                    remote->broker_id = task_id;
+                    strncpy(remote->name, name, sizeof(remote->name) - 1);
+                    remote->name[sizeof(remote->name) - 1] = '\0';
+                    remote->task.tc_Node.ln_Name = remote->name;
+                    return &remote->task;
+                }
+            }
+        }
+    }
+    return NULL;
 }
 
 void ReplyMsg(struct Message *message)
@@ -2942,13 +3031,21 @@ UBYTE ToLower(ULONG character)
 
 ULONG SetSignal(ULONG set_mask, ULONG clear_mask)
 {
+    native_activate_task();
     return ace_aros_runtime_set_signal(set_mask, clear_mask);
 }
 
 void Signal(struct Task *task, ULONG signal_set)
 {
-    (void)task;
-    ace_aros_runtime_signal(signal_set);
+    native_activate_task();
+    for (size_t index = 0; index < NATIVE_REMOTE_TASK_LIMIT; index++) {
+        if (task == &native_remote_tasks[index].task) {
+            (void)native_broker_task_signal(native_remote_tasks[index].broker_id,
+                                            signal_set);
+            return;
+        }
+    }
+    ace_aros_runtime_signal_task(task, signal_set);
 }
 
 void SetMem(APTR destination, ULONG length, UBYTE value)
@@ -2959,36 +3056,20 @@ void SetMem(APTR destination, ULONG length, UBYTE value)
 
 ULONG CheckSignal(ULONG mask)
 {
+    native_activate_task();
     return ace_aros_runtime_check_signal(mask);
 }
 
 LONG AllocSignal(LONG signal_number)
 {
-    if (signal_number >= 0 && signal_number < 32) {
-        ULONG bit = 1UL << signal_number;
-
-        if (native_allocated_signals & bit)
-            return -1;
-        native_allocated_signals |= bit;
-        return signal_number;
-    }
-    if (signal_number == -1) {
-        for (LONG bit = 0; bit < 32; bit++) {
-            ULONG mask = 1UL << bit;
-
-            if (!(native_allocated_signals & mask)) {
-                native_allocated_signals |= mask;
-                return bit;
-            }
-        }
-    }
-    return -1;
+    native_activate_task();
+    return ace_aros_runtime_alloc_signal(signal_number);
 }
 
 void FreeSignal(LONG signal_number)
 {
-    if (signal_number >= 0 && signal_number < 32)
-        native_allocated_signals &= ~(1UL << signal_number);
+    native_activate_task();
+    ace_aros_runtime_free_signal(signal_number);
 }
 
 BOOL SetPrompt(CONST_STRPTR prompt)

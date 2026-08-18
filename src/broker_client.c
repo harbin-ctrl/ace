@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -235,6 +236,23 @@ static int broker_fd = -1;
 /* Set once native_broker_attach() succeeds; makes a replacement connection
    re-claim the session rather than silently becoming an ownerless user. */
 static int broker_attached;
+static int task_fd = -1;
+static pthread_t task_thread;
+static native_broker_task_signal_handler task_handler;
+static void *task_handler_context;
+
+static void *task_signal_reader(void *unused)
+{
+    struct amiga_broker_task_signal signal;
+
+    (void)unused;
+    while (read_all(task_fd, &signal, sizeof(signal)) == 0) {
+        if (signal.magic == AMIGA_BROKER_MAGIC &&
+            signal.operation == AMIGA_BROKER_TASK_SIGNAL && task_handler)
+            task_handler(signal.signals, task_handler_context);
+    }
+    return NULL;
+}
 
 static void broker_disconnect(void)
 {
@@ -402,6 +420,113 @@ int native_broker_attach(void)
         return -1;
     broker_attached = 1;
     return 0;
+}
+
+int native_broker_task_attach(const char *name,
+                              native_broker_task_signal_handler handler,
+                              void *context, uint64_t *task_id)
+{
+    char result[32];
+    int outcome;
+
+    if (!name || !*name || !handler || !task_id || task_fd >= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    task_fd = connect_broker();
+    if (task_fd < 0)
+        return -1;
+    char pid[32];
+
+    snprintf(pid, sizeof(pid), "%ld", (long)getpid());
+    outcome = broker_exchange(task_fd, AMIGA_BROKER_TASK_ATTACH, name, pid,
+                              0, result, sizeof(result));
+    if (outcome != 0) {
+        close(task_fd);
+        task_fd = -1;
+        return -1;
+    }
+    *task_id = strtoull(result, NULL, 10);
+    if (!*task_id) {
+        close(task_fd);
+        task_fd = -1;
+        errno = EPROTO;
+        return -1;
+    }
+    task_handler = handler;
+    task_handler_context = context;
+    if (pthread_create(&task_thread, NULL, task_signal_reader, NULL) != 0) {
+        close(task_fd);
+        task_fd = -1;
+        task_handler = NULL;
+        errno = EAGAIN;
+        return -1;
+    }
+    (void)pthread_detach(task_thread);
+    return 0;
+}
+
+int native_broker_task_find(const char *name, uint64_t *task_id)
+{
+    char result[32];
+
+    if (!name || !task_id || broker_request(AMIGA_BROKER_TASK_FIND, name,
+                                            NULL, 0, result,
+                                            sizeof(result)) != 0)
+        return -1;
+    *task_id = strtoull(result, NULL, 10);
+    return *task_id ? 0 : -1;
+}
+
+int native_broker_task_signal(uint64_t task_id, uint32_t signals)
+{
+    char id[32];
+    char mask[32];
+    char ignored[1];
+
+    if (!task_id) {
+        errno = EINVAL;
+        return -1;
+    }
+    snprintf(id, sizeof(id), "%llu", (unsigned long long)task_id);
+    snprintf(mask, sizeof(mask), "%u", signals);
+    return broker_request(AMIGA_BROKER_TASK_SIGNAL, id, mask, 0, ignored,
+                          sizeof(ignored));
+}
+
+int native_broker_task_set_foreground_pid(pid_t pid)
+{
+    char value[32];
+    char ignored[1];
+
+    snprintf(value, sizeof(value), "%ld", (long)pid);
+    return broker_request(AMIGA_BROKER_TASK_SET_FOREGROUND, value, NULL, 0,
+                          ignored, sizeof(ignored));
+}
+
+int native_broker_task_break_foreground(uint32_t signals)
+{
+    char mask[32];
+    char ignored[1];
+    int fd;
+    int result;
+
+    if (native_broker_ensure() != 0)
+        return -1;
+    fd = connect_broker();
+    if (fd < 0)
+        return -1;
+    snprintf(mask, sizeof(mask), "%u", signals);
+    result = broker_exchange(fd, AMIGA_BROKER_TASK_BREAK_FOREGROUND, mask,
+                             NULL, 0, ignored, sizeof(ignored));
+    close(fd);
+    return result == 0 ? 0 : -1;
+}
+
+int native_broker_task_list(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_TASK_LIST, NULL, NULL, 0, result,
+                          result_size);
 }
 
 int native_broker_resolve_path(const char *path, char *result, size_t result_size)

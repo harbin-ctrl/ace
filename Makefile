@@ -109,6 +109,7 @@ AROS_SORT_SRC := $(AROS_ROOT)/workbench/c/Sort.c
 AROS_SEARCH_SRC := $(AROS_ROOT)/workbench/c/Search.c
 AROS_TOUCH_SRC := $(AROS_ROOT)/workbench/c/Touch.c
 AROS_BEEP_SRC := $(AROS_ROOT)/workbench/c/Beep.c
+AROS_WAIT_SRC := $(AROS_ROOT)/workbench/c/Wait.c
 LHA_AROS_VERSION := 1.14i.1
 LHA_AROS_URL := https://github.com/sodero/lha/archive/refs/tags/$(LHA_AROS_VERSION).tar.gz
 LHA_AROS_SHA256 := 6776004c56c5fcbbed746517ecf4882e6170d1e5ee553ef228f0e6ff5e4f304b
@@ -266,14 +267,24 @@ AROS_BOOPSI_INCLUDES := -I$(CURDIR)/compat/aros-real/include \
 # drawer of. C: is the loader's last resort, so a command reachable by name
 AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault Ask Get Getenv Set Unset Alias Unalias Beep \
                   FailAt Why Prompt Clip Cut MakeDir MakeLink Join Eval Edit ED Info Copy List Sort Search Touch EndCLI Assign Relabel Type Rename Stack Run LNX NewCLI \
-                  If Else EndIf EndSkip Lab Quit Skip Execute Setenv Unsetenv LhA
+                  If Else EndIf EndSkip Lab Quit Skip Execute Setenv Unsetenv Wait Status LhA
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
 HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/Wait $(BUILD)/Status $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+
+$(BUILD)/break-probe: tests/break_probe.c $(BUILD)/dos-runtime.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
+
+$(BUILD)/broker-task-test: tests/broker_task_test.c $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) -pthread -Isrc $^ -o $@
+
+.PHONY: break-signal-test
+break-signal-test: $(BUILD)/break-probe $(BUILD)/ace-user-shell
+	python3 tests/break_signal_test.py
 
 # ET (Edified Tine) is a guest program, so its build is deliberately separate
 # from the core command graph.  Install invokes it after ACE itself is built; this
@@ -323,7 +334,7 @@ $(BUILD)/LhA: $(LHA_AROS_OBJS) $(BUILD)/ace-amiga-posix.o \
 $(BUILD)/ace-vim-runtime.o: src/ace_vim_runtime.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h | $(BUILD)
+$(BUILD)/native_command.o: src/native_command.c src/broker_protocol.h src/ace_shell_break.h src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/ace-launcher.o: src/ace_launcher.c | $(BUILD)
@@ -392,6 +403,16 @@ $(BUILD)/Search.o: $(AROS_SEARCH_SRC) | $(BUILD)
 
 $(BUILD)/Touch.o: $(AROS_TOUCH_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/Wait.o: $(AROS_WAIT_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -I$(AROS_ROOT)/arch/all-pc/include \
+	    -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+	    -I$(AROS_ROOT)/compiler/include \
+	    -DTICKS_PER_SECOND=50 -include dos/datetime.h \
+	    -include aros_exec_runtime.h -Dmain=ace_command_entry_main -c $< -o $@
+
+$(BUILD)/status.o: src/status.c src/broker_client.h src/broker_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/Beep.o: $(AROS_BEEP_SRC) src/assign_compat.h \
                  compat/include/intuition/intuitionbase.h | $(BUILD)
@@ -689,6 +710,12 @@ $(BUILD)/aros-exec-runtime-test: tests/aros_exec_runtime_test.c \
                                  $(BUILD)/clipboard-bridge.o
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
 
+$(BUILD)/aros-task-signal-test: tests/aros_task_signal_test.c \
+                                 $(BUILD)/aros-exec-runtime.o \
+                                 $(BUILD)/clipboard-device.o \
+                                 $(BUILD)/clipboard-bridge.o
+	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_INCLUDES) $^ -o $@
+
 $(BUILD)/iffparse-clipboard-test: tests/iffparse_clipboard_test.c \
                                   $(BUILD)/aros-exec-runtime.o \
                                   $(BUILD)/clipboard-device.o \
@@ -731,7 +758,7 @@ $(BUILD)/aros-shell-runtime.o: src/aros_shell_runtime.c | $(BUILD)
 $(BUILD)/aros-real-shell.o: $(AROS_ROOT)/workbench/c/Shell/Shell.c | $(BUILD)
 	$(CC) $(CFLAGS) -Dmain=ace_aros_shell_main -I$(COMPAT) -Isrc -I$(AROS_ROOT)/workbench/c/Shell -Wno-sign-compare -Wno-implicit-function-declaration -c $< -o $@
 
-$(BUILD)/ace-user-shell.o: src/ace_user_shell.c src/broker_client.h src/native_host.h | $(BUILD)
+$(BUILD)/ace-user-shell.o: src/ace_user_shell.c src/broker_client.h src/native_host.h src/ace_shell_break.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/aros-shell-%.o: $(AROS_ROOT)/workbench/c/Shell/%.c | $(BUILD)
@@ -892,6 +919,18 @@ $(BUILD)/Touch: $(BUILD)/Touch.o $(BUILD)/native_command_entry.o \
 	              $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
 	              $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
 	              $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Wait: $(BUILD)/Wait.o $(BUILD)/native_command_entry.o \
+	             $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	             $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	             $(BUILD)/broker_client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(BUILD)/Status: $(BUILD)/status.o $(BUILD)/native_command_entry.o \
+	               $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+	               $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+	               $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BUILD)/Beep: $(BUILD)/Beep.o $(BUILD)/beep_entry.o \

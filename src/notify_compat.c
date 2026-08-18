@@ -101,8 +101,9 @@ static void *notify_thread(void *context)
         if (stopping)
             break;
         if (!signature_equal(&state->previous, &current) && current.exists)
-            ace_aros_runtime_signal(1UL <<
-                                    state->request->nr_stuff.nr_Signal.nr_SignalNum);
+            ace_aros_runtime_signal_task(
+                state->request->nr_stuff.nr_Signal.nr_Task,
+                1UL << state->request->nr_stuff.nr_Signal.nr_SignalNum);
         state->previous = current;
     }
     return NULL;

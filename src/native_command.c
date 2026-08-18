@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,11 +19,78 @@
 
 #include "broker_client.h"
 #include "broker_protocol.h"
+#include "ace_shell_break.h"
+#include "aros_exec_runtime.h"
 #include "native_host.h"
 
 struct ace_command_segment {
     char path[PATH_MAX];
 };
+
+static volatile sig_atomic_t foreground_child;
+static int break_pipe[2] = {-1, -1};
+static pthread_t break_thread;
+
+static void *broker_break_dispatch(void *unused)
+{
+    unsigned char byte;
+
+    (void)unused;
+    while (read(break_pipe[0], &byte, sizeof(byte)) > 0) {
+        pid_t child = (pid_t)foreground_child;
+
+        if (child > 0 &&
+            native_broker_task_break_foreground(SIGBREAKF_CTRL_C) != 0)
+            (void)kill(child, SIGUSR1); /* broker outage: retain Ctrl-C */
+    }
+    return NULL;
+}
+
+static void shell_break_handler(int signal_number)
+{
+    (void)signal_number;
+    if (foreground_child > 0 && break_pipe[1] >= 0)
+        (void)write(break_pipe[1], "C", 1);
+    else
+        ace_aros_runtime_raise_from_host(SIGBREAKF_CTRL_C);
+}
+
+static void shell_script_break_handler(int signal_number)
+{
+    (void)signal_number;
+    /* Ctrl-D belongs to the CLI.  Shell.c checks this after the foreground
+       command returns and stops the remaining script at that boundary. */
+    ace_aros_runtime_raise_from_host(SIGBREAKF_CTRL_D);
+}
+
+void ace_shell_break_init(void)
+{
+    struct sigaction action;
+
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = shell_break_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    if (pipe(break_pipe) == 0 &&
+        pthread_create(&break_thread, NULL, broker_break_dispatch, NULL) == 0)
+        (void)pthread_detach(break_thread);
+    else {
+        if (break_pipe[0] >= 0)
+            close(break_pipe[0]);
+        if (break_pipe[1] >= 0)
+            close(break_pipe[1]);
+        break_pipe[0] = break_pipe[1] = -1;
+    }
+    (void)sigaction(SIGUSR1, &action, NULL);
+    action.sa_handler = shell_script_break_handler;
+    (void)sigaction(SIGUSR2, &action, NULL);
+}
+
+void ace_shell_break_set_foreground(pid_t child)
+{
+    foreground_child = (sig_atomic_t)child;
+    (void)native_broker_task_set_foreground_pid(child);
+}
 
 /* A directory carries the execute bit too, meaning searchable rather than
    runnable, so being executable is not on its own enough to be a command. */
@@ -518,6 +586,8 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     int script_fd = -1;
     pid_t child;
     int status;
+    sigset_t break_mask;
+    sigset_t previous_mask;
 
     (void)stack;
     if (!segment || !arguments || length < 0 ||
@@ -544,13 +614,18 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
             script = NULL;
         }
     }
+    sigemptyset(&break_mask);
+    sigaddset(&break_mask, SIGUSR1);
+    (void)sigprocmask(SIG_BLOCK, &break_mask, &previous_mask);
     child = fork();
     if (child < 0) {
+        (void)sigprocmask(SIG_SETMASK, &previous_mask, NULL);
         native_console_title("ACE Shell");
         SetIoErr(ERROR_NO_FREE_STORE);
         return RETURN_FAIL;
     }
     if (child == 0) {
+        (void)sigprocmask(SIG_SETMASK, &previous_mask, NULL);
         if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
             (void)chdir(cwd);
         if (setenv("ACE_COMMAND_ARGUMENTS", arguments, 1) != 0)
@@ -562,11 +637,15 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
         execv(segment->path, argv);
         _exit(RETURN_FAIL);
     }
+    ace_shell_break_set_foreground(child);
+    (void)sigprocmask(SIG_SETMASK, &previous_mask, NULL);
     if (waitpid(child, &status, 0) < 0) {
+        ace_shell_break_set_foreground(0);
         native_console_title("ACE Shell");
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return RETURN_FAIL;
     }
+    ace_shell_break_set_foreground(0);
     if (script) {
         /* Whatever the command read is gone from the script for good. The
            descriptor knows that; this stream does not until it is told. */

@@ -11,6 +11,7 @@
 
 #include "broker_client.h"
 #include "broker_protocol.h"
+#include "ace_shell_break.h"
 #include "native_host.h"
 
 static void publish_shell_path(void)
@@ -128,6 +129,7 @@ static void run_startup_scripts(void)
 int main(int argc, char **argv)
 {
     publish_shell_path();
+    ace_shell_break_init();
     if (native_broker_ensure() != 0) {
         fputs("ace-user-shell: broker unavailable\n", stderr);
         return 20;

@@ -10,6 +10,18 @@ index b02fb37157..1575418d1a 100644
  
  #include <exec/devices.h>
  #include <exec/io.h>
+
+@@ -237,6 +238,10 @@ AROS_SH6(Dir, 50.10,
+         case ERROR_NO_MORE_ENTRIES:
+             ioerr = 0;
+             break;
++        case ERROR_BREAK:
++            /* Ctrl-C is a normal cooperative exit, not a failure to examine
++             * the directory named on the command line. */
++            break;
+         case ERROR_OBJECT_WRONG_TYPE:
+             Printf("%s is not a directory\n", (IPTR)dir);
+             ioerr = ERROR_DIR_NOT_FOUND;
 @@ -598,13 +599,13 @@ LONG doDir(CONST_STRPTR dir, BOOL all, BOOL doDirs, BOOL doFiles, BOOL inter)
                  error = RETURN_FAIL;
              }

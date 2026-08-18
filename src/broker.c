@@ -31,6 +31,7 @@
 #define MAX_NAME     64
 #define MAX_VALUE    4096
 #define MAX_LIST_RESULT AMIGA_BROKER_MAX_PAYLOAD
+#define MAX_TASKS 256
 #define DEFAULT_FAIL_LEVEL 10
 #define DEFAULT_PROMPT "%N.%S> "
 #define AMIGA_COMPONENT_LIMIT 107
@@ -93,9 +94,23 @@ struct broker_session {
     int32_t result2;
     int32_t fail_level;
     char prompt[MAX_VALUE];
+    pid_t foreground_pid;
+    uint64_t foreground_task;
+    uint32_t pending_foreground_signals;
 };
 
 static struct broker_session sessions[MAX_SESSIONS];
+
+struct broker_task {
+    uint64_t id;
+    int fd;
+    int session;
+    pid_t pid;
+    char name[MAX_NAME];
+};
+
+static struct broker_task tasks[MAX_TASKS];
+static uint64_t next_task_id = 1;
 static struct variable_entry global_vars[MAX_VARS];
 static struct component_mapping *component_mappings;
 static uint32_t mapping_state;
@@ -1454,7 +1469,63 @@ static int send_response(int fd, int status, const char *payload)
 struct broker_connection {
     int fd;
     int anchor;
+    uint64_t task_id;
 };
+
+static struct broker_task *find_task_id(uint64_t id)
+{
+    for (size_t index = 0; index < MAX_TASKS; index++)
+        if (tasks[index].id == id)
+            return &tasks[index];
+    return NULL;
+}
+
+static void drop_task_connection(struct broker_connection *connection)
+{
+    struct broker_task *task;
+
+    if (!connection->task_id)
+        return;
+    task = find_task_id(connection->task_id);
+    if (task)
+        memset(task, 0, sizeof(*task));
+    connection->task_id = 0;
+}
+
+static int attach_task(struct broker_connection *connection,
+                       struct broker_session *session, const char *name,
+                       const char *pid_text, char *result, size_t result_size)
+{
+    char *end;
+    long pid = strtol(pid_text, &end, 10);
+
+    if (connection->task_id || !name[0] || strlen(name) >= MAX_NAME ||
+        !pid_text[0] || *end || pid <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t index = 0; index < MAX_TASKS; index++) {
+        struct broker_task *task = &tasks[index];
+
+        if (task->id)
+            continue;
+        task->id = next_task_id++;
+        if (!next_task_id)
+            next_task_id = 1;
+        task->fd = connection->fd;
+        task->session = (int)(session - sessions);
+        task->pid = (pid_t)pid;
+        strcpy(task->name, name);
+        connection->task_id = task->id;
+        if (session->foreground_pid == task->pid)
+            session->foreground_task = task->id;
+        snprintf(result, result_size, "%llu",
+                 (unsigned long long)task->id);
+        return 0;
+    }
+    errno = ENOSPC;
+    return -1;
+}
 
 /*
  * Serves one request on one connection.
@@ -1502,6 +1573,7 @@ static int handle_client(struct broker_connection *connection)
         goto done;
     }
     outcome = 0;
+    result[0] = '\0';
 
     switch (request.operation) {
     case AMIGA_BROKER_RESOLVE:
@@ -1760,6 +1832,122 @@ static int handle_client(struct broker_connection *connection)
         }
         break;
 
+    case AMIGA_BROKER_TASK_ATTACH:
+        if (attach_task(connection, session, path, value, result, sizeof(result)) != 0)
+            status = errno;
+        break;
+
+    case AMIGA_BROKER_TASK_FIND:
+        for (size_t index = 0; index < MAX_TASKS; index++) {
+            if (tasks[index].id && strcmp(tasks[index].name, path) == 0) {
+                snprintf(result, sizeof(result), "%llu",
+                         (unsigned long long)tasks[index].id);
+                break;
+            }
+        }
+        if (!result[0])
+            status = ESRCH;
+        break;
+
+    case AMIGA_BROKER_TASK_SIGNAL: {
+        char *end;
+        unsigned long long id = strtoull(path, &end, 10);
+        unsigned long mask;
+        struct broker_task *task;
+        struct amiga_broker_task_signal signal;
+
+        if (!path[0] || *end || id == 0) {
+            status = EINVAL;
+            break;
+        }
+        mask = strtoul(value, &end, 10);
+        if (!value[0] || *end || mask > UINT32_MAX) {
+            status = EINVAL;
+            break;
+        }
+        task = find_task_id((uint64_t)id);
+        if (!task) {
+            status = ESRCH;
+            break;
+        }
+        signal.magic = AMIGA_BROKER_MAGIC;
+        signal.operation = AMIGA_BROKER_TASK_SIGNAL;
+        signal.task_id = task->id;
+        signal.signals = (uint32_t)mask;
+        if (write_all(task->fd, &signal, sizeof(signal)) != 0)
+            status = ESRCH;
+        break;
+    }
+
+    case AMIGA_BROKER_TASK_SET_FOREGROUND: {
+        char *end;
+        long pid = strtol(path, &end, 10);
+
+        if (!path[0] || *end || pid < 0) {
+            status = EINVAL;
+            break;
+        }
+        session->foreground_pid = (pid_t)pid;
+        session->foreground_task = 0;
+        if (pid) {
+            for (size_t index = 0; index < MAX_TASKS; index++)
+                if (tasks[index].id && tasks[index].pid == pid) {
+                    session->foreground_task = tasks[index].id;
+                    break;
+                }
+        } else {
+            session->pending_foreground_signals = 0;
+        }
+        break;
+    }
+
+    case AMIGA_BROKER_TASK_BREAK_FOREGROUND: {
+        char *end;
+        unsigned long mask = strtoul(path, &end, 10);
+        struct broker_task *task = find_task_id(session->foreground_task);
+        struct amiga_broker_task_signal signal;
+
+        if (!path[0] || *end || mask > UINT32_MAX) {
+            status = EINVAL;
+            break;
+        }
+        if (!task) {
+            if (session->foreground_pid)
+                session->pending_foreground_signals |= (uint32_t)mask;
+            else
+                status = ESRCH;
+            break;
+        }
+        signal.magic = AMIGA_BROKER_MAGIC;
+        signal.operation = AMIGA_BROKER_TASK_SIGNAL;
+        signal.task_id = task->id;
+        signal.signals = (uint32_t)mask;
+        if (write_all(task->fd, &signal, sizeof(signal)) != 0)
+            status = ESRCH;
+        break;
+    }
+
+    case AMIGA_BROKER_TASK_LIST: {
+        size_t used = 0;
+
+        for (size_t index = 0; index < MAX_TASKS; index++) {
+            int written;
+
+            if (!tasks[index].id)
+                continue;
+            written = snprintf(result + used, sizeof(result) - used,
+                               "%llu\t%ld\t%s\n",
+                               (unsigned long long)tasks[index].id,
+                               (long)tasks[index].pid, tasks[index].name);
+            if (written < 0 || (size_t)written >= sizeof(result) - used) {
+                status = EOVERFLOW;
+                break;
+            }
+            used += (size_t)written;
+        }
+        break;
+    }
+
     case AMIGA_BROKER_GETVAR: {
         struct variable_entry *variable = lookup_variable(session, path,
                                                            request.flags);
@@ -1924,11 +2112,27 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_GETRESULT ||
                request.operation == AMIGA_BROKER_LISTDOS ||
                request.operation == AMIGA_BROKER_LISTASSIGNS ||
-               request.operation == AMIGA_BROKER_LISTPATH) {
+               request.operation == AMIGA_BROKER_LISTPATH ||
+               request.operation == AMIGA_BROKER_TASK_ATTACH ||
+               request.operation == AMIGA_BROKER_TASK_FIND ||
+               request.operation == AMIGA_BROKER_TASK_LIST) {
         if (send_response(fd, 0, result) != 0)
             outcome = -1;
     } else {
         if (send_response(fd, 0, NULL) != 0)
+            outcome = -1;
+    }
+    if (outcome == 0 && request.operation == AMIGA_BROKER_TASK_ATTACH &&
+        session->foreground_task == connection->task_id &&
+        session->pending_foreground_signals) {
+        struct amiga_broker_task_signal signal;
+
+        signal.magic = AMIGA_BROKER_MAGIC;
+        signal.operation = AMIGA_BROKER_TASK_SIGNAL;
+        signal.task_id = connection->task_id;
+        signal.signals = session->pending_foreground_signals;
+        session->pending_foreground_signals = 0;
+        if (write_all(fd, &signal, sizeof(signal)) != 0)
             outcome = -1;
     }
 
@@ -1964,6 +2168,8 @@ static void drop_connection(size_t index)
 {
     struct broker_connection *connection = &connections[index];
 
+    drop_task_connection(connection);
+
     if (connection->anchor >= 0) {
         struct broker_session *session = &sessions[connection->anchor];
 
@@ -1991,6 +2197,7 @@ static void accept_connection(void)
     }
     connections[connection_count].fd = fd;
     connections[connection_count].anchor = -1;
+    connections[connection_count].task_id = 0;
     connection_count++;
 }
 

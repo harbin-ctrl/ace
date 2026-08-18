@@ -96,7 +96,16 @@ enum amiga_broker_operation {
     /* The shell's PATH list, kept in the broker because commands are
      * separate processes from the shell that owns the CLI. */
     AMIGA_BROKER_LISTPATH = 21,
-    AMIGA_BROKER_PATH = 22
+    AMIGA_BROKER_PATH = 22,
+    /* A dedicated, broker-to-task control connection.  It is deliberately
+       separate from the request/reply connection: signals may arrive while
+       a task is doing DOS I/O. */
+    AMIGA_BROKER_TASK_ATTACH = 23,
+    AMIGA_BROKER_TASK_FIND = 24,
+    AMIGA_BROKER_TASK_SIGNAL = 25,
+    AMIGA_BROKER_TASK_SET_FOREGROUND = 26,
+    AMIGA_BROKER_TASK_BREAK_FOREGROUND = 27,
+    AMIGA_BROKER_TASK_LIST = 28
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
@@ -136,6 +145,15 @@ struct amiga_broker_response {
     uint32_t magic;
     int32_t status;
     uint32_t payload_length;
+};
+
+/* Records sent only from broker to a TASK_ATTACH connection, after its
+   ordinary successful attach response. */
+struct amiga_broker_task_signal {
+    uint32_t magic;
+    uint32_t operation;
+    uint64_t task_id;
+    uint32_t signals;
 };
 
 #endif

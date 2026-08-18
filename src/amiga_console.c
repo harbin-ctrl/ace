@@ -124,6 +124,7 @@ struct console_window {
     int stream_fd;
     struct ace_console_channel channel;
     pid_t child_pid;
+    pid_t controller_pid;
     char *font_family;
     int font_size;
     uint32_t palette[ACE_CONSOLE_PEN_COUNT];
@@ -1570,6 +1571,23 @@ static gboolean key_press(GtkWidget *widget, GdkEventKey *event, gpointer data)
         int character = control_character(key);
 
         if (character >= 0) {
+            if (character == 3) {
+                /* Ctrl-C is an AmigaDOS break request, not a byte to leave
+                   queued behind a running foreground command.  The shell
+                   forwards SIGUSR1 to that command, whose ACE runtime turns
+                   it into SIGBREAKF_CTRL_C. */
+                if (console->controller_pid > 0)
+                    (void)kill(console->controller_pid, SIGUSR1);
+                return TRUE;
+            }
+            if (character == 4) {
+                /* Ctrl-D is the shell's script-break request.  It is not
+                   input for the foreground command: Shell.c observes the
+                   resulting SIGBREAKF_CTRL_D after that command completes. */
+                if (console->controller_pid > 0)
+                    (void)kill(console->controller_pid, SIGUSR2);
+                return TRUE;
+            }
             char byte = (char)character;
 
             (void)send_input(console, &byte, 1);
@@ -1857,6 +1875,7 @@ int main(int argc, char **argv)
     memset(&console, 0, sizeof(console));
     console.stream_fd = -1;
     console.child_pid = -1;
+    console.controller_pid = -1;
     console.font_size = DEFAULT_FONT_SIZE;
     g_strlcpy(console.current_title, "ACE Shell",
               sizeof(console.current_title));
@@ -1933,8 +1952,14 @@ int main(int argc, char **argv)
     setenv("GDK_BACKEND", "wayland", 1);
     prepare_appmenu_environment();
     if (external_fd >= 0) {
+        struct ucred peer;
+        socklen_t peer_size = sizeof(peer);
+
         console.stream_fd = external_fd;
         console.child_pid = -1;
+        if (getsockopt(external_fd, SOL_SOCKET, SO_PEERCRED, &peer,
+                       &peer_size) == 0 && peer_size == sizeof(peer))
+            console.controller_pid = peer.pid;
     } else {
         if (executable_directory(argv[0], directory, sizeof(directory)) != 0)
             return 20;
@@ -1969,6 +1994,7 @@ int main(int argc, char **argv)
         }
         close(sockets[1]);
         console.stream_fd = sockets[0];
+        console.controller_pid = console.child_pid;
     }
     ace_console_channel_set_fd(&console.channel, console.stream_fd);
     ace_console_device_set_input_fd(console.device, console.stream_fd);

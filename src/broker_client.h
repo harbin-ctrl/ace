@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 int native_broker_ensure(void);
 int native_broker_attach(void);
@@ -32,5 +33,16 @@ int native_broker_listdos(char *result, size_t result_size);
 int native_broker_relabel(const char *drive, const char *name);
 int native_broker_listpath(char *result, size_t result_size);
 int native_broker_path(const char *path, uint32_t flags);
+
+typedef void (*native_broker_task_signal_handler)(uint32_t signals,
+                                                  void *context);
+int native_broker_task_attach(const char *name,
+                              native_broker_task_signal_handler handler,
+                              void *context, uint64_t *task_id);
+int native_broker_task_find(const char *name, uint64_t *task_id);
+int native_broker_task_signal(uint64_t task_id, uint32_t signals);
+int native_broker_task_set_foreground_pid(pid_t pid);
+int native_broker_task_break_foreground(uint32_t signals);
+int native_broker_task_list(char *result, size_t result_size);
 
 #endif

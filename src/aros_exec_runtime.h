@@ -13,9 +13,20 @@ void PutMsg(struct MsgPort *port, struct Message *message);
 struct Message *GetMsg(struct MsgPort *port);
 void WaitPort(struct MsgPort *port);
 ULONG Wait(ULONG signals);
+struct Task;
+int ace_aros_runtime_register_task(struct Task *task);
+void ace_aros_runtime_unregister_task(struct Task *task);
+struct Task *ace_aros_runtime_find_task(CONST_STRPTR name);
+void ace_aros_runtime_set_current_task(struct Task *task);
 void ace_aros_runtime_signal(ULONG signals);
+void ace_aros_runtime_signal_task(struct Task *task, ULONG signals);
 ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask);
 ULONG ace_aros_runtime_check_signal(ULONG mask);
+LONG ace_aros_runtime_alloc_signal(LONG signal_number);
+void ace_aros_runtime_free_signal(LONG signal_number);
+/* Safe to call from a host signal handler.  The bits are merged into the
+   normal Exec signal state on the next runtime operation. */
+void ace_aros_runtime_raise_from_host(ULONG signals);
 
 APTR CreateIORequest(struct MsgPort *reply_port, ULONG size);
 void DeleteIORequest(struct IORequest *request);
@@ -25,6 +36,7 @@ void CloseDevice(struct IORequest *request);
 void SendIO(struct IORequest *request);
 LONG DoIO(struct IORequest *request);
 LONG WaitIO(struct IORequest *request);
+struct IORequest *CheckIO(struct IORequest *request);
 void AbortIO(struct IORequest *request);
 
 void *ace_aros_console_last(void);
