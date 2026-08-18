@@ -162,6 +162,19 @@ if [ -d "$volume_root/$volume_first" ]; then
     [ "$(control resolve ":$volume_first")" = "$volume_first_host" ]
 fi
 
+# Only four things cannot be spelled: ':', '/', '^', and being too long or
+# case-colliding.  Everything else -- spaces, punctuation, non-ASCII -- is an
+# ordinary AmigaDOS filename character and must survive untouched.
+for legal in 'plain name.txt' 'report(final)#1.txt' 'Grüße.txt'; do
+    : > "$mapping_test_dir/$legal"
+    legal_name=$(control name "$mapping_test_dir/$legal")
+    if [ "${legal_name##*/}" != "$legal" ]; then
+        echo "a legal AmigaDOS name was escaped: $legal -> ${legal_name##*/}" >&2
+        exit 1
+    fi
+    [ "$(control resolve "$legal_name")" = "$(realpath "$mapping_test_dir/$legal")" ]
+done
+
 # Linux names that are not safe AROS components are spelled <header>^<base32>.
 # The spelling is a pure function of the host name -- no broker state -- so it
 # must be short enough for an AROS FileInfoBlock, visibly synthetic, resolve

@@ -229,40 +229,56 @@ non-filesystem media are not registered as file volumes.
 
 ### Linux names that AmigaDOS cannot spell
 
-Linux allows filenames AmigaDOS does not: longer than 107 bytes, containing
-`:` or `/` or control bytes, or -- most often -- two names in one directory
-that differ only in case, which a case-insensitive AmigaDOS filesystem regards
-as one file. ACE gives those a spelling of the form `header^base32`.
+AmigaDOS takes very nearly every name Linux can produce. Spaces, `+`, `#`,
+`*`, quotes and non-ASCII bytes are ordinary filename characters; the pattern
+metacharacters among them need quoting when they appear in a pattern, which is
+equally true on a real Amiga and is not a reason to rename anyone's files. So
+`my file.txt`, `report(final)#1.txt` and `Grüße.txt` are left exactly as they
+are and open under their own names.
+
+Four things genuinely cannot be spelled, and only these reach the mapper:
+
+* `:`, which separates a volume from the path after it;
+* `/`, which separates components -- a Linux filename can never contain one,
+  but the rule is stated for completeness;
+* `^`, which introduces the escape below, so a name containing one has to be
+  escaped or the marker would be ambiguous;
+* names too long for a `FileInfoBlock` component, and names that differ from
+  another name in the same directory only by case, which a case-insensitive
+  AmigaDOS filesystem regards as one file.
+
+Those get a spelling of the form `header^base32`:
+
+```text
+Hi:There.txt  ->  Hi^HJKGQZLSMUXHI6DUAA
+a^b.txt       ->  a^LZRC45DYOQAA
+notes.txt     ->  ^NZXXIZLTFZ2HQ5AA      (next to Notes.txt)
+report.txt    ->  repor^OQXHI6DUAA       (next to reporT.txt)
+```
 
 The escape is a pure function of the host name. Nothing is stored, so a name
 means the same thing in every broker, on every machine, and after every
 restart; there is no dictionary to persist, migrate, or garbage-collect.
 
-```text
-my file.txt   ->  my^EBTGS3DFFZ2HQ5AA
-Grüße.txt     ->  Gr^YO6MHH3FFZ2HQ5AA
-a^b.txt       ->  a^LZRC45DYOQAA
-report.txt    ->  repor^OQXHI6DUAA     (next to reporT.txt)
-```
-
 Everything before the `^` is literal, and the split falls as late as it can:
-at the first byte with no Amiga spelling, or for a case collision at the first
+at the first byte that cannot be spelled, or for a case collision at the first
 byte where the colliding names differ. Of a set of colliding names the
 lexically first keeps its plain spelling and the rest are escaped.
 
 base32 rather than base64 because the filesystem is case-insensitive, so an
 alphabet distinguishing `A` from `a` would let two encodings name one file.
-`^` is reserved: a host name containing one is escaped like any other
-unspellable name, so a `^` in an Amiga name always introduces an encoding.
 
 The payload's last byte says which of two things it is. A trailing NUL means
 the payload is the rest of the host name literally, and decoding reconstructs
 it without touching the disk. Anything else means the name was too long to
 spell out and the payload is a hash of it; a hash cannot be inverted and is
 not -- the directory is read and each entry encoded forward until one matches,
-the way a password is checked rather than recovered. The consequence is that a
-hashed name resolves only while its file exists, which is also the only case
-where ACE needs the directory to answer at all.
+the way a password is checked rather than recovered.
+
+That last form has a real limit worth knowing: it resolves only while its file
+is still in that directory, so it does not survive being copied elsewhere. A
+107-character component cannot carry a 255-byte name in any alphabet, so a
+name that long is not fully representable and something has to give.
 
 The first filesystem handler supports VFAT and ext2, ext3, and ext4. The
 broker also enumerates the live Linux mount table. Block-backed mounts are

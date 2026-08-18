@@ -595,31 +595,32 @@ static uint64_t host_name_hash(const char *name)
     return hash;
 }
 
+/*
+ * AmigaDOS takes very nearly every name Linux can produce.  Spaces, '+',
+ * '#', '*', quotes, accented and non-ASCII bytes are all ordinary filename
+ * characters; the pattern metacharacters among them need quoting when they
+ * appear in a pattern, which is equally true on a real Amiga and is not a
+ * reason to rename anybody's files.  So the mapper stays out of the way
+ * unless the name genuinely cannot be spelled:
+ *
+ *   ':'   separates a volume from the path that follows it.
+ *   '/'   separates path components.  A Linux filename can never contain
+ *         one, but the check costs nothing and says what the rule is.
+ *   '^'   introduces one of these escapes, so a name containing one has to
+ *         be escaped itself or the marker would be ambiguous.
+ *   too long for a FileInfoBlock component.
+ *
+ * A case collision is the fifth trigger and cannot be seen from the name
+ * alone -- it depends on what else is in the directory -- so
+ * host_case_variant_needs_mapping() decides that one separately.
+ */
 static bool component_needs_mapping(const char *name)
 {
-    size_t length = strlen(name);
-
-    if (length > AMIGA_COMPONENT_LIMIT)
+    if (strlen(name) > AMIGA_COMPONENT_LIMIT)
         return true;
-    for (size_t index = 0; index < length; index++) {
-        unsigned char character = (unsigned char)name[index];
-
-        /* Keep the exposed form deliberately boring. Besides ':' being a
-         * path separator, AROS pattern syntax gives several other legal
-         * Linux bytes structural meaning. Control and non-ASCII bytes are
-         * also poor terminal display material. */
-        if (!((character >= 'a' && character <= 'z') ||
-              (character >= 'A' && character <= 'Z') ||
-              (character >= '0' && character <= '9') ||
-              character == '.' || character == '_' || character == '-') )
+    for (const char *cursor = name; *cursor; cursor++)
+        if (*cursor == ':' || *cursor == '/' || *cursor == MAPPED_MARKER)
             return true;
-        /* '^' introduces an escape, so a host name containing one has to be
-           escaped itself.  That makes the marker unambiguous in the other
-           direction: a '^' in an Amiga component is always the start of an
-           encoding, never a literal character someone typed. */
-        if (character == MAPPED_MARKER)
-            return true;
-    }
     return false;
 }
 
