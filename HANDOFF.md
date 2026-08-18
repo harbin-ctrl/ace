@@ -653,9 +653,10 @@ no idle timeout.
 directory, command paths, assigns, local variables, RC/Result2, fail level,
 prompt, and foreground task. That state is anchored by the shell that owns it
 and freed the moment the shell disconnects, so it does not accumulate.
-Broker-wide: the task registry, global (`Setenv`) variables, the
-case-collision component mappings, SYS:, and the DOS volume list. This second
-group is the state a stale broker gets wrong.
+Broker-wide: the task registry, global (`Setenv`) variables, SYS:, and the DOS
+volume list. This second group is the state a stale broker gets wrong, and
+`Setenv` is now the only part of it that cannot be rebuilt -- the escaped
+filename spellings used to live here too, and are a pure function now.
 
 **What one broker is.** Its socket is
 `$XDG_RUNTIME_DIR/ace-broker-<sys>-<protocol>.sock`, and both halves of that

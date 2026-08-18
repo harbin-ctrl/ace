@@ -39,7 +39,6 @@
  * negation operator. '^' remains an ordinary filename character there and
  * is still visually conspicuous on Linux. */
 #define MAPPED_MARKER '^'
-#define MAPPED_SUFFIX_DIGITS 8
 #define ASSIGN_DIRECTORY 1
 #define ASSIGN_LATE 3
 #define ASSIGN_NONBINDING 4
@@ -66,12 +65,6 @@ struct assign_entry {
  * pathname gets a short, visible spelling for the life of this broker. The
  * parent is part of the key: the same spelling may be used independently in
  * different directories. */
-struct component_mapping {
-    char parent[PATH_MAX];
-    char host_name[NAME_MAX + 1];
-    char amiga_name[AMIGA_COMPONENT_LIMIT + 1];
-    struct component_mapping *next;
-};
 
 struct broker_session {
     bool in_use;
@@ -112,8 +105,6 @@ struct broker_task {
 static struct broker_task tasks[MAX_TASKS];
 static uint64_t next_task_id = 1;
 static struct variable_entry global_vars[MAX_VARS];
-static struct component_mapping *component_mappings;
-static uint32_t mapping_state;
 static int server_fd = -1;
 static time_t broker_started;
 /* Set from amiga_broker_socket_path(), or argv[1], as main() starts, before
@@ -490,6 +481,120 @@ static struct broker_session *find_session(const char *id)
     return NULL;
 }
 
+/*
+ * Amiga names for host names that have none.
+ *
+ * The escape is  <header>^<base32>  and it is a pure function of the host
+ * name: nothing is stored, so a name means the same thing in every broker, on
+ * every machine, and after every restart.  The previous scheme drew a random
+ * suffix per broker process and remembered it in RAM, which meant a name died
+ * with the broker that invented it.
+ *
+ * base32 rather than base64 because AmigaDOS filesystems are case-insensitive,
+ * so an alphabet that distinguishes 'A' from 'a' would let two different
+ * encodings name one file and silently overwrite each other.  RFC 4648's
+ * A-Z2-7 has no such pair, and every character of it is already legal in an
+ * ACE component.  It costs about 3% against base36 and is bit-packing rather
+ * than bignum arithmetic.
+ *
+ * Which of the two forms an escape is saying is carried by the last byte of
+ * the payload, which is the whole trick:
+ *
+ *   ends in NUL   the payload is the rest of the host name, literally.
+ *                 Decoding reconstructs it; no lookup, no directory scan,
+ *                 nothing to store or keep in step.
+ *   ends nonzero  the host name was too long to fit, so the payload is a
+ *                 hash of it.  A hash cannot be inverted, and is not: the
+ *                 parent is scanned and each entry encoded forward until one
+ *                 matches, the way a password is checked rather than
+ *                 recovered.
+ */
+#define BASE32_ALPHABET "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+static size_t base32_encoded_length(size_t bytes)
+{
+    return (bytes * 8 + 4) / 5;
+}
+
+static size_t base32_encode(const unsigned char *data, size_t length,
+                            char *result, size_t result_size)
+{
+    uint32_t accumulator = 0;
+    unsigned bits = 0;
+    size_t used = 0;
+
+    for (size_t index = 0; index < length; index++) {
+        accumulator = (accumulator << 8) | data[index];
+        bits += 8;
+        while (bits >= 5) {
+            if (used + 1 >= result_size)
+                return 0;
+            result[used++] = BASE32_ALPHABET[(accumulator >> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    if (bits) {
+        if (used + 1 >= result_size)
+            return 0;
+        /* Trailing bits are left-aligned and zero-filled, as RFC 4648 does
+           before it pads; ACE omits the '=' padding because '=' is not a
+           legal ACE component character and the length is recoverable. */
+        result[used++] = BASE32_ALPHABET[(accumulator << (5 - bits)) & 31];
+    }
+    result[used] = '\0';
+    return used;
+}
+
+static int base32_decode(const char *text, unsigned char *result,
+                         size_t result_size, size_t *result_length)
+{
+    uint32_t accumulator = 0;
+    unsigned bits = 0;
+    size_t used = 0;
+
+    for (const char *cursor = text; *cursor; cursor++) {
+        unsigned char character = (unsigned char)*cursor;
+        const char *position;
+
+        if (character >= 'a' && character <= 'z')
+            character = (unsigned char)(character - 'a' + 'A');
+        position = strchr(BASE32_ALPHABET, character);
+        if (!position || !character)
+            return -1;
+        accumulator = (accumulator << 5) | (uint32_t)(position - BASE32_ALPHABET);
+        bits += 5;
+        if (bits >= 8) {
+            if (used >= result_size)
+                return -1;
+            result[used++] = (unsigned char)((accumulator >> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    /* Whatever is left is the zero fill the encoder added; anything set in it
+       means the text was not produced by base32_encode(). */
+    if (bits >= 5 || (accumulator & ((1u << bits) - 1)))
+        return -1;
+    *result_length = used;
+    return used ? 0 : -1;
+}
+
+/* FNV-1a.  Used only to name a file too long to spell out, and never
+   inverted -- see the note above. */
+static uint64_t host_name_hash(const char *name)
+{
+    uint64_t hash = 1469598103934665603ull;
+
+    for (; *name; name++) {
+        hash ^= (unsigned char)*name;
+        hash *= 1099511628211ull;
+    }
+    /* The last byte must not be zero: that is what distinguishes a hashed
+       payload from a literal one, which always ends in its own NUL. */
+    if (!(hash & 0xff))
+        hash |= 1;
+    return hash;
+}
+
 static bool component_needs_mapping(const char *name)
 {
     size_t length = strlen(name);
@@ -508,62 +613,19 @@ static bool component_needs_mapping(const char *name)
               (character >= '0' && character <= '9') ||
               character == '.' || character == '_' || character == '-') )
             return true;
+        /* '^' introduces an escape, so a host name containing one has to be
+           escaped itself.  That makes the marker unambiguous in the other
+           direction: a '^' in an Amiga component is always the start of an
+           encoding, never a literal character someone typed. */
+        if (character == MAPPED_MARKER)
+            return true;
     }
     return false;
 }
 
-static uint32_t next_mapping_value(void)
-{
-    if (!mapping_state) {
-        struct timespec now;
 
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        mapping_state = (uint32_t)now.tv_nsec ^ (uint32_t)now.tv_sec ^
-                        (uint32_t)getpid();
-        if (!mapping_state)
-            mapping_state = 0x9e3779b9u;
-    }
 
-    /* xorshift32 is sufficient here: this is a collision-resistant display
-     * suffix, not a security token. */
-    mapping_state ^= mapping_state << 13;
-    mapping_state ^= mapping_state >> 17;
-    mapping_state ^= mapping_state << 5;
-    return mapping_state;
-}
 
-static struct component_mapping *find_mapping_by_host(const char *parent,
-                                                       const char *host_name)
-{
-    for (struct component_mapping *mapping = component_mappings;
-         mapping; mapping = mapping->next)
-        if (strcmp(mapping->parent, parent) == 0 &&
-            strcmp(mapping->host_name, host_name) == 0)
-            return mapping;
-    return NULL;
-}
-
-static struct component_mapping *find_mapping_by_amiga(const char *parent,
-                                                        const char *amiga_name)
-{
-    for (struct component_mapping *mapping = component_mappings;
-         mapping; mapping = mapping->next)
-        if (strcmp(mapping->parent, parent) == 0 &&
-            strcasecmp(mapping->amiga_name, amiga_name) == 0)
-            return mapping;
-    return NULL;
-}
-
-static int host_component_exists(const char *parent, const char *name)
-{
-    char path[PATH_MAX];
-
-    if (snprintf(path, sizeof(path), "%s%s%s", parent,
-                 strcmp(parent, "/") == 0 ? "" : "/", name) >=
-        (int)sizeof(path))
-        return 1;
-    return lstat(path, &(struct stat){0}) == 0;
-}
 
 /* Linux permits several spellings which AmigaDOS would regard as the same
  * component.  Keep the lexical first one as the ordinary Amiga spelling and
@@ -622,13 +684,69 @@ static const char *host_component_for_amiga(const char *amiga_name)
     return NULL;
 }
 
+/*
+ * Where the literal part of a name has to stop.
+ *
+ * Everything before the split is kept as-is and everything from it on is
+ * encoded, so the split wants to be as late as possible: a byte costs one
+ * character in the header and 1.6 inside the payload.  The first character
+ * that has no Amiga spelling is therefore the natural place.
+ *
+ * A case collision has no such character -- "notes.txt" is perfectly legal in
+ * itself, and only impossible next to "Notes.txt" -- so the split is the
+ * first byte where the colliding siblings actually differ.  That matters for
+ * more than tidiness: with three variants of one name, splitting any later
+ * would give two of them identical payloads and headers differing only in
+ * case, which on a case-insensitive filesystem is one file, not two.
+ */
+static size_t component_split_point(const char *parent, const char *host_name)
+{
+    size_t length = strlen(host_name);
+    size_t split = length;
+    DIR *stream;
+    struct dirent *entry;
+
+    for (size_t index = 0; index < length; index++) {
+        char probe[2] = { host_name[index], '\0' };
+
+        if (component_needs_mapping(probe)) {
+            split = index;
+            break;
+        }
+    }
+
+    stream = opendir(parent);
+    if (!stream)
+        return split;
+    while ((entry = readdir(stream)) != NULL) {
+        size_t index = 0;
+
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0 ||
+            strcmp(entry->d_name, host_name) == 0 ||
+            strcasecmp(entry->d_name, host_name) != 0)
+            continue;
+        while (entry->d_name[index] && entry->d_name[index] == host_name[index])
+            index++;
+        if (index < split)
+            split = index;
+    }
+    closedir(stream);
+    return split;
+}
+
 static int map_component(const char *parent, const char *host_name,
                          char *result, size_t result_size)
 {
-    struct component_mapping *mapping;
+    unsigned char payload[NAME_MAX + 2];
+    char encoded[AMIGA_COMPONENT_LIMIT + 1];
+    char candidate[AMIGA_COMPONENT_LIMIT + 1];
     const char *fixed_name;
-    char prefix[AMIGA_COMPONENT_LIMIT + 1];
-    size_t prefix_length = 0;
+    size_t host_length = strlen(host_name);
+    size_t split;
+    size_t tail_length;
+    size_t header_length;
+    size_t encoded_length;
 
     fixed_name = amiga_component_for_host(host_name);
     if (fixed_name) {
@@ -641,74 +759,63 @@ static int map_component(const char *parent, const char *host_name,
     }
     if (!component_needs_mapping(host_name) &&
         !host_case_variant_needs_mapping(parent, host_name)) {
-        if (strlen(host_name) >= result_size) {
+        if (host_length >= result_size) {
             errno = ENAMETOOLONG;
             return -1;
         }
         strcpy(result, host_name);
         return 0;
     }
-    mapping = find_mapping_by_host(parent, host_name);
-    if (mapping) {
-        if (strlen(mapping->amiga_name) >= result_size) {
+
+    split = component_split_point(parent, host_name);
+    if (split > host_length)
+        split = host_length;
+    tail_length = host_length - split;
+
+    /* Literal form: the rest of the host name, and its own NUL to say so. */
+    if (tail_length + 1 <= sizeof(payload)) {
+        memcpy(payload, host_name + split, tail_length);
+        payload[tail_length] = '\0';
+        encoded_length = base32_encoded_length(tail_length + 1);
+        if (split + 1 + encoded_length <= AMIGA_COMPONENT_LIMIT &&
+            base32_encode(payload, tail_length + 1, encoded, sizeof(encoded))) {
+            if ((size_t)snprintf(candidate, sizeof(candidate), "%.*s%c%s",
+                                 (int)split, host_name, MAPPED_MARKER,
+                                 encoded) < sizeof(candidate)) {
+                if (strlen(candidate) >= result_size) {
+                    errno = ENAMETOOLONG;
+                    return -1;
+                }
+                strcpy(result, candidate);
+                return 0;
+            }
+        }
+    }
+
+    /*
+     * Too long to spell out, so name it by a hash of itself instead.  The
+     * payload never ends in NUL, which is how unmap_component() knows it has
+     * to scan rather than decode.  The header is whatever still fits.
+     */
+    {
+        uint64_t hash = host_name_hash(host_name);
+        size_t available;
+
+        for (size_t index = 0; index < 8; index++)
+            payload[index] = (unsigned char)(hash >> (56 - index * 8));
+        encoded_length = base32_encoded_length(8);
+        if (!base32_encode(payload, 8, encoded, sizeof(encoded))) {
             errno = ENAMETOOLONG;
             return -1;
         }
-        strcpy(result, mapping->amiga_name);
-        return 0;
-    }
-
-    for (size_t index = 0; host_name[index] &&
-         prefix_length < sizeof(prefix) - 1; index++) {
-        unsigned char character = (unsigned char)host_name[index];
-
-        if ((character >= 'a' && character <= 'z') ||
-            (character >= 'A' && character <= 'Z') ||
-            (character >= '0' && character <= '9') ||
-            character == '.' || character == '_' || character == '-')
-            prefix[prefix_length++] = (char)character;
-        else
-            prefix[prefix_length++] = '-';
-    }
-    if (!prefix_length)
-        memcpy(prefix, "file", 5), prefix_length = 4;
-    prefix[prefix_length] = '\0';
-
-    /* The suffix is intentionally fixed-width and random-looking. It makes
-     * the synthetic nature obvious while giving us enough room for a useful
-     * readable prefix even at the 107-byte AROS component limit. */
-    for (int attempt = 0; attempt < 1024; attempt++) {
-        char candidate[AMIGA_COMPONENT_LIMIT + 1];
-        unsigned int suffix = next_mapping_value();
-        size_t suffix_length = 1 + MAPPED_SUFFIX_DIGITS;
-        size_t available = AMIGA_COMPONENT_LIMIT - suffix_length;
-        size_t candidate_prefix_length = prefix_length < available ?
-                                         prefix_length : available;
-
-        if (snprintf(candidate, sizeof(candidate), "%.*s%c%08X",
-                     (int)candidate_prefix_length, prefix, MAPPED_MARKER,
-                     suffix) >=
-            (int)sizeof(candidate))
-            continue;
-        if (find_mapping_by_amiga(parent, candidate) ||
-            host_component_exists(parent, candidate))
-            continue;
-        mapping = calloc(1, sizeof(*mapping));
-        if (!mapping) {
-            errno = ENOMEM;
-            return -1;
-        }
-        if (strlen(parent) >= sizeof(mapping->parent) ||
-            strlen(host_name) >= sizeof(mapping->host_name)) {
-            free(mapping);
+        available = AMIGA_COMPONENT_LIMIT - 1 - encoded_length;
+        header_length = split < available ? split : available;
+        if ((size_t)snprintf(candidate, sizeof(candidate), "%.*s%c%s",
+                             (int)header_length, host_name, MAPPED_MARKER,
+                             encoded) >= sizeof(candidate)) {
             errno = ENAMETOOLONG;
             return -1;
         }
-        strcpy(mapping->parent, parent);
-        strcpy(mapping->host_name, host_name);
-        strcpy(mapping->amiga_name, candidate);
-        mapping->next = component_mappings;
-        component_mappings = mapping;
         if (strlen(candidate) >= result_size) {
             errno = ENAMETOOLONG;
             return -1;
@@ -716,8 +823,6 @@ static int map_component(const char *parent, const char *host_name,
         strcpy(result, candidate);
         return 0;
     }
-    errno = EEXIST;
-    return -1;
 }
 
 /*
@@ -763,8 +868,13 @@ static void match_existing_case(const char *parent, char *name,
 static int unmap_component(const char *parent, const char *amiga_name,
                            char *result, size_t result_size)
 {
-    struct component_mapping *mapping;
+    unsigned char payload[NAME_MAX + 2];
+    size_t payload_length = 0;
     const char *fixed_name = host_component_for_amiga(amiga_name);
+    const char *marker;
+    size_t header_length;
+    DIR *stream;
+    struct dirent *entry;
 
     if (fixed_name) {
         if (strlen(fixed_name) >= result_size) {
@@ -774,9 +884,12 @@ static int unmap_component(const char *parent, const char *amiga_name,
         strcpy(result, fixed_name);
         return 0;
     }
-    mapping = find_mapping_by_amiga(parent, amiga_name);
 
-    if (!mapping) {
+    /* The header can never contain a marker of its own: '^' is one of the
+       characters that forces a name to be encoded, so the first one is always
+       the separator. */
+    marker = strchr(amiga_name, MAPPED_MARKER);
+    if (!marker) {
         if (strlen(amiga_name) >= result_size) {
             errno = ENAMETOOLONG;
             return -1;
@@ -785,11 +898,60 @@ static int unmap_component(const char *parent, const char *amiga_name,
         match_existing_case(parent, result, result_size);
         return 0;
     }
-    if (strlen(mapping->host_name) >= result_size) {
+    header_length = (size_t)(marker - amiga_name);
+
+    if (base32_decode(marker + 1, payload, sizeof(payload) - 1,
+                      &payload_length) == 0 &&
+        payload[payload_length - 1] == '\0') {
+        /* Literal: the host name is the header and the decoded remainder. */
+        if (header_length + payload_length - 1 >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(result, amiga_name, header_length);
+        memcpy(result + header_length, payload, payload_length - 1);
+        result[header_length + payload_length - 1] = '\0';
+        return 0;
+    }
+
+    /*
+     * A hashed name, which cannot be turned back into its host name -- so it
+     * is not turned back.  Each entry of the parent is encoded forward and
+     * compared, which finds the file if it is still there and finds nothing
+     * if it is not, both of which are the right answer.
+     */
+    stream = opendir(parent);
+    if (stream) {
+        while ((entry = readdir(stream)) != NULL) {
+            char encoded[AMIGA_COMPONENT_LIMIT + 1];
+
+            if (strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0)
+                continue;
+            if (map_component(parent, entry->d_name, encoded,
+                              sizeof(encoded)) != 0)
+                continue;
+            if (strcasecmp(encoded, amiga_name) != 0)
+                continue;
+            if (strlen(entry->d_name) >= result_size) {
+                closedir(stream);
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            strcpy(result, entry->d_name);
+            closedir(stream);
+            return 0;
+        }
+        closedir(stream);
+    }
+
+    /* Nothing matched.  Hand back the name as given so the caller reports a
+       missing file rather than a broken translation. */
+    if (strlen(amiga_name) >= result_size) {
         errno = ENAMETOOLONG;
         return -1;
     }
-    strcpy(result, mapping->host_name);
+    strcpy(result, amiga_name);
     return 0;
 }
 

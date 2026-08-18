@@ -162,23 +162,29 @@ if [ -d "$volume_root/$volume_first" ]; then
     [ "$(control resolve ":$volume_first")" = "$volume_first_host" ]
 fi
 
-# Linux names that are not safe AROS components get a broker-lifetime,
-# directory-specific spelling. The spelling must be short enough for an AROS
-# FileInfoBlock, visibly synthetic, and resolve back to the exact host path.
+# Linux names that are not safe AROS components are spelled <header>^<base32>.
+# The spelling is a pure function of the host name -- no broker state -- so it
+# must be short enough for an AROS FileInfoBlock, visibly synthetic, resolve
+# back to the exact host path, and be the same in every broker.  base32
+# because AmigaDOS filesystems are case-insensitive, so the alphabet must not
+# distinguish 'A' from 'a'.
+only_base32()
+{
+    case $1 in
+        ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ234567]*) return 1 ;;
+    esac
+    return 0
+}
 mapped_colon=$(control name "$mapping_colon_dir")
 mapped_colon_component=${mapped_colon##*/}
-case "$mapped_colon_component" in
-    *^????????) ;;
-    *) echo "unsafe component was not given a visible mapping: $mapped_colon" >&2; exit 1 ;;
-esac
+only_base32 "${mapped_colon_component#*^}" ||
+    { echo "unsafe component was not given a visible mapping: $mapped_colon" >&2; exit 1; }
 [ "$(control resolve "$mapped_colon")" = "$(realpath "$mapping_colon_dir")" ]
 mapped_long=$(control name "$mapping_long_dir")
 mapped_long_component=${mapped_long##*/}
 [ "${#mapped_long_component}" -le 107 ]
-case "$mapped_long_component" in
-    *^????????) ;;
-    *) echo "long component was not mapped: $mapped_long_component" >&2; exit 1 ;;
-esac
+only_base32 "${mapped_long_component#*^}" ||
+    { echo "long component was not mapped: $mapped_long_component" >&2; exit 1; }
 [ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
 
 # Linux can hold two names AmigaDOS considers equal.  The lexical first keeps
@@ -188,7 +194,8 @@ case_primary_name=$(control name "$case_collision_primary")
 case_secondary_name=$(control name "$case_collision_secondary")
 [ "${case_primary_name##*/}" = "CaseCollision" ]
 case "${case_secondary_name##*/}" in
-    casecollision^????????) ;;
+    *^*) only_base32 "${case_secondary_name##*^}" ||
+        { echo "case-colliding mapping is not base32: $case_secondary_name" >&2; exit 1; } ;;
     *) echo "case-colliding component was not given a visible mapping: $case_secondary_name" >&2; exit 1 ;;
 esac
 [ "$(control resolve "$case_primary_name")" = "$(realpath "$case_collision_primary")" ]
@@ -634,5 +641,27 @@ recovered_name=$(control name "$repo_dir")
 recovered_pid=$(sed -n '1p' "$socket_path.lock")
 [ "$recovered_pid" != "$broker_pid" ]
 kill -0 "$recovered_pid"
+
+# The escaped spellings are a pure function of the host name, so the fresh
+# broker must produce exactly what the dead one did, and must resolve names it
+# has never seen before -- including the hashed form for a name too long to
+# spell out, which it can only answer by encoding the directory forward.
+# Previously each broker invented random suffixes, so every name minted before
+# a restart became permanently unopenable.
+for pair in "$mapping_colon_dir|$mapped_colon" \
+            "$mapping_long_dir|$mapped_long" \
+            "$case_collision_secondary|$case_secondary_name"; do
+    host=${pair%%|*}
+    before=${pair#*|}
+    after=$(control name "$host")
+    if [ "$after" != "$before" ]; then
+        echo "mapping changed across broker restart: $before -> $after" >&2
+        exit 1
+    fi
+    if [ "$(control resolve "$before")" != "$(realpath "$host")" ]; then
+        echo "mapping did not resolve on a broker that never minted it: $before" >&2
+        exit 1
+    fi
+done
 
 echo "filesystem translation and broker recovery tests passed"
