@@ -39,11 +39,16 @@ done
 
 dos_list=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=info-test \
     "$repo_dir/build/ace-brokerctl" doslist)
-volume=$(printf '%s\n' "$dos_list" | awk -F '\t' 'NF >= 1 { print $1; exit }')
+# Pick the first volume that actually carries a label, rather than the first
+# volume outright.  The VOLUMES check below looks for the label in Info's
+# output, and whether the host's first block device happens to be labelled is
+# a property of the machine, not of ACE -- an unlabelled ext4 root is normal
+# and used to fail this test before it tested anything.
+volume=$(printf '%s\n' "$dos_list" |
+    awk -F '\t' 'NF >= 4 && $4 != "" { print $1; exit }')
 volume_label=$(printf '%s\n' "$dos_list" |
     awk -F '\t' -v device="$volume" '$1 == device { print $4; exit }')
-[ -n "$volume" ] || fail 'broker did not publish a DOS volume'
-[ -n "$volume_label" ] || fail 'selected DOS volume did not have a label'
+[ -n "$volume" ] || fail 'broker did not publish a labelled DOS volume'
 
 run_info()
 {

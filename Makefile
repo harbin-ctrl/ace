@@ -1202,8 +1202,14 @@ test-console-channel: $(BUILD)/console-channel-test
 test-console-spec: $(BUILD)/console-spec-test
 	$(BUILD)/console-spec-test
 
+# The clipboard half of this test writes an IFF stream and reads it back.
+# Left to itself the clipboard device bridges to the host clipboard, so the
+# read returns whatever the user last copied, wrapped as IFF, and the test
+# fails on any machine with a desktop session and a non-empty clipboard.
+# Isolate it: no host bridging, and a private spool directory.
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
-	$(BUILD)/aros-exec-runtime-test
+	ACE_CLIPBOARD_DISABLE_HOST=1 \
+	    ACE_CLIPBOARD_DIR="$$(mktemp -d)" $(BUILD)/aros-exec-runtime-test
 
 test-iffparse-clipboard: $(BUILD)/iffparse-clipboard-test
 	$(BUILD)/iffparse-clipboard-test
