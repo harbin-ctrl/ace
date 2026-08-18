@@ -11,7 +11,7 @@ struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *port);
 void PutMsg(struct MsgPort *port, struct Message *message);
 struct Message *GetMsg(struct MsgPort *port);
-void WaitPort(struct MsgPort *port);
+struct Message *WaitPort(struct MsgPort *port);
 ULONG Wait(ULONG signals);
 struct Task;
 int ace_aros_runtime_register_task(struct Task *task);

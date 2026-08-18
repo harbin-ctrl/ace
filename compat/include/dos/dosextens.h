@@ -35,9 +35,16 @@
 #define AROS_BSTR_setstrlen(value, length) ((void)(value), (void)(length))
 #endif
 
+/* tc_SPLower/tc_SPUpper are the task's stack bounds.  ACE does not use them,
+   but AROS code does: Regina's amifuncs.c subtracts them to answer a stack
+   size query.  Note that adding a field here moves every pr_* field in
+   struct Process below, so objects built before the change and after it do
+   not agree on the layout -- see the header dependency note in the Makefile. */
 struct Task {
     struct Node tc_Node;
     ULONG tc_SigAlloc;
+    APTR tc_SPLower;
+    APTR tc_SPUpper;
 };
 
 struct Process {

@@ -412,17 +412,21 @@ struct Message *GetMsg(struct MsgPort *port)
     return (struct Message *)node;
 }
 
-void WaitPort(struct MsgPort *port)
+struct Message *WaitPort(struct MsgPort *port)
 {
     struct ace_port_state *state = ensure_port(port);
 
     if (!state)
-        return;
+        return NULL;
     pthread_mutex_lock(&state->lock);
     while (!port->mp_MsgList.lh_Head ||
            !port->mp_MsgList.lh_Head->ln_Succ)
         pthread_cond_wait(&state->condition, &state->lock);
+    /* AROS WaitPort() returns the first queued message without removing it;
+       callers commonly follow it with GetMsg(). */
+    struct Message *message = (struct Message *)port->mp_MsgList.lh_Head;
     pthread_mutex_unlock(&state->lock);
+    return message;
 }
 
 ULONG Wait(ULONG signals)

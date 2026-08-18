@@ -36,6 +36,7 @@ static inline void ace_newminlist(struct MinList *list)
 #define NEWLIST(list) _Generic((list), \
     struct MinList *: ace_newminlist, \
     default: ace_newlist)((list))
+#define NewList(list) ace_newlist((list))
 
 static inline void ace_addtail_minlist(struct MinList *list,
                                        struct MinNode *node)
@@ -52,6 +53,21 @@ static inline void ace_addtail_list(struct List *list, struct Node *node)
     node->ln_Pred = list->lh_TailPred;
     list->lh_TailPred->ln_Succ = node;
     list->lh_TailPred = node;
+}
+
+static inline void AddTail(struct List *list, struct Node *node)
+{
+    ace_addtail_list(list, node);
+}
+
+static inline void Remove(struct Node *node)
+{
+    if (node && node->ln_Pred && node->ln_Succ) {
+        node->ln_Pred->ln_Succ = node->ln_Succ;
+        node->ln_Succ->ln_Pred = node->ln_Pred;
+        node->ln_Succ = NULL;
+        node->ln_Pred = NULL;
+    }
 }
 
 #define ADDTAIL(list, node) _Generic((list), \
@@ -88,6 +104,34 @@ static inline void ace_addtail_list(struct List *list, struct Node *node)
 #define GetHead(list) \
     (((struct List *)(list))->lh_Head->ln_Succ ? \
      ((struct List *)(list))->lh_Head : NULL)
+
+#define GetSucc(node) \
+    (((struct Node *)(node))->ln_Succ && \
+     ((struct Node *)(node))->ln_Succ->ln_Succ ? \
+     ((struct Node *)(node))->ln_Succ : NULL)
+
+static inline int ace_node_name_equal(const char *left, const char *right)
+{
+    if (!left || !right)
+        return 0;
+    while (*left && *left == *right) {
+        left++;
+        right++;
+    }
+    return *left == *right;
+}
+
+static inline struct Node *FindName(struct List *list, const char *name)
+{
+    struct Node *node;
+    if (!list || !name)
+        return NULL;
+    for (node = GetHead(list); node; node = GetSucc(node)) {
+        if (ace_node_name_equal(node->ln_Name, name))
+            return node;
+    }
+    return NULL;
+}
 
 #define IsListEmpty(list) \
     (((struct List *)(list))->lh_TailPred == (struct Node *)(list))

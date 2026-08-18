@@ -5,6 +5,7 @@
 
 struct ExecBase {
     struct List DeviceList;
+    struct List PortList;
 };
 
 #endif
