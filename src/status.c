@@ -29,8 +29,8 @@ int ace_command_entry_main(void)
     (void)FindTask(NULL);
 
     if (arguments) {
-        for (cursor = strtok(arguments, " \t"); cursor;
-             cursor = strtok(NULL, " \t")) {
+        for (cursor = strtok(arguments, " \t\r\n"); cursor;
+             cursor = strtok(NULL, " \t\r\n")) {
             if (strcasecmp(cursor, "FULL") == 0)
                 full = 1;
             else if (strcasecmp(cursor, "TCB") == 0)
@@ -41,6 +41,10 @@ int ace_command_entry_main(void)
                 command = cursor + 4;
             else if (isdigit((unsigned char)cursor[0]))
                 requested = strtoul(cursor, NULL, 10);
+            else if (strcmp(cursor, "?") == 0) {
+                Printf("PROCESS/N,FULL/S,TCB/S,CLI=ALL/S,COM=COMMAND/K\n");
+                return RETURN_OK;
+            }
             else if (strcasecmp(cursor, "CLI=ALL") != 0) {
                 Printf("Status: bad arguments\n");
                 return RETURN_FAIL;
