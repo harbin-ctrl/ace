@@ -1912,10 +1912,19 @@ static int handle_client(struct broker_connection *connection)
             break;
         }
         if (!task) {
-            if (session->foreground_pid)
-                session->pending_foreground_signals |= (uint32_t)mask;
-            else
+            /* A foreground child need not use ACE's native DOS layer (for
+               example, an Exec-only command can call SetSignal directly).
+               Its process has no broker task socket, so hand its break to
+               the host signal bridge instead of leaving it queued forever.
+               Registered tasks still take the broker route below. */
+            if (!session->foreground_pid) {
                 status = ESRCH;
+                break;
+            }
+            if (mask & (1U << 12)) /* SIGBREAKF_CTRL_C */
+                (void)kill(session->foreground_pid, SIGUSR1);
+            if (mask & (1U << 13)) /* SIGBREAKF_CTRL_D */
+                (void)kill(session->foreground_pid, SIGUSR2);
             break;
         }
         signal.magic = AMIGA_BROKER_MAGIC;

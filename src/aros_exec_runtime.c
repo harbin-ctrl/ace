@@ -75,6 +75,11 @@ static struct ace_host_unit *units;
 /* A signal handler cannot take ports_lock.  It leaves its bits here for the
    normal runtime path to merge while holding that lock. */
 static volatile sig_atomic_t host_pending_signals;
+/* One ACE host process may bootstrap a Process task and later enter upstream
+   code through an implicit Exec task identity.  Broker control connections
+   address the host process, so retain their bits until the process consumes
+   them, independently of that internal identity. */
+static ULONG broker_pending_signals;
 static UBYTE next_signal_bit;
 static struct ace_host_unit *last_console;
 static _Thread_local struct Task *current_task;
@@ -427,14 +432,15 @@ ULONG Wait(ULONG signals)
         pthread_mutex_unlock(&ports_lock);
         return 0;
     }
-    while (!(state->pending_signals & signals)) {
+    while (!((state->pending_signals | broker_pending_signals) & signals)) {
         /* The host-signal dispatcher broadcasts this condition after its
            async-signal-safe pipe handoff, just like Exec wakes Wait(). */
         (void)pthread_cond_wait(&signal_condition, &ports_lock);
         merge_host_signals_locked();
     }
-    result = state->pending_signals & signals;
+    result = (state->pending_signals | broker_pending_signals) & signals;
     state->pending_signals &= ~result;
+    broker_pending_signals &= ~result;
     pthread_mutex_unlock(&ports_lock);
     return result;
 }
@@ -454,6 +460,20 @@ void ace_aros_runtime_signal_task(struct Task *task, ULONG signals)
     merge_host_signals_locked();
     state = task_state_locked(task, 0);
     if (state)
+        state->pending_signals |= signals;
+    pthread_cond_broadcast(&signal_condition);
+    pthread_mutex_unlock(&ports_lock);
+}
+
+void ace_aros_runtime_signal_local_tasks(ULONG signals)
+{
+    struct ace_task_state *state;
+
+    if (!signals)
+        return;
+    pthread_mutex_lock(&ports_lock);
+    broker_pending_signals |= signals;
+    for (state = tasks; state; state = state->next)
         state->pending_signals |= signals;
     pthread_cond_broadcast(&signal_condition);
     pthread_mutex_unlock(&ports_lock);
@@ -635,6 +655,42 @@ static int io_state_cancelled(void *context)
     return aborted;
 }
 
+/* timer.device requests are asynchronous.  In particular, AbortIO() must
+   cause their reply immediately: callers such as the AROS Wait command abort
+   a timer after receiving Ctrl-C, then WaitIO() for that reply before they
+   can return to the shell.  nanosleep() cannot be woken by AbortIO(), so use
+   the request's condition variable as an interruptible timer instead. */
+static int wait_for_timer_or_abort(struct ace_io_state *state,
+                                   const struct timerequest *timer)
+{
+    struct timespec deadline;
+    int outcome = 0;
+
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0)
+        return -1;
+    deadline.tv_sec += timer->tr_time.tv_secs;
+    deadline.tv_nsec += (long)timer->tr_time.tv_micro * 1000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += deadline.tv_nsec / 1000000000L;
+        deadline.tv_nsec %= 1000000000L;
+    }
+    pthread_mutex_lock(&state->lock);
+    while (!state->aborted) {
+        outcome = pthread_cond_timedwait(&state->condition, &state->lock,
+                                         &deadline);
+        if (outcome == ETIMEDOUT)
+            break;
+        if (outcome != 0)
+            break;
+    }
+    if (state->aborted)
+        outcome = -2;
+    else if (outcome == ETIMEDOUT)
+        outcome = 0;
+    pthread_mutex_unlock(&state->lock);
+    return outcome;
+}
+
 static void *io_worker(void *context)
 {
     struct ace_io_state *state = context;
@@ -648,11 +704,7 @@ static void *io_worker(void *context)
         actual = ((struct IOStdReq *)request)->io_Actual;
     } else if (state->unit->timer && request->io_Command == TR_ADDREQUEST) {
         struct timerequest *timer = (struct timerequest *)request;
-        struct timespec delay = {
-            .tv_sec = timer->tr_time.tv_secs,
-            .tv_nsec = (long)timer->tr_time.tv_micro * 1000L,
-        };
-        nanosleep(&delay, NULL);
+        error = wait_for_timer_or_abort(state, timer);
     } else if (request->io_Command == CMD_READ) {
         error = host_read(state, request->io_Data, request->io_Length,
                           &actual);
@@ -874,6 +926,7 @@ void AbortIO(struct IORequest *request)
         return;
     pthread_mutex_lock(&state->lock);
     state->aborted = 1;
+    pthread_cond_broadcast(&state->condition);
     pthread_mutex_unlock(&state->lock);
     if (state->clipboard) {
         ace_clipboard_device_abort(state->request);

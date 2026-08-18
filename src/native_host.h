@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include <exec/types.h>
 
@@ -40,7 +41,7 @@ void native_console_notify_resize(int rows, int cols);
 int native_console_take_resize(BPTR handle);
 BPTR native_lock_host_path(const char *path);
 int native_command_path(const char *name, char *result, size_t result_size);
-int native_run_background(const char *command);
+int native_run_background(const char *command, uint64_t *task_id);
 void native_request_endcli(void);
 
 #endif

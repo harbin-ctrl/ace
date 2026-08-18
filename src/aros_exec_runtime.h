@@ -20,6 +20,7 @@ struct Task *ace_aros_runtime_find_task(CONST_STRPTR name);
 void ace_aros_runtime_set_current_task(struct Task *task);
 void ace_aros_runtime_signal(ULONG signals);
 void ace_aros_runtime_signal_task(struct Task *task, ULONG signals);
+void ace_aros_runtime_signal_local_tasks(ULONG signals);
 ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask);
 ULONG ace_aros_runtime_check_signal(ULONG mask);
 LONG ace_aros_runtime_alloc_signal(LONG signal_number);

@@ -501,7 +501,39 @@ int native_execute_script(const char *name)
     return result;
 }
 
-int native_run_background(const char *command)
+/* Run must report the process it created.  The broker assigns that ID as the
+   new program starts, so wait briefly for the task registration made by its
+   command entry point. */
+static uint64_t native_background_task_id(pid_t pid)
+{
+    char listing[AMIGA_BROKER_MAX_PAYLOAD];
+    struct timespec pause = {0, 10000000L};
+
+    for (int attempt = 0; attempt < 100; attempt++) {
+        char *line;
+
+        if (native_broker_task_list(listing, sizeof(listing)) == 0) {
+            for (line = strtok(listing, "\n"); line;
+                 line = strtok(NULL, "\n")) {
+                char *separator = strchr(line, '\t');
+                char *end;
+                long listed_pid;
+
+                if (!separator)
+                    continue;
+                listed_pid = strtol(separator + 1, &end, 10);
+                if (end == separator + 1 || *end != '\t' ||
+                    listed_pid != (long)pid)
+                    continue;
+                return strtoull(line, NULL, 10);
+            }
+        }
+        (void)nanosleep(&pause, NULL);
+    }
+    return 0;
+}
+
+int native_run_background(const char *command, uint64_t *task_id)
 {
     char storage[4096];
     char *argv[128] = {0};
@@ -510,7 +542,12 @@ int native_run_background(const char *command)
     const char *tail;
     int argument_count;
     pid_t child;
+    pid_t background_pid = 0;
+    int pid_pipe[2];
     int status;
+
+    if (task_id)
+        *task_id = 0;
 
     if (!command || !*command) {
         SetIoErr(ERROR_BAD_TEMPLATE);
@@ -525,21 +562,35 @@ int native_run_background(const char *command)
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return -1;
     }
+    if (pipe(pid_pipe) != 0) {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return -1;
+    }
 
     /* Reap the first child here. Its child is detached from the shell's wait
        relationship, which is the Unix equivalent of AROS's background CLI. */
     child = fork();
     if (child < 0) {
+        close(pid_pipe[0]);
+        close(pid_pipe[1]);
         SetIoErr(ERROR_NO_FREE_STORE);
         return -1;
     }
     if (child == 0) {
         pid_t background = fork();
 
-        if (background < 0)
+        close(pid_pipe[0]);
+        if (background < 0) {
+            close(pid_pipe[1]);
             _exit(RETURN_FAIL);
-        if (background > 0)
+        }
+        if (background > 0) {
+            (void)!write(pid_pipe[1], &background, sizeof(background));
+            close(pid_pipe[1]);
             _exit(RETURN_OK);
+        }
+
+        close(pid_pipe[1]);
 
         (void)setsid();
         if (cwd[0] != '\0')
@@ -567,11 +618,22 @@ int native_run_background(const char *command)
         execv(command_path, argv);
         _exit(RETURN_FAIL);
     }
+    close(pid_pipe[1]);
     if (waitpid(child, &status, 0) < 0 ||
         !WIFEXITED(status) || WEXITSTATUS(status) != RETURN_OK) {
+        close(pid_pipe[0]);
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
         return -1;
     }
+    if (read(pid_pipe[0], &background_pid, sizeof(background_pid)) !=
+        (ssize_t)sizeof(background_pid)) {
+        close(pid_pipe[0]);
+        SetIoErr(ERROR_OBJECT_NOT_FOUND);
+        return -1;
+    }
+    close(pid_pipe[0]);
+    if (task_id)
+        *task_id = native_background_task_id(background_pid);
     return 0;
 }
 

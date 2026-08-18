@@ -163,7 +163,10 @@ static FILE *selected_output(void);
 static void native_task_signal_from_broker(uint32_t signals, void *context)
 {
     (void)context;
-    ace_aros_runtime_signal_task(&native_process.pr_Task, signals);
+    /* A host process can have its bootstrap Process state and an implicit
+       Exec task state used by unmodified command code.  Its control socket
+       represents the host process, so deliver to each local Exec task. */
+    ace_aros_runtime_signal_local_tasks(signals);
 }
 
 static void native_task_name_init(void)

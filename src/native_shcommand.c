@@ -124,6 +124,7 @@ int ace_shcommand_start(int argc, char **argv,
     const char *line;
     int result;
 
+    (void)FindTask(NULL);
     ace_command_arguments_from_argv(argc, argv);
     line = ace_command_argument_line();
     result = (int)entry((STRPTR)line, (ULONG)strlen(line),
@@ -138,6 +139,7 @@ int ace_command_start(int argc, char **argv, int (*entry)(void))
 {
     int result;
 
+    (void)FindTask(NULL);
     ace_command_arguments_from_argv(argc, argv);
     result = entry();
     native_publish_result(result);
