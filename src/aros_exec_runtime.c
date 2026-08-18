@@ -194,14 +194,9 @@ static void host_break_handler(int signal_number)
 {
     unsigned char notification = (unsigned char)signal_number;
 
-    if (signal_number == SIGUSR1)
-        host_pending_signals |= (sig_atomic_t)(1UL << 12); /* Ctrl-C */
-    else if (signal_number == SIGUSR2)
-        host_pending_signals |= (sig_atomic_t)(1UL << 13); /* Ctrl-D */
-    else if (signal_number == SIGRTMIN)
-        host_pending_signals |= (sig_atomic_t)(1UL << 14); /* Ctrl-E */
-    else if (signal_number == SIGRTMIN + 1)
-        host_pending_signals |= (sig_atomic_t)(1UL << 15); /* Ctrl-F */
+    /* The dispatcher below performs the one normal-context delivery.  Do
+       not also set host_pending_signals here: Wait() would consume that copy
+       and then receive a duplicate when the dispatcher catches up. */
     if (host_signal_pipe[1] >= 0)
         (void)write(host_signal_pipe[1], &notification, sizeof(notification));
 }
