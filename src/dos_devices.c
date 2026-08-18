@@ -668,6 +668,71 @@ static int path_is_beneath(const char *path, const char *mount_path)
            (path[mount_length] == '\0' || path[mount_length] == '/');
 }
 
+/* A softlink records its target text, not the path obtained after following
+ * it.  Mount selection must therefore work for a dangling target and must
+ * not let an intermediate host symlink rewrite the target it reports. */
+static int normalize_lexical_absolute_path(const char *path, char *result,
+                                           size_t result_size)
+{
+    char combined[PATH_MAX];
+    char *parts[PATH_MAX / 2];
+    char *cursor;
+    size_t count = 0;
+    size_t used = 0;
+
+    if (!path || path[0] != '/' || strlen(path) >= sizeof(combined)) {
+        errno = EINVAL;
+        return -1;
+    }
+    strcpy(combined, path);
+    cursor = combined;
+    while (*cursor) {
+        char *slash;
+
+        while (*cursor == '/')
+            cursor++;
+        if (!*cursor)
+            break;
+        slash = strchr(cursor, '/');
+        if (slash)
+            *slash = '\0';
+        if (strcmp(cursor, ".") == 0) {
+            /* Nothing. */
+        } else if (strcmp(cursor, "..") == 0) {
+            if (count)
+                count--;
+        } else if (count < sizeof(parts) / sizeof(parts[0])) {
+            parts[count++] = cursor;
+        } else {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (!slash)
+            break;
+        cursor = slash + 1;
+    }
+    if (result_size < 2) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    result[used++] = '/';
+    result[used] = '\0';
+    for (size_t index = 0; index < count; index++) {
+        size_t length = strlen(parts[index]);
+
+        if (used + (used > 1) + length >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (used > 1)
+            result[used++] = '/';
+        memcpy(result + used, parts[index], length);
+        used += length;
+        result[used] = '\0';
+    }
+    return 0;
+}
+
 static int find_mount_for_path(const char *path, char *canonical,
                                size_t canonical_size,
                                struct mount_record *best,
@@ -678,7 +743,7 @@ static int find_mount_for_path(const char *path, char *canonical,
     size_t line_size = 0;
     size_t best_length = 0;
 
-    if (!realpath(path, canonical) || strlen(canonical) >= canonical_size)
+    if (normalize_lexical_absolute_path(path, canonical, canonical_size) != 0)
         return -1;
     stream = fopen("/proc/self/mountinfo", "r");
     if (!stream)

@@ -789,6 +789,9 @@ static int append_path_text(char *result, size_t result_size,
     return 0;
 }
 
+static int normalize_path(const char *base, const char *path,
+                          char *result, size_t result_size);
+
 /* Convert the device layer's ordinary volume spelling into the AROS-facing
  * spelling, mapping each unsafe host component against its host parent. The
  * host and Amiga suffixes normally have the same component structure; the
@@ -807,8 +810,8 @@ static int name_from_host_with_mappings(const char *path, char *result,
 
     if (ace_dos_devices_name_from_path(path, raw, sizeof(raw)) != 0)
         return -1;
-    if (!realpath(path, canonical) ||
-        ace_dos_devices_volume_root_for_path(path, volume_root,
+    if (normalize_path("/", path, canonical, sizeof(canonical)) != 0 ||
+        ace_dos_devices_volume_root_for_path(canonical, volume_root,
                                              sizeof(volume_root)) != 0)
         return -1;
     colon = strchr(raw, ':');
@@ -1196,10 +1199,10 @@ static int normalize_amiga_path(struct broker_session *session,
 {
     char floor[PATH_MAX];
     const char *cursor = path;
-    size_t parents = 0;
+    size_t slashes = 0;
 
     while (*cursor == '/') {
-        parents++;
+        slashes++;
         cursor++;
     }
     if (strlen(session->cwd) >= result_size) {
@@ -1207,10 +1210,41 @@ static int normalize_amiga_path(struct broker_session *session,
         return -1;
     }
     strcpy(result, session->cwd);
-    for (size_t index = 0; index < parents; index++)
+    /* AmigaDOS uses the first slash as the path separator and every
+       additional slash as a parent traversal: // is the parent, /// is the
+       grandparent.  This also makes an empty relative path the current
+       directory, rather than inventing a POSIX-style dot component. */
+    for (size_t index = 1; index < slashes; index++)
         pop_host_component(result);
-    if (normalize_mapped_path(result, cursor, result, result_size) != 0)
-        return -1;
+    while (*cursor) {
+        const char *end = strchr(cursor, '/');
+        size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+        char component[PATH_MAX];
+
+        if (length != 0) {
+            if (length >= sizeof(component)) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            memcpy(component, cursor, length);
+            component[length] = '\0';
+            if (normalize_mapped_path(result, component, result,
+                                      result_size) != 0)
+                return -1;
+        }
+        if (!end)
+            break;
+        cursor = end;
+        slashes = 0;
+        while (*cursor == '/') {
+            slashes++;
+            cursor++;
+        }
+        /* The first slash separates components. Any remaining slashes walk
+           back up from the component just resolved. */
+        for (size_t index = 1; index < slashes; index++)
+            pop_host_component(result);
+    }
     if (ace_dos_devices_volume_root_for_path(session->cwd, floor,
                                               sizeof(floor)) == 0 &&
         normalize_mapped_path_beneath(floor, result, result, result_size) != 0)

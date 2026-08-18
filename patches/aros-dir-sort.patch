@@ -1,8 +1,16 @@
 diff --git a/workbench/c/Dir.c b/workbench/c/Dir.c
-index b02fb37157..f805090fb2 100644
+index b02fb37157..1575418d1a 100644
 --- a/workbench/c/Dir.c
 +++ b/workbench/c/Dir.c
-@@ -598,13 +598,13 @@ LONG doDir(CONST_STRPTR dir, BOOL all, BOOL doDirs, BOOL doFiles, BOOL inter)
+@@ -7,6 +7,7 @@
+ #define MAX_PATH_LEN                    512
+ 
+ #define USE_SOFTLINKCHECK               0
++#define ACE_SOFTLINK_DIRECTORY_CHECK     1
+ 
+ #include <exec/devices.h>
+ #include <exec/io.h>
+@@ -598,13 +599,13 @@ LONG doDir(CONST_STRPTR dir, BOOL all, BOOL doDirs, BOOL doFiles, BOOL inter)
                  error = RETURN_FAIL;
              }
  
@@ -18,3 +26,29 @@ index b02fb37157..f805090fb2 100644
  
                      // Output the directories
                      for (t = 0; t < dirs.num; t++)
+@@ -763,7 +764,7 @@ int CheckDir(BPTR lock, struct ExAllData *ead, ULONG eadSize,
+             do
+             {
+ 
+-#if USE_SOFTLINKCHECK
++#if ACE_SOFTLINK_DIRECTORY_CHECK
+                 if (ead->ed_Type == ST_SOFTLINK)
+                 {
+                     BPTR dirlock, l;
+@@ -785,8 +786,15 @@ int CheckDir(BPTR lock, struct ExAllData *ead, ULONG eadSize,
+ 
+                         UnLock(l);
+                     }
++                    else
++                    {
++                        /* A dangling softlink is an entry, not a directory.
++                         * Keep it in the file list so ALL does not fail when
++                         * it tries to recurse through its missing target. */
++                        ead->ed_Type = ST_FILE;
++                    }
+                 }
+-#endif /* USE_SOFTLINKCHECK */
++#endif /* ACE_SOFTLINK_DIRECTORY_CHECK */
+ 
+                 if (!AddEntry(ead->ed_Type > 0 ? dirs : files,ead->ed_Name))
+                 {

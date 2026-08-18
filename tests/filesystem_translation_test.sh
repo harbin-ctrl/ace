@@ -26,14 +26,29 @@ note_dir="$mapping_test_dir/filenote"
 note_file="$note_dir/noted.txt"
 softlink_dir="$mapping_test_dir/softlinks"
 softlink_name="$softlink_dir/dangling"
+relative_softlink_name="$softlink_dir/relative-dangling"
+directory_softlink_name="$softlink_dir/directory-link"
+nested_relative_softlink_name="$softlink_dir/nested-relative"
+absolute_file_softlink_name="$softlink_dir/absolute-file"
+absolute_directory_softlink_name="$softlink_dir/absolute-directory"
+absolute_dangling_softlink_name="$softlink_dir/absolute-dangling"
+softlink_target_dir="$softlink_dir/target-directory"
+softlink_target_file="$softlink_target_dir/inside.txt"
+relative_target_file="$softlink_dir/relative-target.txt"
+absolute_target_file="$mapping_test_dir/absolute-target.txt"
+absolute_missing_target="$mapping_test_dir/absolute-missing.txt"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_dot_dir" \
       "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
-      "$delete_dir" "$delete_dir/nested" "$note_dir" "$softlink_dir"
+      "$delete_dir" "$delete_dir/nested" "$note_dir" "$softlink_dir" \
+      "$softlink_target_dir"
 touch "$rename_source"
 touch "$rename_question_source"
 touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
       "$delete_dir/nested/three.txt" "$delete_protected" "$note_file"
+touch "$softlink_target_file"
+touch "$relative_target_file"
+touch "$absolute_target_file"
 
 cd "$repo_dir"
 
@@ -67,12 +82,21 @@ cleanup()
     [ -e "$run_created_dir" ] && rmdir "$run_created_dir" 2>/dev/null || true
     chmod u+w "$delete_protected" 2>/dev/null || true
     rm -rf "$delete_dir" "$delete_protected" "$note_dir" 2>/dev/null || true
-    [ -L "$softlink_name" ] && unlink "$softlink_name" 2>/dev/null || true
+    [ -e "$relative_target_file" ] && unlink "$relative_target_file" 2>/dev/null || true
+    [ -e "$softlink_target_file" ] && unlink "$softlink_target_file" 2>/dev/null || true
+    [ -e "$absolute_target_file" ] && unlink "$absolute_target_file" 2>/dev/null || true
+    for file in "$softlink_name" "$relative_softlink_name" \
+                "$directory_softlink_name" "$nested_relative_softlink_name" \
+                "$absolute_file_softlink_name" "$absolute_directory_softlink_name" \
+                "$absolute_dangling_softlink_name"; do
+        [ -L "$file" ] && unlink "$file" 2>/dev/null || true
+    done
     rmdir "$test_dir" 2>/dev/null || true
     rmdir "$mapping_dot_create_dir" "$mapping_dotdot_create_dir" \
           "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
           "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
           "$mapping_long_dir" "$mapping_dot_dir" "$mapping_dotdot_dir" \
+          "$softlink_target_dir" \
           "$softlink_dir" \
           "$mapping_test_dir" \
           2>/dev/null || true
@@ -95,12 +119,14 @@ volume_name=${root_name%%:*}:
 volume_root=$(control resolve "$volume_name")
 [ "$(control resolve :)" = "$volume_root" ]
 
-# A slash is AmigaDOS's parent-directory syntax. Its depth is handled before
-# component mapping, while . and .. are ordinary AmigaDOS names represented
-# by the otherwise-illegal Linux components : and ::.
+# AmigaDOS uses the first slash as the path separator and every following
+# slash as a parent traversal: // is the parent and /// is the grandparent.
+# Its current directory spelling is empty; . and .. are ordinary AmigaDOS
+# names represented by the otherwise-illegal Linux components : and ::.
 control cd "$root_name"
-[ "$(control resolve /)" = "$(dirname "$repo_dir")" ]
-[ "$(control resolve //)" = "$(dirname "$(dirname "$repo_dir")")" ]
+[ "$(control resolve /)" = "$repo_dir" ]
+[ "$(control resolve //)" = "$(dirname "$repo_dir")" ]
+[ "$(control resolve ///)" = "$(dirname "$(dirname "$repo_dir")")" ]
 mapped_dot=$(control name "$mapping_dot_dir")
 mapped_dotdot=$(control name "$mapping_dotdot_dir")
 [ "${mapped_dot##*/}" = . ]
@@ -160,6 +186,12 @@ esac
 # is the AmigaDOS distinction between examining a link and following it:
 # ExNext reports ST_SOFTLINK, while a subsequent Lock on the name fails.
 ln -s "$softlink_dir/missing-target" "$softlink_name"
+ln -s '../missing-target' "$relative_softlink_name"
+ln -s 'target-directory' "$directory_softlink_name"
+ln -s 'target-directory/../relative-target.txt' "$nested_relative_softlink_name"
+ln -s "$absolute_target_file" "$absolute_file_softlink_name"
+ln -s "$softlink_target_dir" "$absolute_directory_softlink_name"
+ln -s "$absolute_missing_target" "$absolute_dangling_softlink_name"
 softlink_dir_name=$(control name "$softlink_dir")
 softlink_types=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
     "$repo_dir/build/dos-comment-test" exnext-types "$softlink_dir_name")
@@ -167,6 +199,50 @@ case "$softlink_types" in
     *"dangling$(printf '\t')3"*) ;;
     *) echo "ExNext did not report dangling link as ST_SOFTLINK: $softlink_types" >&2; exit 1 ;;
 esac
+relative_softlink_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" relative-dangling)
+[ "$relative_softlink_target" = "//missing-target" ] || {
+    echo "relative softlink target was not translated to AmigaDOS: $relative_softlink_target" >&2
+    exit 1
+}
+directory_softlink_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" directory-link)
+[ "$directory_softlink_target" = "target-directory" ] || {
+    echo "relative directory softlink target changed: $directory_softlink_target" >&2
+    exit 1
+}
+nested_relative_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" nested-relative)
+[ "$nested_relative_target" = "target-directory//relative-target.txt" ] || {
+    echo "nested relative softlink target was not translated: $nested_relative_target" >&2
+    exit 1
+}
+control cd "$softlink_dir_name"
+[ "$(control resolve "$nested_relative_target")" = "$relative_target_file" ] || {
+    echo "translated nested softlink target did not resolve correctly" >&2
+    exit 1
+}
+absolute_target_name=$(control name "$absolute_target_file")
+absolute_file_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" absolute-file)
+[ "$absolute_file_target" = "$absolute_target_name" ] || {
+    echo "absolute file softlink target was not volume-qualified: $absolute_file_target" >&2
+    exit 1
+}
+absolute_directory_name=$(control name "$softlink_target_dir")
+absolute_directory_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" absolute-directory)
+[ "$absolute_directory_target" = "$absolute_directory_name" ] || {
+    echo "absolute directory softlink target was not volume-qualified: $absolute_directory_target" >&2
+    exit 1
+}
+absolute_missing_name=$(control name "$absolute_missing_target")
+absolute_dangling_target=$(env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
+    "$repo_dir/build/dos-comment-test" readlink "$softlink_dir_name" absolute-dangling)
+[ "$absolute_dangling_target" = "$absolute_missing_name" ] || {
+    echo "absolute dangling softlink target was not volume-qualified: $absolute_dangling_target" >&2
+    exit 1
+}
 softlink_dir_output=$(printf 'DIR %s\nEndCLI\n' "$softlink_dir_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
     ACE_SESSION=filesystem-test "$repo_dir/build/ace-user-shell")
@@ -180,6 +256,21 @@ case "$softlink_dir_output" in
         exit 1
         ;;
 esac
+softlink_all_output=$(printf 'DIR %s OPT A\nEndCLI\n' "$softlink_dir_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=filesystem-test "$repo_dir/build/ace-user-shell")
+case "$softlink_all_output" in
+    *"Could not get information"*|*"object not found"*|*"Object not found"*)
+        echo "DIR OPT A followed a dangling softlink: $softlink_all_output" >&2
+        exit 1
+        ;;
+esac
+for entry in relative-dangling directory-link inside.txt; do
+    case "$softlink_all_output" in
+        *"$entry"*) ;;
+        *) echo "DIR OPT A did not list and follow softlinks: $softlink_all_output" >&2; exit 1 ;;
+    esac
+done
 if env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=filesystem-test \
     "$repo_dir/build/dos-comment-test" examine "$softlink_dir_name/dangling" \
     >/dev/null 2>&1; then

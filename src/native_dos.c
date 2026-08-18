@@ -2314,11 +2314,67 @@ LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
     return DOSTRUE;
 }
 
+/* Linux stores relative symbolic-link targets with POSIX's dot components;
+ * AmigaDOS has no current-directory dot and spells parent traversal with an
+ * extra slash (// is the parent). Preserve the target's relative meaning
+ * without resolving it: a dangling link must still report the exact path it
+ * points at. */
+static int native_relative_link_target(const char *target, char *result,
+                                       size_t result_size)
+{
+    const char *cursor = target;
+    size_t used = 0;
+    size_t parents = 0;
+    int emitted = 0;
+
+    if (!target || !result || result_size == 0)
+        return -1;
+    result[0] = '\0';
+    while (*cursor) {
+        const char *end = strchr(cursor, '/');
+        size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+
+        if (length == 0 || (length == 1 && cursor[0] == '.')) {
+            /* No AmigaDOS equivalent is needed for an empty or current
+             * directory component. */
+        } else if (length == 2 && cursor[0] == '.' && cursor[1] == '.') {
+            parents++;
+        } else {
+            size_t slashes = parents ? parents + 1 : (emitted ? 1 : 0);
+
+            if (slashes > result_size - used - 1 ||
+                length > result_size - used - slashes - 1)
+                return -1;
+            memset(result + used, '/', slashes);
+            used += slashes;
+            memcpy(result + used, cursor, length);
+            used += length;
+            result[used] = '\0';
+            parents = 0;
+            emitted = 1;
+        }
+        if (!end)
+            break;
+        cursor = end + 1;
+    }
+    if (parents != 0) {
+        size_t slashes = parents + 1;
+
+        if (slashes > result_size - used - 1)
+            return -1;
+        memset(result + used, '/', slashes);
+        used += slashes;
+        result[used] = '\0';
+    }
+    return 0;
+}
+
 LONG ReadLink(struct MsgPort *port, BPTR handle, CONST_STRPTR name,
               STRPTR buffer, LONG size)
 {
     struct native_lock *lock = handle;
     char path[PATH_MAX];
+    char target[PATH_MAX];
     ssize_t length;
 
     (void)port;
@@ -2328,18 +2384,30 @@ LONG ReadLink(struct MsgPort *port, BPTR handle, CONST_STRPTR name,
         set_native_broker_error();
         return -1;
     }
-    length = readlink(path, buffer, (size_t)size - 1);
+    length = readlink(path, target, sizeof(target) - 1);
     if (length < 0) {
         set_native_broker_error();
         return -1;
     }
-    if (length >= size) {
+    if ((size_t)length >= sizeof(target)) {
         native_ioerr = ERROR_BUFFER_OVERFLOW;
         return -2;
     }
-    buffer[length] = '\0';
+    target[length] = '\0';
+    if (target[0] == '/') {
+        /* An absolute Linux target must name its volume explicitly. The
+         * broker chooses the volume that owns the target's lexical host
+         * path, including a target which does not exist. */
+        if (native_broker_name_from_host(target, buffer, (size_t)size) != 0) {
+            set_native_broker_error();
+            return -1;
+        }
+    } else if (native_relative_link_target(target, buffer, (size_t)size) != 0) {
+        native_ioerr = ERROR_BUFFER_OVERFLOW;
+        return -2;
+    }
     native_ioerr = 0;
-    return (LONG)length;
+    return (LONG)strlen(buffer);
 }
 
 BOOL SameDevice(BPTR first_handle, BPTR second_handle)
