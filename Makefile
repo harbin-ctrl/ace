@@ -744,7 +744,7 @@ $(BUILD)/native-console-handle-test: tests/native_console_handle_test.c $(DOS_RU
                                      $(BUILD)/broker_client.o
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $^ -o $@
 
-$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/aros-console-editor-test: tests/aros_console_editor_test.c $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/ace-vim-runtime.o \
                                    $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                                    $(BUILD)/aros-graphics-runtime.o $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread -Isrc $(AROS_REAL_CFLAGS) $(AROS_REAL_INCLUDES) $^ $(GFX_LIBS) -o $@

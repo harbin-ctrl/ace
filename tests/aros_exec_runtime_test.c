@@ -3,14 +3,32 @@
 #include <assert.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <devices/clipboard.h>
 #include <dos/dosextens.h>
 #include <proto/exec.h>
 
+/* Host break signals are no longer set by the signal handler itself.  The
+   handler writes to a pipe and a dispatcher thread delivers the Exec bits to
+   the registered break task, so a test has to wait for that delivery rather
+   than read the bits straight after kill(). */
+static ULONG await_host_signal(ULONG mask)
+{
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        ULONG pending = ace_aros_runtime_check_signal(mask);
+
+        if (pending)
+            return pending;
+        nanosleep(&(struct timespec){0, 1000000}, NULL);
+    }
+    return 0;
+}
+
 int main(void)
 {
+    struct Task break_task = {0};
     struct MsgPort *port;
     struct Message message = {0};
     struct IOStdReq *request;
@@ -22,12 +40,15 @@ int main(void)
     struct Task first_task = {0};
     struct Task second_task = {0};
 
-    /* SIGUSR1 is ACE's private host notification for a console Ctrl-C. */
+    /* SIGUSR1 is ACE's private host notification for a console Ctrl-C.  The
+       dispatcher delivers it to whichever task is current, so one has to be
+       established before the signal is raised. */
+    ace_aros_runtime_set_current_task(&break_task);
     assert(kill(getpid(), SIGUSR1) == 0);
-    assert((ace_aros_runtime_set_signal(0, 0) & (1u << 12)) != 0);
+    assert(await_host_signal(1u << 12) != 0);
     ace_aros_runtime_set_signal(0, 1u << 12);
     assert(kill(getpid(), SIGUSR2) == 0);
-    assert((ace_aros_runtime_set_signal(0, 0) & (1u << 13)) != 0);
+    assert(await_host_signal(1u << 13) != 0);
     ace_aros_runtime_set_signal(0, 1u << 13);
 
     /* Exec signals belong to the addressed task, rather than the process as
