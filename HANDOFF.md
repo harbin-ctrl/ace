@@ -610,7 +610,11 @@ console editing and history code in place. Apply it once to a clean checkout;
 `rom/filesys/console_handler`; the BOOPSI sources need no patch.
 
 GTK 3 development files, `blkid` development files, a C compiler, `make`,
-`git`, and a Wayland session are required for the complete build/window.
+`git`, `bison`, and a Wayland session are required for the complete
+build/window.  `bison` generates `Eval`'s parser from AROS's
+`workbench/c/evalParser.y`; a tree copied from another host may carry the
+generated files in `build/` and hide the fact that the tool is missing, until
+something forces them to be regenerated.
 
 Both patches are required, and `patch` reports "previously applied" if
 repeated, so applying them to an existing checkout is safe. It is worth

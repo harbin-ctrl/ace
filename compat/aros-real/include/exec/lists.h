@@ -55,21 +55,6 @@ static inline void ace_addtail_list(struct List *list, struct Node *node)
     list->lh_TailPred = node;
 }
 
-static inline void AddTail(struct List *list, struct Node *node)
-{
-    ace_addtail_list(list, node);
-}
-
-static inline void Remove(struct Node *node)
-{
-    if (node && node->ln_Pred && node->ln_Succ) {
-        node->ln_Pred->ln_Succ = node->ln_Succ;
-        node->ln_Succ->ln_Pred = node->ln_Pred;
-        node->ln_Succ = NULL;
-        node->ln_Pred = NULL;
-    }
-}
-
 #define ADDTAIL(list, node) _Generic((list), \
     struct MinList *: ace_addtail_minlist, \
     default: ace_addtail_list)((list), (void *)(node))

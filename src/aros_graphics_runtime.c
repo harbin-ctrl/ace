@@ -1810,9 +1810,15 @@ void *TaggedOpenLibrary(IPTR library)
     return &graphics_library_open_count;
 }
 
-void CloseLibrary(void *library)
+/* Takes struct Library * to match the real Exec prototype, which
+   proto/exec.h now declares for every ACE object rather than only the
+   graphics ones.  The pointer this file hands out is the open counter
+   standing in for a Library base, so it is only ever compared, never
+   dereferenced. */
+void CloseLibrary(struct Library *library)
 {
-    if (library == &graphics_library_open_count && graphics_library_open_count > 0)
+    if ((void *)library == &graphics_library_open_count &&
+        graphics_library_open_count > 0)
         graphics_library_open_count--;
 }
 

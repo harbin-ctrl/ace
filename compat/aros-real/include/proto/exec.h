@@ -3,6 +3,8 @@
 
 #include <exec/types.h>
 #include <exec/libraries.h>
+#include <exec/nodes.h>
+#include <exec/lists.h>
 
 struct Message;
 struct MsgPort;
@@ -33,6 +35,16 @@ void ReplyMsg(struct Message *message);
 struct Message *WaitPort(struct MsgPort *port);
 struct Task *CreateTask(CONST_STRPTR name, LONG priority, APTR init_pc,
                         ULONG stack_size);
+
+/* AddTail() and Remove() are implemented in src/aros_boopsi_runtime.c, and
+   Remove() is deliberately guarded there against unlinked nodes.  They are
+   declared out here, rather than only inside the block below, because AROS
+   sources outside BOOPSI call them too -- Regina's amifuncs.c among them.
+   Do not give them inline definitions in exec/lists.h: that collides with
+   the real ones. */
+void AddHead(struct List *list, struct Node *node);
+void AddTail(struct List *list, struct Node *node);
+void Remove(struct Node *node);
 
 #if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_AROS_REAL_HANDLER_TYPES_H) || \
     defined(ACE_GRAPHICS_INTERN_H)
@@ -69,9 +81,6 @@ void ObtainSemaphore(struct SignalSemaphore *sigSem);
 void ObtainSemaphoreShared(struct SignalSemaphore *sigSem);
 void ReleaseSemaphore(struct SignalSemaphore *sigSem);
 
-void AddHead(struct List *list, struct Node *node);
-void AddTail(struct List *list, struct Node *node);
-void Remove(struct Node *node);
 
 #endif /* ACE_BOOPSI_INTERN_H || ACE_AROS_REAL_HANDLER_TYPES_H || ACE_GRAPHICS_INTERN_H */
 
