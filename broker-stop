@@ -12,7 +12,25 @@ if [[ -x $script_dir/build/ace-broker ]]; then
 else
     ace_runtime_dir=$script_dir
 fi
-broker_socket=${ACE_BROKER_SOCKET:-${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/ace-broker.sock}}
+broker_binary=$ace_runtime_dir/ace-broker
+# Ask the binary where it would listen rather than reimplementing the rule.
+# The name encodes the SYS: root and the protocol version, and a shell copy of
+# that would be one more thing to keep in step -- see src/broker_identity.c.
+#
+# Guarded, because a broker predating the flag takes any argument as the
+# socket path: it would bind a socket literally named --print-socket and sit
+# there serving it, and the command substitution would never return. The
+# timeout bounds that, and the leading-slash test rejects whatever such a
+# broker might have printed before it blocked.
+broker_print_socket()
+{
+    local reported
+    [[ -x $broker_binary ]] || return 1
+    reported=$(timeout 5 "$broker_binary" --print-socket 2>/dev/null | head -n 1)
+    [[ $reported == /* ]] || return 1
+    printf '%s\n' "$reported"
+}
+broker_socket=${ACE_BROKER_SOCKET:-$(broker_print_socket)}
 broker_socket=${broker_socket:-/tmp/ace-broker-$(id -u).sock}
 broker_pid_file=${ACE_BROKER_PIDFILE:-${broker_socket}.pid}
 experimental_commands=$ace_runtime_dir

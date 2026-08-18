@@ -11,7 +11,8 @@ static int usage(const char *program)
     fprintf(stderr, "usage: %s pwd | cd PATH | assign NAME PATH | resolve PATH | "
                     "name PATH | "
                     "getvar NAME | setvar NAME VALUE | setgvar NAME VALUE | "
-                    "delvar NAME | result | cli | doslist | hold | "
+                    "delvar NAME | result | cli | doslist | assigns | hold | "
+                    "status | socket | "
                     "setresult RC RESULT2\n", program);
     return 2;
 }
@@ -96,6 +97,21 @@ int main(int argc, char **argv)
         return hold_session();
     if (argc == 2 && strcmp(argv[1], "doslist") == 0) {
         if (native_broker_listdos(result, sizeof(result)) != 0)
+            return 1;
+        fputs(result, stdout);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "socket") == 0) {
+        /* Answers "where would I connect" without starting anything. */
+        printf("%s\n", amiga_broker_socket_path());
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "status") == 0) {
+        printf("client-protocol\t0x%08x\n",
+               (unsigned)AMIGA_BROKER_PROTOCOL_VERSION);
+        printf("client-sys\t%s\n", amiga_broker_system_root());
+        printf("client-socket\t%s\n", amiga_broker_socket_path());
+        if (native_broker_status(result, sizeof(result)) != 0)
             return 1;
         fputs(result, stdout);
         return 0;

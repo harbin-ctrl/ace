@@ -115,6 +115,7 @@ static struct variable_entry global_vars[MAX_VARS];
 static struct component_mapping *component_mappings;
 static uint32_t mapping_state;
 static int server_fd = -1;
+static time_t broker_started;
 /* Set from amiga_broker_socket_path(), or argv[1], as main() starts, before
  * anything (including the signal handlers) can read it. */
 static const char *socket_path;
@@ -224,10 +225,6 @@ static void release_session(struct broker_session *session)
  * neither falls back to its own directory, which in a build tree is where
  * the commands are.
  */
-#ifndef ACE_SYS_DIR
-#define ACE_SYS_DIR ""
-#endif
-
 static char system_root[PATH_MAX];
 
 static struct assign_entry *allocate_assign(struct broker_session *session,
@@ -271,33 +268,15 @@ static bool make_directory_path(const char *path)
 
 static void resolve_system_root(void)
 {
-    const char *override = getenv("ACE_SYS_DIR");
-    char executable[PATH_MAX];
-    ssize_t length;
-    char *slash;
+    /* Shared with every client through broker_protocol.h: the socket this
+       broker listens on is named after this root, so a client that resolved
+       it differently would look for its broker somewhere else entirely. */
+    const char *root = amiga_broker_system_root();
 
-    if (override && *override && strlen(override) < sizeof(system_root)) {
-        strcpy(system_root, override);
-        return;
-    }
-    if (is_directory(ACE_SYS_DIR) &&
-        strlen(ACE_SYS_DIR) < sizeof(system_root)) {
-        strcpy(system_root, ACE_SYS_DIR);
-        return;
-    }
-    length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
-    if (length > 0 && (size_t)length < sizeof(executable) - 1) {
-        executable[length] = '\0';
-        slash = strrchr(executable, '/');
-        if (slash && slash != executable) {
-            *slash = '\0';
-            if (strlen(executable) < sizeof(system_root)) {
-                strcpy(system_root, executable);
-                return;
-            }
-        }
-    }
-    strcpy(system_root, "/");
+    if (strlen(root) < sizeof(system_root))
+        strcpy(system_root, root);
+    else
+        strcpy(system_root, "/");
 }
 
 /*
@@ -1573,8 +1552,20 @@ static int handle_client(struct broker_connection *connection)
 
     if (read_message(fd, &request, sizeof(request)) != 1)
         return -1;
-    if (request.magic != AMIGA_BROKER_MAGIC ||
-        request.session_length > 4096 || request.path_length > PATH_MAX ||
+    if (request.magic != AMIGA_BROKER_MAGIC) {
+        char message[160];
+
+        /* The magic carries the peer's protocol version, so say which one
+           turned up rather than only that the request was rejected.  The
+           reply's own magic lets the client name this broker in turn. */
+        snprintf(message, sizeof(message),
+                 "broker protocol 0x%08x, client sent 0x%08x",
+                 (unsigned)AMIGA_BROKER_PROTOCOL_VERSION,
+                 (unsigned)amiga_broker_version_from_magic(request.magic));
+        send_response(fd, EPROTO, message);
+        return -1;
+    }
+    if (request.session_length > 4096 || request.path_length > PATH_MAX ||
         request.value_length > PATH_MAX) {
         send_response(fd, EPROTO, "invalid request");
         return -1;
@@ -1971,6 +1962,61 @@ static int handle_client(struct broker_connection *connection)
         break;
     }
 
+    case AMIGA_BROKER_STATUS: {
+        char executable[PATH_MAX];
+        ssize_t length;
+        size_t used = 0;
+        size_t live_sessions = 0;
+        size_t live_tasks = 0;
+        int written;
+
+        length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+        if (length > 0)
+            executable[length] = '\0';
+        else
+            strcpy(executable, "(unknown)");
+
+        for (size_t i = 0; i < MAX_SESSIONS; i++)
+            if (sessions[i].in_use)
+                live_sessions++;
+        for (size_t i = 0; i < MAX_TASKS; i++)
+            if (tasks[i].id)
+                live_tasks++;
+
+        written = snprintf(result, sizeof(result),
+                           "protocol\t0x%08x\n"
+                           "executable\t%s\n"
+                           "pid\t%ld\n"
+                           "uptime\t%lld\n"
+                           "socket\t%s\n"
+                           "sys\t%s\n"
+                           "sessions\t%zu\n"
+                           "tasks\t%zu\n",
+                           (unsigned)AMIGA_BROKER_PROTOCOL_VERSION,
+                           executable, (long)getpid(),
+                           (long long)(time(NULL) - broker_started),
+                           socket_path, system_root,
+                           live_sessions, live_tasks);
+        if (written < 0 || (size_t)written >= sizeof(result)) {
+            status = ENAMETOOLONG;
+            break;
+        }
+        used = (size_t)written;
+
+        for (size_t i = 0; i < MAX_SESSIONS; i++) {
+            if (!sessions[i].in_use)
+                continue;
+            written = snprintf(result + used, sizeof(result) - used,
+                               "session\t%s\t%u\t%s\n", sessions[i].id,
+                               sessions[i].anchors, sessions[i].cwd);
+            if (written < 0 || (size_t)written >= sizeof(result) - used)
+                break; /* report what fits; this is a diagnostic, not a feed */
+            used += (size_t)written;
+        }
+        (void)used;
+        break;
+    }
+
     case AMIGA_BROKER_TASK_LIST: {
         size_t used = 0;
 
@@ -2159,7 +2205,8 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_LISTPATH ||
                request.operation == AMIGA_BROKER_TASK_ATTACH ||
                request.operation == AMIGA_BROKER_TASK_FIND ||
-               request.operation == AMIGA_BROKER_TASK_LIST) {
+               request.operation == AMIGA_BROKER_TASK_LIST ||
+               request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)
             outcome = -1;
     } else {
@@ -2314,8 +2361,14 @@ int main(int argc, char **argv)
 {
     struct sockaddr_un address;
 
+    if (argc == 2 && strcmp(argv[1], "--print-socket") == 0) {
+        /* So the start/stop scripts do not have to reimplement the naming
+           rule in shell and drift away from it. */
+        printf("%s\n", amiga_broker_socket_path());
+        return 0;
+    }
     if (argc > 2 || (argc == 2 && argv[1][0] == '\0')) {
-        fprintf(stderr, "usage: %s [socket-path]\n", argv[0]);
+        fprintf(stderr, "usage: %s [socket-path | --print-socket]\n", argv[0]);
         return 2;
     }
     socket_path = amiga_broker_socket_path();
@@ -2336,6 +2389,7 @@ int main(int argc, char **argv)
     if (acquire_socket_lock() != 0)
         return already_running ? 0 : 1;
 
+    broker_started = time(NULL);
     ace_dos_devices_discover();
     resolve_system_root();
     restore_environment_archive();

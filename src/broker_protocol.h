@@ -8,51 +8,56 @@
 #include <unistd.h>
 
 /*
- * One broker per user, and this is how everything finds it.
+ * The protocol version is a hash of this file, computed by the Makefile and
+ * passed in as a define.  It is derived rather than hand-maintained because
+ * a version nobody remembers to bump is worse than none: it says "compatible"
+ * while the layout underneath has changed.  Any edit to this header produces
+ * a new version, which is conservative in the right direction.
  *
- * The default used to be a single machine-wide /tmp/ace-broker.sock, which
- * is wrong in both directions: two people logged into the same machine
- * collide on one path (and, since the socket is created 0600, the second one
- * simply cannot use it), while anything that set ACE_BROKER_SOCKET to a
- * private path got a whole additional broker process. Test runs left drifts
- * of them behind.
+ * Zero means the build did not supply one -- an ad-hoc compile rather than a
+ * make.  Such a build still talks to itself, and reports "unversioned".
+ */
+#ifndef AMIGA_BROKER_PROTOCOL_VERSION
+#define AMIGA_BROKER_PROTOCOL_VERSION 0u
+#endif
+
+/*
+ * How everything finds the broker.
  *
- * XDG_RUNTIME_DIR is the per-user directory made for exactly this: it is
- * private to the user, and the system clears it when their last session
- * ends, so a broker's socket cannot outlive the login it belongs to. Where
- * there is no such directory the uid goes in the filename instead, which
- * separates users even though nothing will clean up after them.
+ * The socket lives in XDG_RUNTIME_DIR, which is per-user, private, and
+ * cleared when the user's last session ends, so a socket cannot outlive the
+ * login it belongs to.  Where there is no such directory the uid goes in the
+ * filename instead, which still separates users even though nothing will
+ * clean up after them.
+ *
+ * The name also carries a hash of the SYS: root -- see
+ * amiga_broker_system_root() for why that, and not the user, is the thing a
+ * broker's identity actually follows.
  *
  * ACE_BROKER_SOCKET still overrides, for a deliberately isolated broker.
  * That is a thing worth being able to do; it just should not be what happens
  * by accident.
  */
-static inline const char *amiga_broker_socket_path(void)
+/* Implemented in src/broker_identity.c -- see there for why the rule lives
+   in one place and what the broker's identity actually follows. */
+const char *amiga_broker_system_root(void);
+const char *amiga_broker_socket_path(void);
+
+/*
+ * The magic carries the protocol version, so a mismatch is caught on the
+ * very first field either side reads rather than after a payload has been
+ * misparsed.  A peer's version can be recovered from the magic it sent
+ * (magic ^ BASE), which lets the diagnostic name both builds instead of
+ * saying only that something is wrong.
+ */
+#define AMIGA_BROKER_MAGIC_BASE 0x414D4742u /* AMGB */
+#define AMIGA_BROKER_MAGIC \
+    (AMIGA_BROKER_MAGIC_BASE ^ (uint32_t)AMIGA_BROKER_PROTOCOL_VERSION)
+
+static inline uint32_t amiga_broker_version_from_magic(uint32_t magic)
 {
-    /* Kept well inside sockaddr_un's 108-byte sun_path. */
-    static char resolved[104];
-    const char *configured = getenv("ACE_BROKER_SOCKET");
-    const char *runtime_dir;
-    int written = -1;
-
-    if (configured && *configured)
-        return configured;
-    if (resolved[0])
-        return resolved;
-
-    runtime_dir = getenv("XDG_RUNTIME_DIR");
-    if (runtime_dir && *runtime_dir)
-        written = snprintf(resolved, sizeof(resolved), "%s/ace-broker.sock",
-                           runtime_dir);
-    if (written < 0 || written >= (int)sizeof(resolved))
-        written = snprintf(resolved, sizeof(resolved), "/tmp/ace-broker-%lu.sock",
-                           (unsigned long)getuid());
-    if (written < 0 || written >= (int)sizeof(resolved))
-        resolved[0] = '\0'; /* unusable; callers will fail to connect */
-    return resolved;
+    return magic ^ AMIGA_BROKER_MAGIC_BASE;
 }
-
-#define AMIGA_BROKER_MAGIC 0x414D4742u /* AMGB */
 
 enum amiga_broker_operation {
     AMIGA_BROKER_RESOLVE = 1,
@@ -105,7 +110,11 @@ enum amiga_broker_operation {
     AMIGA_BROKER_TASK_SIGNAL = 25,
     AMIGA_BROKER_TASK_SET_FOREGROUND = 26,
     AMIGA_BROKER_TASK_BREAK_FOREGROUND = 27,
-    AMIGA_BROKER_TASK_LIST = 28
+    AMIGA_BROKER_TASK_LIST = 28,
+    /* Report what this broker is: its build, where it lives, which SYS: it
+       serves, and what it is currently holding.  Answering "which broker am
+       I talking to" should not require reading ps output. */
+    AMIGA_BROKER_STATUS = 29
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

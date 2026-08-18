@@ -640,6 +640,73 @@ The real shell starts a sibling broker automatically when the configured
 socket is unavailable. `NewCLI` opens another ACE console. `EndCLI` ends the
 current AROS shell.
 
+## The broker
+
+Not a systemd service and not socket-activated: a plain `AF_UNIX` socket the
+broker binds itself. It starts two ways -- explicitly through `broker-start`,
+or implicitly, when any ACE command finds the socket unreachable and forks one
+from the `ace-broker` sitting beside its own executable. Either way it is
+detached, and it runs until something sends it SIGTERM. There is deliberately
+no idle timeout.
+
+**What it holds.** Per session -- keyed by `ACE_SESSION` -- the current
+directory, command paths, assigns, local variables, RC/Result2, fail level,
+prompt, and foreground task. That state is anchored by the shell that owns it
+and freed the moment the shell disconnects, so it does not accumulate.
+Broker-wide: the task registry, global (`Setenv`) variables, the
+case-collision component mappings, SYS:, and the DOS volume list. This second
+group is the state a stale broker gets wrong.
+
+**What one broker is.** Its socket is
+`$XDG_RUNTIME_DIR/ace-broker-<sys>-<protocol>.sock`, and both halves of that
+name are load-bearing:
+
+* `<sys>` is a hash of the resolved SYS: root. SYS: is what makes an ACE
+  system that system -- on a real Amiga "which machine" is answered by which
+  volume you booted -- so two different roots are two different systems and
+  get two different brokers. `XDG_RUNTIME_DIR` makes it per-user and per-login
+  besides, since the system clears that directory when the user's last session
+  ends.
+* `<protocol>` is a hash of `src/broker_protocol.h`, computed by the Makefile.
+  It is derived rather than hand-maintained because a version nobody remembers
+  to bump is worse than none. Its presence in the *name* is what makes stale
+  brokers harmless during development: a rebuilt command whose protocol
+  changed does not find the previous build's broker at all, so it starts its
+  own instead of talking to something that would misparse it.
+
+Note what this does not separate. Once ACE is installed, a build tree and the
+install both resolve the same `ACE_SYS_DIR`, so they are the same system and
+share a broker -- which is correct when their protocol matches, and handled by
+the name when it does not.
+
+**When they do meet anyway.** A hand-set `ACE_BROKER_SOCKET` puts two builds
+on one path regardless, and a compile outside `make` carries no version at
+all. For those the version is also folded into the protocol magic, so a
+mismatch is caught on the first field either side reads rather than after a
+payload has been misparsed, and each side can name the other's version:
+
+```text
+ace: the broker on /run/user/1000/ace-broker-...sock speaks protocol
+     0x27fbf499; this build speaks 0xdeadbeef.
+ace: it is an older or newer ace-broker still running. Stop it with
+     broker-stop and retry.
+```
+
+**Asking what is running.** `ace-brokerctl status` reports the client's own
+protocol, SYS: and socket, then the broker's protocol, executable, pid,
+uptime, socket, SYS:, and its live sessions and tasks. `ace-brokerctl socket`
+and `ace-broker --print-socket` print where a connection would go without
+starting anything.
+
+Two consequences of having no idle timeout. Superseded brokers linger as
+processes until logout clears `XDG_RUNTIME_DIR`; they are unreachable rather
+than dangerous, but they do accumulate across a day of protocol edits, and
+`broker-stop` only stops the one matching the current build. And `ace-broker`
+takes any argument as a socket path, so an older one handed `--print-socket`
+binds a socket by that name and serves it forever -- which is why the
+start/stop scripts bound that call with a timeout and reject anything that is
+not an absolute path.
+
 ## Known boundary
 
 The AROS source tree remains an external source dependency. ACE currently

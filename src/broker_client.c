@@ -294,8 +294,34 @@ static int broker_exchange(int fd, uint32_t operation, const char *path,
         read_all(fd, &response, sizeof(response)) != 0)
         return -1;
 
-    if (response.magic != AMIGA_BROKER_MAGIC ||
-        response.payload_length > AMIGA_BROKER_MAX_PAYLOAD) {
+    if (response.magic != AMIGA_BROKER_MAGIC) {
+        /*
+         * The running broker is a different build.  Say so, once, naming
+         * both sides -- the reply's magic carries the broker's protocol
+         * version the same way ours carries this build's.  Without this the
+         * caller sees only EPROTO and the cause looks like anything but what
+         * it is.  Reported once per process: every ACE command would
+         * otherwise repeat it, and a shell runs many.
+         */
+        static int reported;
+
+        if (!reported) {
+            unsigned theirs =
+                (unsigned)amiga_broker_version_from_magic(response.magic);
+
+            reported = 1;
+            fprintf(stderr,
+                    "ace: the broker on %s speaks protocol 0x%08x; this build "
+                    "speaks 0x%08x.\n"
+                    "ace: it is an older or newer ace-broker still running. "
+                    "Stop it with broker-stop and retry.\n",
+                    broker_socket_path(), theirs,
+                    (unsigned)AMIGA_BROKER_PROTOCOL_VERSION);
+        }
+        errno = EPROTO;
+        return -1;
+    }
+    if (response.payload_length > AMIGA_BROKER_MAX_PAYLOAD) {
         errno = EPROTO;
         return -1;
     }
@@ -680,4 +706,10 @@ int native_broker_path(const char *path, uint32_t flags)
 
     return broker_request(AMIGA_BROKER_PATH, path, NULL, flags,
                           ignored, sizeof(ignored));
+}
+
+int native_broker_status(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_STATUS, NULL, NULL, 0, result,
+                          result_size);
 }
