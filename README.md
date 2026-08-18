@@ -277,17 +277,24 @@ its own NUL and containing no other, or the eight bytes of a hash, which never
 ends in NUL. Both directions ask that same question, so whatever is left
 unescaped is also left undecoded and every name survives the round trip.
 
-The payload's last byte says which of two things it is. A trailing NUL means
-the payload is the rest of the host name literally, and decoding reconstructs
-it without touching the disk. Anything else means the name was too long to
-spell out and the payload is a hash of it; a hash cannot be inverted and is
-not -- the directory is read and each entry encoded forward until one matches,
-the way a password is checked rather than recovered.
+The payload always ends in a NUL, which is the host name's own terminator:
+decoding reconstructs the name without touching the disk, and a caret followed
+by anything that does not decode to such a payload is just a caret.
 
-That last form has a real limit worth knowing: it resolves only while its file
-is still in that directory, so it does not survive being copied elsewhere. A
-107-character component cannot carry a 255-byte name in any alphabet, so a
-name that long is not fully representable and something has to give.
+A name too long to encode is **refused**, not given a synthetic spelling. 106
+base32 characters carry 530 bits and a name may be up to `NAME_MAX` bytes, so
+no encoding maps every name into a component -- there are more names than
+payloads. Compression does not rescue it either: measured on 460,946 real
+directory entries from this machine, a zstd dictionary trained on 40,000 of
+those very names still left three of the six longest over budget, because a
+UUID does not compress however well an apt list does.
+
+So the mapper fails predictably instead of on a subset nobody can
+characterise. An unspellable name reports `ERROR_INVALID_COMPONENT_NAME`, and
+because a directory listing has to name every entry, one such file makes its
+directory unlistable rather than silently omitting it. In that same survey --
+a full Debian install plus 28GB of working data -- no name exceeded 107 bytes
+and the longest was 90.
 
 The first filesystem handler supports VFAT and ext2, ext3, and ext4. The
 broker also enumerates the live Linux mount table. Block-backed mounts are

@@ -296,12 +296,16 @@ static int broker_exchange(int fd, uint32_t operation, const char *path,
 
     if (response.magic != AMIGA_BROKER_MAGIC) {
         /*
-         * The running broker is a different build.  Say so, once, naming
-         * both sides -- the reply's magic carries the broker's protocol
-         * version the same way ours carries this build's.  Without this the
-         * caller sees only EPROTO and the cause looks like anything but what
-         * it is.  Reported once per process: every ACE command would
-         * otherwise repeat it, and a shell runs many.
+         * Either the running broker is a different build, or this connection
+         * has lost sync and what was read is not a response header at all.
+         * They are told apart by the rest of the header: a real broker of any
+         * version sends a plausible length, so a wild one means the bytes are
+         * something else entirely -- the tail of a previous reply, most
+         * likely.  Saying "older broker, run broker-stop" for that would send
+         * the reader after the wrong thing.
+         *
+         * Reported once per process: every ACE command would otherwise repeat
+         * it, and a shell runs many.
          */
         static int reported;
 
@@ -310,13 +314,21 @@ static int broker_exchange(int fd, uint32_t operation, const char *path,
                 (unsigned)amiga_broker_version_from_magic(response.magic);
 
             reported = 1;
-            fprintf(stderr,
-                    "ace: the broker on %s speaks protocol 0x%08x; this build "
-                    "speaks 0x%08x.\n"
-                    "ace: it is an older or newer ace-broker still running. "
-                    "Stop it with broker-stop and retry.\n",
-                    broker_socket_path(), theirs,
-                    (unsigned)AMIGA_BROKER_PROTOCOL_VERSION);
+            if (response.payload_length <= AMIGA_BROKER_MAX_PAYLOAD)
+                fprintf(stderr,
+                        "ace: the broker on %s speaks protocol 0x%08x; this "
+                        "build speaks 0x%08x.\n"
+                        "ace: it is an older or newer ace-broker still "
+                        "running. Stop it with broker-stop and retry.\n",
+                        broker_socket_path(), theirs,
+                        (unsigned)AMIGA_BROKER_PROTOCOL_VERSION);
+            else
+                fprintf(stderr,
+                        "ace: malformed reply from the broker on %s "
+                        "(magic 0x%08x, length %u): this connection has lost "
+                        "sync rather than met a different build.\n",
+                        broker_socket_path(), (unsigned)response.magic,
+                        (unsigned)response.payload_length);
         }
         errno = EPROTO;
         return -1;

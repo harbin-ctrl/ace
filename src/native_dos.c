@@ -751,7 +751,11 @@ static int native_fill_fib(const char *path, const char *name,
 
         if (native_broker_name_from_host(path, mapped_path,
                                          sizeof(mapped_path)) != 0) {
-            native_ioerr = errno;
+            /* Translated rather than passed through: a name with no AmigaDOS
+               spelling reaches the user as ERROR_INVALID_COMPONENT_NAME,
+               which is what it is, instead of a raw Linux errno printed as
+               "Error 36". */
+            set_native_broker_error();
             return -1;
         }
         last = strrchr(mapped_path, '/');

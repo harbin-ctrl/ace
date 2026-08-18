@@ -217,12 +217,14 @@ mapped_colon_component=${mapped_colon##*/}
 only_base32 "${mapped_colon_component#*^}" ||
     { echo "unsafe component was not given a visible mapping: $mapped_colon" >&2; exit 1; }
 [ "$(control resolve "$mapped_colon")" = "$(realpath "$mapping_colon_dir")" ]
-mapped_long=$(control name "$mapping_long_dir")
-mapped_long_component=${mapped_long##*/}
-[ "${#mapped_long_component}" -le 107 ]
-only_base32 "${mapped_long_component#*^}" ||
-    { echo "long component was not mapped: $mapped_long_component" >&2; exit 1; }
-[ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
+# A name too long to spell is refused, not given a synthetic one.  106 base32
+# characters carry 530 bits and a name may be NAME_MAX bytes, so no encoding
+# maps every such name into a component -- and a scheme that fails predictably
+# is worth more than one that fails on an uncharacterisable subset.
+if control name "$mapping_long_dir" >/dev/null 2>&1; then
+    echo "an unspellable name was given a spelling: $(control name "$mapping_long_dir")" >&2
+    exit 1
+fi
 
 # Linux can hold two names AmigaDOS considers equal.  The lexical first keeps
 # its visible spelling; every additional variant gets the ordinary broker ^
@@ -686,7 +688,6 @@ kill -0 "$recovered_pid"
 # Previously each broker invented random suffixes, so every name minted before
 # a restart became permanently unopenable.
 for pair in "$mapping_colon_dir|$mapped_colon" \
-            "$mapping_long_dir|$mapped_long" \
             "$case_collision_secondary|$case_secondary_name"; do
     host=${pair%%|*}
     before=${pair#*|}
