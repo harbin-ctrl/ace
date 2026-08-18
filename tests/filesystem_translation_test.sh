@@ -13,6 +13,9 @@ mapping_dotdot_dir="$mapping_test_dir/::"
 mapping_dot_create_parent="$mapping_test_dir/ace-dot-names"
 mapping_dot_create_dir="$mapping_dot_create_parent/:"
 mapping_dotdot_create_dir="$mapping_dot_create_parent/::"
+case_collision_dir="$mapping_test_dir/case-collisions"
+case_collision_primary="$case_collision_dir/CaseCollision"
+case_collision_secondary="$case_collision_dir/casecollision"
 mapping_union_first="$mapping_test_dir/union-first"
 mapping_union_second="$mapping_test_dir/union-second"
 rename_source="$mapping_test_dir/rename-source"
@@ -41,7 +44,8 @@ mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_dot_dir" \
       "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
       "$delete_dir" "$delete_dir/nested" "$note_dir" "$softlink_dir" \
-      "$softlink_target_dir"
+      "$softlink_target_dir" "$case_collision_dir"
+touch "$case_collision_primary" "$case_collision_secondary"
 touch "$rename_source"
 touch "$rename_question_source"
 touch "$delete_dir/one.txt" "$delete_dir/two.txt" \
@@ -85,6 +89,8 @@ cleanup()
     [ -e "$relative_target_file" ] && unlink "$relative_target_file" 2>/dev/null || true
     [ -e "$softlink_target_file" ] && unlink "$softlink_target_file" 2>/dev/null || true
     [ -e "$absolute_target_file" ] && unlink "$absolute_target_file" 2>/dev/null || true
+    [ -e "$case_collision_primary" ] && unlink "$case_collision_primary" 2>/dev/null || true
+    [ -e "$case_collision_secondary" ] && unlink "$case_collision_secondary" 2>/dev/null || true
     for file in "$softlink_name" "$relative_softlink_name" \
                 "$directory_softlink_name" "$nested_relative_softlink_name" \
                 "$absolute_file_softlink_name" "$absolute_directory_softlink_name" \
@@ -96,6 +102,7 @@ cleanup()
           "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
           "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
           "$mapping_long_dir" "$mapping_dot_dir" "$mapping_dotdot_dir" \
+          "$case_collision_dir" \
           "$softlink_target_dir" \
           "$softlink_dir" \
           "$mapping_test_dir" \
@@ -173,6 +180,29 @@ case "$mapped_long_component" in
     *) echo "long component was not mapped: $mapped_long_component" >&2; exit 1 ;;
 esac
 [ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
+
+# Linux can hold two names AmigaDOS considers equal.  The lexical first keeps
+# its visible spelling; every additional variant gets the ordinary broker ^
+# escape so both entries remain addressable from ACE.
+case_primary_name=$(control name "$case_collision_primary")
+case_secondary_name=$(control name "$case_collision_secondary")
+[ "${case_primary_name##*/}" = "CaseCollision" ]
+case "${case_secondary_name##*/}" in
+    casecollision^????????) ;;
+    *) echo "case-colliding component was not given a visible mapping: $case_secondary_name" >&2; exit 1 ;;
+esac
+[ "$(control resolve "$case_primary_name")" = "$(realpath "$case_collision_primary")" ]
+[ "$(control resolve "$case_secondary_name")" = "$(realpath "$case_collision_secondary")" ]
+# An ordinary case-insensitive path names the primary entry, never whichever
+# entry Linux happened to return first.
+case_ordinary_name=${case_primary_name%/*}/CASECOLLISION
+[ "$(control resolve "$case_ordinary_name")" = "$(realpath "$case_collision_primary")" ]
+case_collision_dir_name=$(control name "$case_collision_dir")
+case_listing=$(printf 'DIR %s\nEndCLI\n' "$case_collision_dir_name" |
+    env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
+        ACE_SESSION=filesystem-test "$repo_dir/build/ace-user-shell")
+printf '%s\n' "$case_listing" | grep -F -q 'CaseCollision'
+printf '%s\n' "$case_listing" | grep -F -q "${case_secondary_name##*/}"
 mapped_dir_output=$(printf 'DIR %s OPT A\nEndCLI\n' "$mapped_colon" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=filesystem-test "$repo_dir/build/ace-user-shell")

@@ -570,7 +570,7 @@ static struct component_mapping *find_mapping_by_amiga(const char *parent,
     for (struct component_mapping *mapping = component_mappings;
          mapping; mapping = mapping->next)
         if (strcmp(mapping->parent, parent) == 0 &&
-            strcmp(mapping->amiga_name, amiga_name) == 0)
+            strcasecmp(mapping->amiga_name, amiga_name) == 0)
             return mapping;
     return NULL;
 }
@@ -584,6 +584,37 @@ static int host_component_exists(const char *parent, const char *name)
         (int)sizeof(path))
         return 1;
     return lstat(path, &(struct stat){0}) == 0;
+}
+
+/* Linux permits several spellings which AmigaDOS would regard as the same
+ * component.  Keep the lexical first one as the ordinary Amiga spelling and
+ * make every other one go through the visible ^ escape mapping. */
+static bool host_case_variant_needs_mapping(const char *parent,
+                                            const char *host_name)
+{
+    DIR *stream;
+    struct dirent *entry;
+    char first[NAME_MAX + 1];
+    bool collision = false;
+    bool found = false;
+
+    stream = opendir(parent);
+    if (!stream)
+        return false;
+    while ((entry = readdir(stream)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0 ||
+            strcasecmp(entry->d_name, host_name) != 0)
+            continue;
+        if (!found || strcmp(entry->d_name, first) < 0) {
+            strcpy(first, entry->d_name);
+            found = true;
+        }
+        if (strcmp(entry->d_name, host_name) != 0)
+            collision = true;
+    }
+    closedir(stream);
+    return collision && strcmp(host_name, first) != 0;
 }
 
 /*
@@ -629,7 +660,8 @@ static int map_component(const char *parent, const char *host_name,
         strcpy(result, fixed_name);
         return 0;
     }
-    if (!component_needs_mapping(host_name)) {
+    if (!component_needs_mapping(host_name) &&
+        !host_case_variant_needs_mapping(parent, host_name)) {
         if (strlen(host_name) >= result_size) {
             errno = ENAMETOOLONG;
             return -1;
@@ -713,29 +745,22 @@ static int map_component(const char *parent, const char *host_name,
  * An Amiga filesystem matches a name without regard to case: `dir`, `Dir` and
  * `DIR` name the same thing, which is why an Amiga user types commands in
  * whatever case they please. Linux does not, so a name that does not exist
- * exactly is looked for again among the entries that are there.
+ * is looked for among the entries that are there.
  *
- * Only on a miss, so an exact match always wins and costs nothing extra, and
- * a name being created -- which exists nowhere yet -- keeps the spelling it
+ * A name being created -- which exists nowhere yet -- keeps the spelling it
  * was given. Where a directory holds several entries differing only in case,
  * something an Amiga filesystem could not have contained in the first place,
- * the first in sorted order is chosen so that the answer at least does not
- * depend on the order the host hands them back.
+ * the lexical first is its ordinary spelling.  The other spellings are
+ * available through the explicit ^ mappings made by map_component().
  */
 static void match_existing_case(const char *parent, char *name,
                                 size_t name_size)
 {
-    char probe[PATH_MAX];
     char best[NAME_MAX + 1];
     struct dirent *entry;
     DIR *stream;
     int found = 0;
 
-    if ((size_t)snprintf(probe, sizeof(probe), "%s/%s", parent, name) >=
-        sizeof(probe))
-        return;
-    if (faccessat(AT_FDCWD, probe, F_OK, AT_SYMLINK_NOFOLLOW) == 0)
-        return;
     stream = opendir(parent);
     if (!stream)
         return;

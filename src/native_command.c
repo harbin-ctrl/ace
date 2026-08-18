@@ -131,8 +131,32 @@ static int executable_file(const char *path)
 static int directory_command(const char *directory, const char *name,
                              char *result, size_t result_size)
 {
+    char amiga_directory[PATH_MAX];
+    char amiga_candidate[PATH_MAX];
+    char resolved[PATH_MAX];
     DIR *stream = opendir(directory);
     struct dirent *entry;
+    char best[PATH_MAX];
+    int found = 0;
+    int written;
+
+    /* Path resolution belongs to the broker: besides normal AmigaDOS case
+       folding it understands the visible ^ spellings used for Linux names
+       which collide only by case. */
+    if (native_broker_name_from_host(directory, amiga_directory,
+                                     sizeof(amiga_directory)) == 0) {
+        written = snprintf(amiga_candidate, sizeof(amiga_candidate), "%s/%s",
+                           amiga_directory, name);
+        if (written >= 0 && (size_t)written < sizeof(amiga_candidate) &&
+            native_broker_resolve_path(amiga_candidate, resolved,
+                                       sizeof(resolved)) == 0 &&
+            executable_file(resolved)) {
+            if (strlen(resolved) >= result_size)
+                return -1;
+            strcpy(result, resolved);
+            return 0;
+        }
+    }
 
     if (!stream)
         return -1;
@@ -143,14 +167,18 @@ static int directory_command(const char *directory, const char *name,
             continue;
         written = snprintf(result, result_size, "%s/%s", directory,
                            entry->d_name);
-        if (written >= 0 && (size_t)written < result_size &&
-            executable_file(result)) {
-            closedir(stream);
-            return 0;
+        if (written >= 0 && (size_t)written < sizeof(best) &&
+            executable_file(result) &&
+            (!found || strcmp(result, best) < 0)) {
+            strcpy(best, result);
+            found = 1;
         }
     }
     closedir(stream);
-    return -1;
+    if (!found || strlen(best) >= result_size)
+        return -1;
+    strcpy(result, best);
+    return 0;
 }
 
 static int companion_command(const char *path)

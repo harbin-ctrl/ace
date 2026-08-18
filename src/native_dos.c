@@ -54,24 +54,6 @@ static struct Process native_process;
    upstream's own code agree about the error. */
 #define native_ioerr (native_process.pr_Result2)
 
-static int native_name_needs_mapping(const char *name)
-{
-    size_t length = strlen(name);
-
-    if (length > 107)
-        return 1;
-    for (size_t index = 0; index < length; index++) {
-        unsigned char character = (unsigned char)name[index];
-
-        if (!((character >= 'a' && character <= 'z') ||
-              (character >= 'A' && character <= 'Z') ||
-              (character >= '0' && character <= '9') ||
-              character == '.' || character == '_' || character == '-'))
-            return 1;
-    }
-    return 0;
-}
-
 static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
 static struct Library native_iffparse_base;
@@ -762,7 +744,9 @@ static int native_fill_fib(const char *path, const char *name,
         native_ioerr = errno;
         return -1;
     }
-    if (native_name_needs_mapping(name)) {
+    /* The broker also maps ordinary-looking names that collide under
+       AmigaDOS case folding, so every directory entry goes through it. */
+    {
         const char *last;
 
         if (native_broker_name_from_host(path, mapped_path,
