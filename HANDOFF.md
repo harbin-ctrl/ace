@@ -612,6 +612,17 @@ console editing and history code in place. Apply it once to a clean checkout;
 GTK 3 development files, `blkid` development files, a C compiler, `make`,
 `git`, and a Wayland session are required for the complete build/window.
 
+Both patches are required, and `patch` reports "previously applied" if
+repeated, so applying them to an existing checkout is safe. It is worth
+checking that they took: a `cp -a` of this tree between hosts copies ACE but
+not `$HOME/aros`, and `git -C "$HOME/aros" status` should show
+`rom/filesys/console_handler/con_handler.c`, `.../support.c`, and
+`workbench/c/Dir.c` modified and nothing else.
+
+The Regina port has a third external checkout, `$HOME/stash/aros-contrib`,
+which is not needed for `make all`. See `docs/regina-amiga-port.md` for what
+it is and how to recreate it.
+
 ## Launch
 
 From the ACE checkout:
