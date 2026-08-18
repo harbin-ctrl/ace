@@ -241,8 +241,9 @@ Four things genuinely cannot be spelled, and only these reach the mapper:
 * `:`, which separates a volume from the path after it;
 * `/`, which separates components -- a Linux filename can never contain one,
   but the rule is stated for completeness;
-* `^`, which introduces the escape below, so a name containing one has to be
-  escaped or the marker would be ambiguous;
+* `^`, but only when what follows it really does spell an encoded payload.
+  `a^b.txt` and `caret^symbol` are left alone, because nothing after the caret
+  decodes; only a caret that would be mistaken for a marker has to be escaped;
 * names too long for a `FileInfoBlock` component, and names that differ from
   another name in the same directory only by case, which a case-insensitive
   AmigaDOS filesystem regards as one file.
@@ -267,6 +268,14 @@ lexically first keeps its plain spelling and the rest are escaped.
 
 base32 rather than base64 because the filesystem is case-insensitive, so an
 alphabet distinguishing `A` from `a` would let two encodings name one file.
+
+Deciding whether a caret opens an escape takes more than "the rest is base32".
+`x^AAAA` is valid base32 and decodes to two zero bytes, which would read as a
+host name containing an embedded NUL -- something no filesystem can hold. So
+the decoded bytes must spell a form ACE actually emits: a name tail ended by
+its own NUL and containing no other, or the eight bytes of a hash, which never
+ends in NUL. Both directions ask that same question, so whatever is left
+unescaped is also left undecoded and every name survives the round trip.
 
 The payload's last byte says which of two things it is. A trailing NUL means
 the payload is the rest of the host name literally, and decoding reconstructs

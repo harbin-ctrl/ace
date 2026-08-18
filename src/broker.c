@@ -596,6 +596,64 @@ static uint64_t host_name_hash(const char *name)
 }
 
 /*
+ * Does the text after a '^' actually spell one of the two payload forms?
+ *
+ * This is what keeps '^' an ordinary character almost everywhere.  A name
+ * like "a^b.txt" is left alone, because "b.txt" is not base32 and so the
+ * caret cannot be the start of an escape; only a caret followed by something
+ * that really does decode has to be escaped to keep the marker unambiguous.
+ *
+ * "Decodes as base32" is not by itself enough.  "AAAA" decodes cleanly to two
+ * zero bytes, which would read as a literal payload whose host name contains
+ * an embedded NUL -- a filename no operating system can produce.  So the
+ * decoded bytes have to spell one of the forms this file actually emits: a
+ * host-name tail terminated by its own NUL and containing no other, or the
+ * eight bytes of a hash, which never ends in NUL.
+ *
+ * Both directions ask this same question, which is the point: whatever
+ * map_component() declines to escape, unmap_component() must decline to
+ * decode, or a name would not survive the round trip.
+ */
+static bool escape_payload_valid(const char *suffix)
+{
+    unsigned char payload[NAME_MAX + 2];
+    size_t length = 0;
+
+    if (base32_decode(suffix, payload, sizeof(payload), &length) != 0)
+        return false;
+    if (payload[length - 1] != '\0')
+        return length == sizeof(uint64_t);
+    for (size_t index = 0; index + 1 < length; index++)
+        if (!payload[index])
+            return false;
+    return true;
+}
+
+/* The caret that opens an escape, or NULL.  Not simply the first caret: in
+   "a^b^<payload>" the first one is an ordinary character and the second is
+   the marker. */
+static const char *escape_marker(const char *name)
+{
+    for (const char *cursor = name; *cursor; cursor++)
+        if (*cursor == MAPPED_MARKER && escape_payload_valid(cursor + 1))
+            return cursor;
+    return NULL;
+}
+
+/* Where a name stops being spellable, or SIZE_MAX if it never does. */
+static size_t first_unspellable_index(const char *name)
+{
+    for (size_t index = 0; name[index]; index++) {
+        if (name[index] == ':' || name[index] == '/')
+            return index;
+        if (name[index] == MAPPED_MARKER &&
+            escape_payload_valid(name + index + 1))
+            return index;
+    }
+    return SIZE_MAX;
+}
+
+/*
  * AmigaDOS takes very nearly every name Linux can produce.  Spaces, '+',
  * '#', '*', quotes, accented and non-ASCII bytes are all ordinary filename
  * characters; the pattern metacharacters among them need quoting when they
@@ -606,8 +664,9 @@ static uint64_t host_name_hash(const char *name)
  *   ':'   separates a volume from the path that follows it.
  *   '/'   separates path components.  A Linux filename can never contain
  *         one, but the check costs nothing and says what the rule is.
- *   '^'   introduces one of these escapes, so a name containing one has to
- *         be escaped itself or the marker would be ambiguous.
+ *   '^'   introduces one of these escapes -- but only when what follows it
+ *         really does spell a payload.  A caret in "a^b.txt" is just a
+ *         caret; see escape_payload_valid().
  *   too long for a FileInfoBlock component.
  *
  * A case collision is the fifth trigger and cannot be seen from the name
@@ -616,12 +675,8 @@ static uint64_t host_name_hash(const char *name)
  */
 static bool component_needs_mapping(const char *name)
 {
-    if (strlen(name) > AMIGA_COMPONENT_LIMIT)
-        return true;
-    for (const char *cursor = name; *cursor; cursor++)
-        if (*cursor == ':' || *cursor == '/' || *cursor == MAPPED_MARKER)
-            return true;
-    return false;
+    return strlen(name) > AMIGA_COMPONENT_LIMIT ||
+           first_unspellable_index(name) != SIZE_MAX;
 }
 
 
@@ -707,14 +762,8 @@ static size_t component_split_point(const char *parent, const char *host_name)
     DIR *stream;
     struct dirent *entry;
 
-    for (size_t index = 0; index < length; index++) {
-        char probe[2] = { host_name[index], '\0' };
-
-        if (component_needs_mapping(probe)) {
-            split = index;
-            break;
-        }
-    }
+    if (first_unspellable_index(host_name) < split)
+        split = first_unspellable_index(host_name);
 
     stream = opendir(parent);
     if (!stream)
@@ -886,10 +935,10 @@ static int unmap_component(const char *parent, const char *amiga_name,
         return 0;
     }
 
-    /* The header can never contain a marker of its own: '^' is one of the
-       characters that forces a name to be encoded, so the first one is always
-       the separator. */
-    marker = strchr(amiga_name, MAPPED_MARKER);
+    /* Not merely the first caret -- the first one that opens an escape.  A
+       caret the mapper left alone, because what followed it was not a
+       payload, is an ordinary character and belongs to the header. */
+    marker = escape_marker(amiga_name);
     if (!marker) {
         if (strlen(amiga_name) >= result_size) {
             errno = ENAMETOOLONG;

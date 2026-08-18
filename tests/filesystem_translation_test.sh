@@ -175,6 +175,30 @@ for legal in 'plain name.txt' 'report(final)#1.txt' 'Grüße.txt'; do
     [ "$(control resolve "$legal_name")" = "$(realpath "$mapping_test_dir/$legal")" ]
 done
 
+# A caret is only a marker when what follows it spells a payload.  These are
+# ordinary names and must survive untouched -- including "x^AAAA", which is
+# valid base32 but decodes to a host name with an embedded NUL, and so is not
+# a payload ACE could ever have produced.
+for carets in 'a^b.txt' 'caret^symbol' 'x^AAAA' 'a^b^AAAA'; do
+    : > "$mapping_test_dir/$carets"
+    caret_name=$(control name "$mapping_test_dir/$carets")
+    if [ "${caret_name##*/}" != "$carets" ]; then
+        echo "an ordinary caret was treated as a marker: $carets -> ${caret_name##*/}" >&2
+        exit 1
+    fi
+    [ "$(control resolve "$caret_name")" = "$(realpath "$mapping_test_dir/$carets")" ]
+done
+
+# A host name that does look like an escape has to be escaped, so that it
+# cannot be confused with the name it imitates.
+: > "$mapping_test_dir/Hi^HJKGQZLSMUXHI6DUAA"
+imitator=$(control name "$mapping_test_dir/Hi^HJKGQZLSMUXHI6DUAA")
+if [ "${imitator##*/}" = "Hi^HJKGQZLSMUXHI6DUAA" ]; then
+    echo "a name imitating an escape was not escaped" >&2
+    exit 1
+fi
+[ "$(control resolve "$imitator")" = "$(realpath "$mapping_test_dir/Hi^HJKGQZLSMUXHI6DUAA")" ]
+
 # Linux names that are not safe AROS components are spelled <header>^<base32>.
 # The spelling is a pure function of the host name -- no broker state -- so it
 # must be short enough for an AROS FileInfoBlock, visibly synthetic, resolve
