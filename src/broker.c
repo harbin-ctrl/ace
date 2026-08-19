@@ -616,12 +616,123 @@ enum {
     COMPRESS_DEFLATE = 1,
 };
 
-/* The trailer byte a compressed payload ends in: never zero, so it can
-   never be mistaken for the literal form's NUL terminator, and only ever
-   0x80 or 0x81, so a base32-decoded literal name would have to land on one
-   specific byte out of 256 before either engine's own validity check even
-   runs -- see compressed_payload_decode(). */
+/* The trailer byte a compressed payload ends in: distinct from 0x00, the
+   literal form's terminator, and checked as a second, independent proof of
+   which form this is -- see compressed_payload_decode(). */
 #define COMPRESSED_TRAILER(engine) (unsigned char)(0x80 | (engine))
+
+/*
+ * The literal escape stays on base32 (5 bits/character) -- it is what every
+ * ':' and every case collision already uses, and changing it would touch
+ * every escaped name ACE has ever produced, not just the rare over-length
+ * one.  The compressed tail has no such history, and base32's cost is what
+ * was actually limiting this tier: 106 base32 characters buy only 66
+ * compressed bytes, and a name that compresses to, say, 88 bytes -- a real
+ * measured case -- was refused for want of encoding, not compression.
+ *
+ * DENSE128 packs at 7 bits/character instead, 128 symbols chosen the same
+ * way base32's alphabet was: never two of them differing only by
+ * AmigaDOS's case fold.  Lowercase ASCII is excluded entirely, and so is
+ * every Latin-1 codepoint that has one (0xE0-0xFE); ß (0xDF) has no single
+ * Latin-1 uppercase codepoint and is caseless here.  What is left is ASCII
+ * punctuation and uppercase letters, Latin-1 symbols (0xA1-0xBF), and
+ * Latin-1 uppercase-or-caseless letters (0xC0-0xDF) -- 65 + 31 + 32 = 128,
+ * with ':', '/', '^' and space left out as everywhere else in this file.
+ *
+ * A compressed payload cannot be confused with a literal one because it is
+ * never handed to the same decoder: '0' cannot open a base32 literal (RFC
+ * 4648 excludes 0/1/8/9 to keep them visually distinct from O/I/B/S), so
+ * "^0" is reserved, structurally, to mean "what follows is DENSE128", the
+ * same way "^" itself is reserved to open an escape at all.  This is a
+ * guarantee, not a probability -- unlike telling the two payload forms
+ * inside base32 apart by their last byte, which is exactly why that trick
+ * is not reused here.
+ */
+static const unsigned char DENSE128_ALPHABET[128] = {
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+    0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x30, 0x31,
+    0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+    0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42,
+    0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
+    0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52,
+    0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a,
+    0x5b, 0x5c, 0x5d, 0x5f, 0x60, 0x7b, 0x7c, 0x7d,
+    0x7e, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+    0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+    0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7,
+    0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+    0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
+    0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7,
+    0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+};
+
+static int dense128_value(unsigned char character)
+{
+    for (int index = 0; index < 128; index++)
+        if (DENSE128_ALPHABET[index] == character)
+            return index;
+    return -1;
+}
+
+static size_t dense128_encoded_length(size_t bytes)
+{
+    return (bytes * 8 + 6) / 7;
+}
+
+static size_t dense128_encode(const unsigned char *data, size_t length,
+                              char *result, size_t result_size)
+{
+    uint32_t accumulator = 0;
+    unsigned bits = 0;
+    size_t used = 0;
+
+    for (size_t index = 0; index < length; index++) {
+        accumulator = (accumulator << 8) | data[index];
+        bits += 8;
+        while (bits >= 7) {
+            if (used + 1 >= result_size)
+                return 0;
+            result[used++] = (char)DENSE128_ALPHABET[(accumulator >> (bits - 7)) & 0x7f];
+            bits -= 7;
+        }
+    }
+    if (bits) {
+        if (used + 1 >= result_size)
+            return 0;
+        result[used++] = (char)DENSE128_ALPHABET[(accumulator << (7 - bits)) & 0x7f];
+    }
+    result[used] = '\0';
+    return used;
+}
+
+static int dense128_decode(const char *text, unsigned char *result,
+                           size_t result_size, size_t *result_length)
+{
+    uint32_t accumulator = 0;
+    unsigned bits = 0;
+    size_t used = 0;
+
+    for (const unsigned char *cursor = (const unsigned char *)text; *cursor;
+         cursor++) {
+        int value = dense128_value(*cursor);
+
+        if (value < 0)
+            return -1;
+        accumulator = (accumulator << 7) | (uint32_t)value;
+        bits += 7;
+        if (bits >= 8) {
+            if (used >= result_size)
+                return -1;
+            result[used++] = (unsigned char)((accumulator >> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    if (bits >= 7 || (accumulator & ((1u << bits) - 1)))
+        return -1;
+    *result_length = used;
+    return used ? 0 : -1;
+}
 
 static const char PACK39_ALPHABET[] = "abcdefghijklmnopqrstuvwxyz0123456789_.-";
 
@@ -776,10 +887,15 @@ static bool deflate_decompress(const unsigned char *data, size_t length,
 }
 
 /*
- * Decompresses a compressed-form payload, and is also the validity check
- * for one: called with scratch output and its result discarded, from
- * escape_payload_valid(), the same way the literal form's validity check
- * never needs a second copy of its own rules.
+ * Decodes a "^0..." compressed suffix (the caller has already consumed the
+ * '0'), and is also the validity check for one: called with scratch output
+ * and its result discarded, from escape_payload_valid(), the same way the
+ * literal form's validity check never needs a second copy of its own rules.
+ *
+ * The DENSE128 payload's own last byte selects the engine -- still checked
+ * against COMPRESSED_TRAILER's exact values rather than merely "nonzero",
+ * because a structural guarantee costs nothing extra here and the marker
+ * already carries the main one.
  *
  * PACK39 has no failure mode of its own -- any byte string decodes to some
  * text -- so its result is proven correct only by encoding it back and
@@ -789,14 +905,17 @@ static bool deflate_decompress(const unsigned char *data, size_t length,
  * already strong evidence, and this path is rare enough that the extra
  * certainty is not needed to justify the recompression it would cost.
  */
-static bool compressed_payload_decode(const unsigned char *payload, size_t length,
-                                      char *text, size_t text_size)
+static bool compressed_payload_decode(const char *suffix, char *text,
+                                      size_t text_size)
 {
-    unsigned char trailer;
+    unsigned char payload[NAME_MAX + 2];
     unsigned char verify[NAME_MAX + 2];
+    size_t length = 0;
     size_t verify_length;
+    unsigned char trailer;
 
-    if (length < 1)
+    if (dense128_decode(suffix, payload, sizeof(payload), &length) != 0 ||
+        length < 1)
         return false;
     trailer = payload[length - 1];
     if (trailer == COMPRESSED_TRAILER(COMPRESS_PACK39)) {
@@ -821,17 +940,18 @@ static bool compressed_payload_decode(const unsigned char *payload, size_t lengt
  * caret cannot be the start of an escape; only a caret followed by something
  * that really does decode has to be escaped to keep the marker unambiguous.
  *
- * "Decodes as base32" is not by itself enough.  The decoded bytes have to
- * spell one of the two forms this file actually emits, told apart by the
- * last byte:
+ * Two forms, told apart before either decoder even runs, by the first
+ * character:
  *
- *   0x00          literal: the rest of the host name, and nothing before it
- *                 may also be 0x00, or it would not be that name's own
- *                 terminator.
- *   0x80 / 0x81   compressed: PACK39 or DEFLATE respectively, and the
- *                 engine's own decode must actually succeed -- see
- *                 compressed_payload_decode().
- *   anything else not a payload at all; the caret is an ordinary character.
+ *   '0'    compressed: what follows is DENSE128, ending in a trailer byte
+ *          that names the engine.  '0' cannot open a valid base32 stream --
+ *          RFC 4648 excludes 0/1/8/9 from that alphabet -- so this is a
+ *          structural fact, not a coincidence to be probabilistically ruled
+ *          out; see the note above DENSE128_ALPHABET.
+ *   other  literal: base32, as it always was.  "Decodes as base32" is not
+ *          by itself enough -- the decoded bytes must end in their own NUL
+ *          and contain no other, or they are not that name's own
+ *          terminator.
  *
  * Both directions ask this same question, which is the point: whatever
  * map_component() declines to escape, unmap_component() must decline to
@@ -843,15 +963,16 @@ static bool escape_payload_valid(const char *suffix)
     char scratch[NAME_MAX + 2];
     size_t length = 0;
 
+    if (suffix[0] == '0')
+        return compressed_payload_decode(suffix + 1, scratch, sizeof(scratch));
     if (base32_decode(suffix, payload, sizeof(payload), &length) != 0)
         return false;
-    if (payload[length - 1] == '\0') {
-        for (size_t index = 0; index + 1 < length; index++)
-            if (!payload[index])
-                return false;
-        return true;
-    }
-    return compressed_payload_decode(payload, length, scratch, sizeof(scratch));
+    if (payload[length - 1] != '\0')
+        return false;
+    for (size_t index = 0; index + 1 < length; index++)
+        if (!payload[index])
+            return false;
+    return true;
 }
 
 /* The caret that opens an escape, or NULL.  Not simply the first caret: in
@@ -1124,10 +1245,12 @@ static int map_component(const char *parent, const char *host_name,
         }
 
         if (have_best) {
-            encoded_length = base32_encoded_length(best_length);
-            if (compress_split + 1 + encoded_length <= AMIGA_COMPONENT_LIMIT &&
-                base32_encode(best, best_length, encoded, sizeof(encoded))) {
-                if ((size_t)snprintf(candidate, sizeof(candidate), "%.*s%c%s",
+            /* +2, not +1: the marker and the '0' that says DENSE128 comes
+               next -- see the note above DENSE128_ALPHABET. */
+            encoded_length = dense128_encoded_length(best_length);
+            if (compress_split + 2 + encoded_length <= AMIGA_COMPONENT_LIMIT &&
+                dense128_encode(best, best_length, encoded, sizeof(encoded))) {
+                if ((size_t)snprintf(candidate, sizeof(candidate), "%.*s%c0%s",
                                      (int)compress_split, host_name,
                                      MAPPED_MARKER, encoded) <
                     sizeof(candidate)) {
@@ -1231,28 +1354,14 @@ static int unmap_component(const char *parent, const char *amiga_name,
     }
     header_length = (size_t)(marker - amiga_name);
 
-    if (base32_decode(marker + 1, payload, sizeof(payload) - 1,
-                      &payload_length) == 0 &&
-        payload[payload_length - 1] == '\0') {
-        /* Literal: the host name is the header and the decoded remainder. */
-        if (header_length + payload_length - 1 >= result_size) {
-            errno = ENAMETOOLONG;
-            return -1;
-        }
-        memcpy(result, amiga_name, header_length);
-        memcpy(result + header_length, payload, payload_length - 1);
-        result[header_length + payload_length - 1] = '\0';
-        return 0;
-    }
-
-    if (payload_length) {
+    if (marker[1] == '0') {
         /* Compressed: the host name is the header and the decompressed
            tail.  escape_marker() already proved this decodes, by calling
            the same function; doing it again here is the one place that
            proof gets spent, not duplicated for its own sake. */
         char tail_text[NAME_MAX + 2];
 
-        if (compressed_payload_decode(payload, payload_length, tail_text,
+        if (compressed_payload_decode(marker + 2, tail_text,
                                       sizeof(tail_text))) {
             size_t tail_length = strlen(tail_text);
 
@@ -1265,6 +1374,18 @@ static int unmap_component(const char *parent, const char *amiga_name,
             result[header_length + tail_length] = '\0';
             return 0;
         }
+    } else if (base32_decode(marker + 1, payload, sizeof(payload) - 1,
+                             &payload_length) == 0 &&
+               payload[payload_length - 1] == '\0') {
+        /* Literal: the host name is the header and the decoded remainder. */
+        if (header_length + payload_length - 1 >= result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(result, amiga_name, header_length);
+        memcpy(result + header_length, payload, payload_length - 1);
+        result[header_length + payload_length - 1] = '\0';
+        return 0;
     }
 
     /*

@@ -309,12 +309,32 @@ apart; measured against the real corpus below, the two here alone already
 reach the same result the four did, so the other two -- and the header
 space spent naming four -- were paying for nothing.
 
+The compressed bytes are not spelled in base32. Base32 is what the literal
+form has always used, and stays that way -- changing it would touch every
+`:` and every case collision ACE has ever escaped, not just this rare tail
+-- but its 5-bits-per-character cost was the actual ceiling on this tier: 106
+base32 characters buy only about 65 compressed bytes, and names that
+compressed to more than that were refused for want of encoding, not for
+want of compression. So the compressed tail gets its own alphabet, DENSE128,
+at 7 bits/character -- 128 symbols, chosen the same way base32's were: no
+two of them differing only by AmigaDOS's case fold. Lowercase ASCII is
+excluded entirely, and so is every Latin-1 byte that has one; what is left
+is ASCII punctuation and uppercase letters, Latin-1 symbols, and Latin-1
+uppercase-or-caseless letters.
+
+Telling DENSE128 apart from base32 does not lean on probability the way
+telling literal apart from compressed within base32 does. `^0` is reserved,
+structurally: RFC 4648 excludes `0`/`1`/`8`/`9` from base32's own alphabet
+to keep them visually distinct from `O`/`I`/`B`/`S`, so a base32 literal can
+never begin with `0`. `^0<DENSE128 payload>` is therefore unambiguous by
+construction, the same way `^` itself is reserved to open an escape at all.
+
 A name that compression still cannot fit is **refused**, not given a
 synthetic spelling that only half-works. A high-entropy hash-style name (39
 hex digits pack into roughly 0.66 bytes per character regardless of how
 "random" they look -- PACK39 is a positional radix conversion, not an
-entropy coder) can still land well past the roughly 65-byte compressed
-budget 106 base32 characters buy.
+entropy coder) can still land past the roughly 91-byte compressed budget 105
+DENSE128 characters buy.
 
 So the mapper fails predictably instead of on a subset nobody can
 characterise. An unspellable name reports `ERROR_INVALID_COMPONENT_NAME`, and
@@ -323,18 +343,19 @@ directory unlistable rather than silently omitting it.
 
 Measured against the full Debian 12 (bookworm) package archive's file index
 -- `Contents-amd64.gz`, 913,356 unique basenames, fetched and tested
-independently -- 258 basenames exceed `AMIGA_COMPONENT_LIMIT` outright.
-Every one of ACE's own commands re-derives its own compressed form and round-
-trips correctly with zero of them producing the wrong name. How many of the
-258 are rescued by compression alone (the comment field is not used, and
-carries the risk that plain `Copy` and LhA do not preserve it, only `Copy
-CLONE` does) depends heavily on content: an all-identical-character 150-byte
-name compresses to a handful of bytes and fits; a 140-character hex hash does
-not, and is refused the same way it always was. On this host's own live
-filesystem -- a full Debian install plus 28GB of working data, 460,946
-directory entries -- no name exceeded 107 bytes and the longest was 90, so
-this tier exists for corpora shaped like a package archive, not for what
-ordinarily ends up on a running system.
+independently -- 258 basenames exceed `AMIGA_COMPONENT_LIMIT` outright. Every
+one of ACE's own commands re-derives its own compressed form and round-trips
+correctly, with zero of the 258 producing the wrong name. **159 of the 258
+are rescued by compression alone** -- the comment field is not used for this,
+and deliberately so: it carries the risk that plain `Copy` and LhA do not
+preserve it, only `Copy CLONE` does, and nothing stops a later `Filenote`
+from overwriting a slot the encoder was relying on. The remaining 99 are
+genuinely too high-entropy for either engine at this budget -- mostly hash
+digests -- and are refused the same way an unrescuable name always was. On
+this host's own live filesystem -- a full Debian install plus 28GB of
+working data, 460,946 directory entries -- no name exceeded 107 bytes and
+the longest was 90, so this tier exists for corpora shaped like a package
+archive, not for what ordinarily ends up on a running system.
 
 The first filesystem handler supports VFAT and ext2, ext3, and ext4. The
 broker also enumerates the live Linux mount table. Block-backed mounts are

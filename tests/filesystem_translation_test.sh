@@ -16,6 +16,12 @@ mapping_long_dir="$mapping_test_dir/$mapping_long_component"
 # ~65-byte budget 106 base32 characters actually buy.
 mapping_incompressible_component="account-002bee2f8e16f5de4db0d3b8ce9227c8c0b7f9688348b028e022cb43f210968b40a69cdc8531fd4a2e7c9e144eec48bb477733d70ce5f9b85338a07cb10b849ad8fb"
 mapping_incompressible_dir="$mapping_test_dir/$mapping_incompressible_component"
+# Mixed case defeats PACK39 (its alphabet is lowercase-only), so this one
+# can only succeed through DEFLATE -- highly repetitive so it still fits,
+# and specifically exercises DENSE128 encoding of DEFLATE's own output
+# rather than PACK39's, which the all-lowercase fixture above cannot.
+mapping_deflate_component=$(awk 'BEGIN { for (i = 0; i < 30; i++) printf "AaBbCcDd" }')
+mapping_deflate_dir="$mapping_test_dir/$mapping_deflate_component"
 mapping_dot_dir="$mapping_test_dir/:"
 mapping_dotdot_dir="$mapping_test_dir/::"
 mapping_dot_create_parent="$mapping_test_dir/ace-dot-names"
@@ -49,6 +55,7 @@ relative_target_file="$softlink_dir/relative-target.txt"
 absolute_target_file="$mapping_test_dir/absolute-target.txt"
 absolute_missing_target="$mapping_test_dir/absolute-missing.txt"
 mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_incompressible_dir" \
+      "$mapping_deflate_dir" \
       "$mapping_dot_dir" \
       "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
@@ -110,7 +117,7 @@ cleanup()
     rmdir "$mapping_dot_create_dir" "$mapping_dotdot_create_dir" \
           "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
           "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
-          "$mapping_long_dir" "$mapping_incompressible_dir" \
+          "$mapping_long_dir" "$mapping_incompressible_dir" "$mapping_deflate_dir" \
           "$mapping_dot_dir" "$mapping_dotdot_dir" \
           "$case_collision_dir" \
           "$softlink_target_dir" \
@@ -238,6 +245,13 @@ mapped_long_component=${mapped_long##*/}
 [ "${#mapped_long_component}" -le 107 ] ||
     { echo "compressed component exceeds the AROS FileInfoBlock limit: $mapped_long_component" >&2; exit 1; }
 [ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
+
+mapped_deflate=$(control name "$mapping_deflate_dir") ||
+    { echo "a DEFLATE-compressible over-length name was refused" >&2; exit 1; }
+mapped_deflate_component=${mapped_deflate##*/}
+[ "${#mapped_deflate_component}" -le 107 ] ||
+    { echo "DEFLATE-compressed component exceeds the AROS FileInfoBlock limit: $mapped_deflate_component" >&2; exit 1; }
+[ "$(control resolve "$mapped_deflate")" = "$(realpath "$mapping_deflate_dir")" ]
 
 # Not every over-length name can be rescued this way, and the fallback is to
 # fail rather than guess: 106 base32 characters carry 530 bits, a name may be
