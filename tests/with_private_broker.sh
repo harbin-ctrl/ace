@@ -1,0 +1,34 @@
+#!/bin/sh
+# Runs a test binary against a broker of its own.
+#
+# Not a convenience. The broker's socket name is keyed to the protocol
+# version, which is a hash of broker_protocol.h, so a change confined to
+# broker.c reuses whatever broker is already running for this user -- the test
+# then exercises the old binary and passes whatever that one does. A
+# deliberately broken port-channel release passed this way before it was
+# noticed. Tests that count what the broker is holding also need isolating
+# from any live shell session in the background.
+set -eu
+
+if [ $# -lt 1 ]; then
+    echo "use: $0 <test-binary> [args...]" >&2
+    exit 2
+fi
+
+test_dir=$(mktemp -d)
+socket_path="$test_dir/broker.sock"
+
+# The broker is started by the test's first request, not here, so its pid is
+# looked up rather than remembered -- and looked up inside cleanup, so a
+# failing test still takes it down.
+cleanup()
+{
+    broker_pid=$(pgrep -f "ace-broker $socket_path" 2>/dev/null || true)
+    if [ -n "$broker_pid" ]; then
+        kill -TERM $broker_pid 2>/dev/null || true
+    fi
+    rm -rf "$test_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+ACE_BROKER_SOCKET="$socket_path" "$@"

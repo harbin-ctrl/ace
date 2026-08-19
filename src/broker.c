@@ -1,5 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+/* For struct ucred / SO_PEERCRED: the broker asks the kernel who is on the
+   other end of a connection rather than believing a pid the caller sent. */
+#define _GNU_SOURCE
 
 #include "broker_dictionary.h"
 #include "broker_protocol.h"
@@ -40,6 +43,10 @@
 /* Delivery channels are one per process, and a sender needs one as much as a
    port owner does, so this is sized against processes rather than ports. */
 #define MAX_PORT_CHANNELS 256
+/* Messages sent but not yet replied to. A sender blocks in WaitPort() until
+   its reply arrives, so this counts conversations in flight rather than
+   messages ever sent. */
+#define MAX_PORT_MESSAGES 256
 #define DEFAULT_FAIL_LEVEL 10
 #define DEFAULT_PROMPT "%N.%S> "
 #define AMIGA_COMPONENT_LIMIT 107
@@ -161,6 +168,30 @@ struct broker_port_channel {
 
 static struct broker_port_channel port_channels[MAX_PORT_CHANNELS];
 static uint64_t next_port_channel_id = 1;
+
+/*
+ * A message that has been delivered and not yet replied to.
+ *
+ * On AmigaOS this table does not exist: PutMsg() puts a pointer on a list and
+ * ReplyMsg() puts the same pointer back, because both processes are looking
+ * at the same memory. Here the two processes share nothing, so the broker
+ * holds the correlation -- an id going out with the message and coming back
+ * with the reply -- and the sender keeps its own struct RexxMsg to write the
+ * results into when they arrive.
+ *
+ * The sender is recorded by connection rather than by pid so that a reply
+ * goes to the exact process still waiting for it.
+ */
+struct broker_port_message {
+    uint64_t id;
+    uint64_t port_id;
+    int sender_channel_fd;
+    pid_t sender_pid;
+    pid_t owner_pid;
+};
+
+static struct broker_port_message port_messages[MAX_PORT_MESSAGES];
+static uint64_t next_port_message_id = 1;
 static struct variable_entry global_vars[MAX_VARS];
 static int server_fd = -1;
 static time_t broker_started;
@@ -2308,6 +2339,78 @@ static int attach_port_channel(struct broker_connection *connection,
     return -1;
 }
 
+/*
+ * Who is on the other end of this connection.
+ *
+ * Asked of the kernel rather than of the caller. PORT_ADD and TASK_ATTACH
+ * take a pid as text because they name a process that is registering itself,
+ * and a wrong answer there costs that caller its own registration. A message
+ * is different: the pid decides where a reply is routed, so a caller that
+ * could name any pid could have another process's replies delivered to it.
+ */
+static pid_t connection_peer_pid(int fd)
+{
+    struct ucred peer;
+    socklen_t peer_size = sizeof(peer);
+
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) != 0 ||
+        peer_size != sizeof(peer))
+        return -1;
+    return peer.pid;
+}
+
+/*
+ * Pushes one record down a delivery channel: header, then the bytes.
+ *
+ * The payload is opaque here and stays that way. The broker is moving a
+ * message, not reading one -- Exec's PutMsg() does not look inside a Message
+ * either.
+ */
+static int push_port_record(int channel_fd, uint32_t operation,
+                            uint64_t message_id, uint64_t port_id,
+                            const void *payload, size_t length)
+{
+    struct amiga_broker_port_record record;
+
+    if (length > AMIGA_BROKER_MAX_PAYLOAD)
+        return -1;
+    record.magic = AMIGA_BROKER_MAGIC;
+    record.operation = operation;
+    record.message_id = message_id;
+    record.port_id = port_id;
+    record.payload_length = (uint32_t)length;
+    if (write_all(channel_fd, &record, sizeof(record)) != 0)
+        return -1;
+    return length ? write_all(channel_fd, payload, length) : 0;
+}
+
+static struct broker_port_message *find_port_message(uint64_t id)
+{
+    for (size_t index = 0; index < MAX_PORT_MESSAGES; index++)
+        if (port_messages[index].id == id)
+            return &port_messages[index];
+    return NULL;
+}
+
+/*
+ * A sender that goes away is no longer waiting for anything, so its
+ * conversations are dropped with its connection.
+ *
+ * The other direction -- the *owner* dying with a message in hand -- is not
+ * handled here. It must end with the broker replying on the dead owner's
+ * behalf, because a sender waits for its reply indefinitely and by design.
+ * That is step 1.7 in docs/regina-arexx-plan.md, and until it exists a killed
+ * receiver strands its sender.
+ */
+static void drop_connection_port_messages(struct broker_connection *connection)
+{
+    for (size_t index = 0; index < MAX_PORT_MESSAGES; index++) {
+        if (port_messages[index].id &&
+            port_messages[index].sender_channel_fd == connection->fd)
+            memset(&port_messages[index], 0, sizeof(port_messages[index]));
+    }
+}
+
 static struct broker_port *find_port_name(const char *name)
 {
     for (size_t index = 0; index < MAX_PORTS; index++) {
@@ -2409,6 +2512,7 @@ static int handle_client(struct broker_connection *connection)
     char result[MAX_LIST_RESULT];
     int status = 0;
     int outcome = -1;
+    uint32_t value_limit;
 
     if (read_message(fd, &request, sizeof(request)) != 1)
         return -1;
@@ -2425,8 +2529,19 @@ static int handle_client(struct broker_connection *connection)
         send_response(fd, EPROTO, message);
         return -1;
     }
+    /*
+     * A value is normally a path, a variable's contents or a list, so PATH_MAX
+     * is the right bound and several handlers copy into fixed buffers sized
+     * on that assumption. A message is not: it is up to a full payload of
+     * opaque bytes. Raising the limit for everything would let a 16K value
+     * reach a handler expecting at most 4K, so the two message operations
+     * are named explicitly instead.
+     */
+    value_limit = (request.operation == AMIGA_BROKER_PORT_PUT ||
+                   request.operation == AMIGA_BROKER_PORT_REPLY)
+                  ? AMIGA_BROKER_MAX_PAYLOAD : (uint32_t)PATH_MAX;
     if (request.session_length > 4096 || request.path_length > PATH_MAX ||
-        request.value_length > PATH_MAX) {
+        request.value_length > value_limit) {
         send_response(fd, EPROTO, "invalid request");
         return -1;
     }
@@ -2749,6 +2864,104 @@ static int handle_client(struct broker_connection *connection)
         }
         if (!removed)
             status = ESRCH;
+        break;
+    }
+
+    case AMIGA_BROKER_PORT_PUT: {
+        struct broker_port *port;
+        struct broker_port_channel *owner_channel;
+        struct broker_port_channel *sender_channel;
+        struct broker_port_message *message = NULL;
+        pid_t sender_pid;
+
+        if (!path[0]) {
+            status = EINVAL;
+            break;
+        }
+        /* ESRCH and nothing else for "no such port": with nobody starting
+           RexxMast automatically, a send to an unregistered REXX port is the
+           ordinary first experience, and it has to be told apart from a real
+           failure so the caller can say what to do about it. */
+        port = find_port_name(path);
+        if (!port) {
+            status = ESRCH;
+            break;
+        }
+        sender_pid = connection_peer_pid(fd);
+        if (sender_pid <= 0) {
+            status = EPERM;
+            break;
+        }
+        owner_channel = find_port_channel_pid(port->pid);
+        sender_channel = find_port_channel_pid(sender_pid);
+        /* Both ends need a channel: the owner to be given the message, the
+           sender to be given the reply. A sender without one would wait for
+           something that could never be delivered. */
+        if (!owner_channel || !sender_channel) {
+            status = ENOTCONN;
+            break;
+        }
+        for (size_t index = 0; index < MAX_PORT_MESSAGES; index++) {
+            if (port_messages[index].id)
+                continue;
+            message = &port_messages[index];
+            break;
+        }
+        if (!message) {
+            status = ENOSPC;
+            break;
+        }
+        message->id = next_port_message_id++;
+        if (!next_port_message_id)
+            next_port_message_id = 1;
+        message->port_id = port->id;
+        message->sender_channel_fd = sender_channel->fd;
+        message->sender_pid = sender_pid;
+        message->owner_pid = port->pid;
+        if (push_port_record(owner_channel->fd, AMIGA_BROKER_PORT_PUT,
+                             message->id, port->id, value,
+                             request.value_length) != 0) {
+            memset(message, 0, sizeof(*message));
+            status = EIO;
+            break;
+        }
+        snprintf(result, sizeof(result), "%llu",
+                 (unsigned long long)message->id);
+        break;
+    }
+
+    case AMIGA_BROKER_PORT_REPLY: {
+        char *end;
+        unsigned long long id = strtoull(path, &end, 10);
+        struct broker_port_message *message;
+        pid_t replier_pid;
+
+        if (!path[0] || *end) {
+            status = EINVAL;
+            break;
+        }
+        message = find_port_message(id);
+        if (!message) {
+            status = ESRCH;
+            break;
+        }
+        /* Only the process the message was delivered to may answer it.
+           Without this, any process that guessed an id could answer somebody
+           else's message, and the sender -- which waits for exactly one
+           reply and then stops waiting -- would take it as the real one. */
+        replier_pid = connection_peer_pid(fd);
+        if (replier_pid <= 0 || replier_pid != message->owner_pid) {
+            status = EPERM;
+            break;
+        }
+        if (push_port_record(message->sender_channel_fd,
+                             AMIGA_BROKER_PORT_REPLY, message->id,
+                             message->port_id, value,
+                             request.value_length) != 0)
+            status = EIO;
+        /* Cleared either way: a reply that could not be written is not going
+           to be written by trying again, and leaving it would leak the slot. */
+        memset(message, 0, sizeof(*message));
         break;
     }
 
@@ -3129,6 +3342,7 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_PORT_ADD ||
                request.operation == AMIGA_BROKER_PORT_FIND ||
                request.operation == AMIGA_BROKER_PORT_ATTACH ||
+               request.operation == AMIGA_BROKER_PORT_PUT ||
                request.operation == AMIGA_BROKER_TASK_LIST ||
                request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)
@@ -3185,6 +3399,7 @@ static void drop_connection(size_t index)
 
     drop_task_connection(connection);
     drop_connection_ports(connection);
+    drop_connection_port_messages(connection);
     drop_connection_port_channels(connection);
 
     if (connection->anchor >= 0) {

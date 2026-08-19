@@ -78,6 +78,24 @@ typedef void (*native_broker_port_record_handler)(uint32_t operation,
                                                   void *context);
 int native_broker_port_attach(native_broker_port_record_handler handler,
                               void *context, uint64_t *channel_id);
+/* Send a message to a named port, and answer one that arrived on this
+   process's channel. The payload is counted bytes, never inspected in
+   transit, and may contain anything including NULs -- it is an ARexx message,
+   not a string.
+
+   Both need native_broker_port_attach() to have been called first, senders
+   included: a reply comes back down the channel, so a process with no channel
+   would wait for something that could never arrive. port_put fails with
+   ENOTCONN rather than sending into that trap.
+
+   port_put reports ESRCH, and only ESRCH, when no process has registered the
+   name. Callers are expected to say so usefully: nothing starts RexxMast
+   automatically, so "no such port" is the ordinary first experience rather
+   than an exceptional one. */
+int native_broker_port_put(const char *name, const void *message,
+                           size_t length, uint64_t *message_id);
+int native_broker_port_reply(uint64_t message_id, const void *reply,
+                             size_t length);
 /* Public message ports: claim a name, give it up, or resolve one another
    process claimed. See AMIGA_BROKER_PORT_ADD in broker_protocol.h. */
 int native_broker_port_add(const char *name, uint64_t *port_id);

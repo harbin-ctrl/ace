@@ -762,6 +762,58 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
 }
 
 /*
+ * Sends a message to a named port, and answers one that arrived.
+ *
+ * The name rather than an id, so that finding the owner and handing it the
+ * message cannot be interleaved with the port going away -- see
+ * AMIGA_BROKER_PORT_PUT. The payload is counted bytes and is never inspected
+ * on the way through.
+ *
+ * Both require this process to have a delivery channel already
+ * (native_broker_port_attach): the sender needs one to be given the reply,
+ * which is why even a process owning no port must attach before it can send.
+ */
+int native_broker_port_put(const char *name, const void *message,
+                           size_t length, uint64_t *message_id)
+{
+    char result[32];
+    size_t result_length = 0;
+
+    if (!name || !*name || (length && !message)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (port_fd < 0) {
+        errno = ENOTCONN;
+        return -1;
+    }
+    if (broker_request_bytes(AMIGA_BROKER_PORT_PUT, name, strlen(name),
+                             message, length, 0, result, sizeof(result),
+                             &result_length) != 0)
+        return -1;
+    result[result_length] = '\0';
+    if (message_id)
+        *message_id = strtoull(result, NULL, 10);
+    return 0;
+}
+
+int native_broker_port_reply(uint64_t message_id, const void *reply,
+                             size_t length)
+{
+    char id_text[32];
+
+    if (!message_id || (length && !reply)) {
+        errno = EINVAL;
+        return -1;
+    }
+    snprintf(id_text, sizeof(id_text), "%llu",
+             (unsigned long long)message_id);
+    return broker_request_bytes(AMIGA_BROKER_PORT_REPLY, id_text,
+                                strlen(id_text), reply, length, 0, NULL, 0,
+                                NULL);
+}
+
+/*
  * Public ports. The broker holds names, not ports: what comes back is an id
  * standing for "the port some process registered under this name", which is
  * all another process can be told about memory it does not share.

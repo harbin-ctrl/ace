@@ -143,7 +143,28 @@ enum amiga_broker_operation {
        all still needs it -- a sender waiting for its reply is woken the same
        way.  Which is why the client attaches lazily, on first port use of
        any kind, rather than when a port is registered. */
-    AMIGA_BROKER_PORT_ATTACH = 33
+    AMIGA_BROKER_PORT_ATTACH = 33,
+    /* Send a message to a named port, and reply to one that was sent.
+
+       PORT_PUT takes the port's *name*, not the id PORT_FIND would give you,
+       so that finding the owner and handing it the message are one
+       indivisible step. That is deliberate: on AmigaOS the equivalent
+       sequence is wrapped in Forbid()/Permit() precisely so a port cannot
+       disappear between the lookup and the send (amifuncs.c:535-545).
+       Forbid() means nothing across Linux processes, so the atomicity has to
+       come from the operation itself. Splitting this into PORT_FIND followed
+       by a send would reintroduce exactly the race Forbid() existed to close.
+
+       The broker answers PUT with a message id and pushes the message to the
+       owner's channel. PORT_REPLY names that id and routes the results back
+       to whoever sent it -- which is why the sender needs a channel of its
+       own even when it owns no port at all.
+
+       Neither carries the sender's identity: the broker takes it from the
+       connection with SO_PEERCRED rather than believing what it is told,
+       which is also how Exec knew which task had called it. */
+    AMIGA_BROKER_PORT_PUT = 34,
+    AMIGA_BROKER_PORT_REPLY = 35
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

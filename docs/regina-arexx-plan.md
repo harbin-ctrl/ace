@@ -170,11 +170,16 @@ git status --short third_party # must be empty
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
   **unmodified**. `sendrexxmsg` now gets past `FindPort("REXX")` and blocks at
   `WaitPort`, because delivery is not implemented.
-* A process now has a **message-delivery channel** to the broker
+* A process has a **message-delivery channel** to the broker
   (`AMIGA_BROKER_PORT_ATTACH`): a second push connection with its own reader
   thread, opened lazily on first port use and released when the process goes.
-  Nothing travels down it yet -- that is 1.2 and 1.3. `ace-brokerctl status`
-  reports `ports` and `port-channels` alongside `tasks`.
+  `ace-brokerctl status` reports `ports` and `port-channels` alongside `tasks`.
+* **A message crosses processes and the reply comes back**
+  (`AMIGA_BROKER_PORT_PUT`, `AMIGA_BROKER_PORT_REPLY`), carrying arbitrary
+  bytes intact. What is not built yet is `PutMsg()` using any of it (1.6), the
+  sender's streams travelling with the message (1.5), and the broker answering
+  for a receiver that dies (1.7) -- until that last one, killing a receiver
+  mid-message strands its sender for good.
 
 ## The two semantics questions, answered from AmigaOS
 
@@ -245,18 +250,38 @@ reader thread's framing is not yet exercised end to end -- nothing pushes
 until 1.2 -- so treat the first PORT_PUT as also being the first real test of
 `port_record_reader()`.
 
-1.2 Add `AMIGA_BROKER_PORT_PUT`, taking a **port name**, not an id, so the
-find and the send are one operation -- this is the `Forbid()` equivalent and
-the reason not to reuse the existing `PORT_FIND`. The broker assigns a message
-id, records the sender's connection, and pushes the message to the owner.
+1.2 **Done.** `AMIGA_BROKER_PORT_PUT` takes the port **name**, so finding the
+owner and handing it the message are one indivisible step -- the `Forbid()`
+equivalent, and the reason not to reuse `PORT_FIND`. The broker assigns a
+message id, records who sent it, and pushes it to the owner's channel.
+`native_broker_port_put()` reports **ESRCH and only ESRCH** when nothing owns
+the name, because per 2.5 nobody starts RexxMast automatically and "no such
+port" is the ordinary first experience rather than an exceptional one.
 
-Send it with `broker_request_bytes()`, not `broker_request()`. A send to a
-name nothing owns returns a distinct, nameable error: per 2.5 nobody starts
-RexxMast automatically, so "no such port" is the ordinary first experience and
-has to explain itself.
+1.3 **Done.** `AMIGA_BROKER_PORT_REPLY` takes the message id and routes the
+results to the recorded sender's channel.
 
-1.3 Add `AMIGA_BROKER_PORT_REPLY`, taking the message id, routing the results
-back to the recorded sender.
+Two things about the pair worth knowing before building on them:
+
+* **The broker does not believe a caller about who it is.** The sender's and
+  replier's pids come from `SO_PEERCRED` on the connection, not from the
+  request. `PORT_ADD` and `TASK_ATTACH` do take a pid as text, and that is
+  fine -- a process registering itself only harms itself by lying. A message
+  is different: the pid decides where a reply is routed, so a caller free to
+  name any pid could have another process's replies delivered to it. Only the
+  process a message was delivered to may answer it; anything else is `EPERM`.
+* **Both ends must have attached a channel first,** senders included, or the
+  send is refused with `ENOTCONN` rather than accepted into a wait that could
+  never end.
+
+Tested by `make test-broker-port-message`: two processes, a message out and a
+reply back, with NUL bytes and bytes above 0x7f in both payloads. That is the
+point of the test rather than decoration -- it is what would have failed
+before the broker stopped measuring payloads with `strlen()`. It also covers
+`ENOTCONN`, `ESRCH` for an unowned name and an unknown id, and `EPERM` for a
+sender trying to answer its own message. This is also the first thing to
+travel down the channel from 1.1, so it is the first real exercise of that
+reader thread.
 
 1.4 Serialise the message as **counted binary, not text**. This step used to
 say hex-encode everything, because `broker_request()` measured payloads with
@@ -367,6 +392,7 @@ are the points where something observable actually changes, and each is worth
 a commit.
 
 * **After 1.1.** Done. `make test-broker-port-channel`.
+* **After 1.2 and 1.3.** Done. `make test-broker-port-message`.
 * **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
   one process. Argstrings with embedded NULs and high bytes, all sixteen
   `rm_Args` slots, and one oversized message that must fail cleanly against
