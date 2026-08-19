@@ -443,6 +443,53 @@ sleeping, which is why `status` now lists ports by name and owning pid.
 
 ### 2. Port RexxMast
 
+**Before starting 2.2, read this.** Two things were established by reading
+`RexxMast.c` rather than by planning, and both change what "port RexxMast"
+means.
+
+**It is concurrent, and there is no decision to make about that.** The server
+loop calls `StartFile()` and sets `reply = FALSE`, so it does not wait for the
+script -- it goes straight back to `GetMsg()`. Whoever runs the script replies.
+Serialising would be inventing a limitation AmigaOS does not have; ARexx is
+documented as running several programs at once, and this is why a sender can
+afford to block forever.
+
+**`StartFile()` passes a pointer between processes, which ACE cannot honour.**
+
+```c
+sprintf(text, "\"%s%sRexxMast\" SUBTASK %p", progdir, ..., (void*)msg);
+/* FIXME: thread should be used to handle more then one message at a time, not SystemTags */
+return SystemTags(text, SYS_Asynch, TRUE, SYS_Input, NULL, SYS_Output, NULL, TAG_DONE);
+```
+
+It prints the `RexxMsg`'s *address* into a command line and starts a fresh
+copy of itself, which `sscanf`s it back and dereferences it. That is fine on
+AmigaOS and AROS -- one address space -- and meaningless here, where
+`SystemTags()` forks and execs. It would not fail cleanly; it would read
+whatever happens to be at that address.
+
+A shared-memory arena mapped at the same fixed address in every ACE process
+would make `RexxMsg`, argstrings and `MsgPort` pointers valid, and would be a
+more faithful Exec than what ACE has. It still would not carry this, because
+the chain does not end at data: `msg->rm_Node.mn_ReplyPort->mp_SigTask` leads
+to a `Process`, and `pr_CIS`/`pr_COS`/`pr_CES` are `FILE *` backed by file
+descriptors, which are per-process kernel resources. That is the same wall
+1.5 hit, and the reason it needed `SCM_RIGHTS` rather than a cleverer pointer.
+The arena is worth considering on its own merits; it is not a way around this.
+
+So `patches/` -- doing what the FIXME above it already asks for: start the
+slave with `CreateNewProcTags(NP_Entry, ...)`, which ACE runs as a host thread
+in the same address space, and hand it the message rather than an address.
+Nothing else changes: same concurrency, same replier, same stream handling.
+
+**Building RexxMast needs work that does not exist yet.** It links
+`regina_shared` for `RexxStart()` (in `rexxsaa.c`, part of the library build,
+not the standalone `rexx`), plus `IsReginaMsg()` from `isreginamsg.c`. It also
+calls `SelectErrorOutput()`, which ACE does not implement, `EasyRequest()`
+from intuition.library, which ACE does not have, and `updatestdio()`. So 2.2
+starts with the Regina library target, not with RexxMast itself.
+
+
 `third_party/regina/rexxmast/RexxMast.c`. Only useful once 1 is
 done.
 
@@ -454,7 +501,11 @@ done.
 path, including failure -- senders wait forever by design.
 
 2.3 Adopt `rm_Stdin`/`rm_Stdout` as the script's streams
-(`RexxMast.c:257-260`), which is what 1.5 delivers.
+(`RexxMast.c:257-260`), which is what 1.5 delivers. Mostly already true: a
+message from another process now names a stand-in reply port whose `mp_SigTask`
+reports `NT_TASK`, so `StartFileSlave()` takes the "sender is not a Process"
+path and falls back to `rm_Stdin`/`rm_Stdout` -- which is where the real
+streams are. See the note on `remote_sender_port` in `rexx_port_bridge.c`.
 
 2.4 Then `RXADDLIB`, `RXADDCON`, `RXCLOSE`, and the Regina-private actions.
 

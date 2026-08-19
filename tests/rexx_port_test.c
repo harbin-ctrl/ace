@@ -26,6 +26,8 @@
 #include "broker_protocol.h"
 
 #include <exec/ports.h>
+#include <exec/nodes.h>
+#include <dos/dosextens.h>
 #include <proto/exec.h>
 #include <proto/alib.h>
 #include <rexx/storage.h>
@@ -144,6 +146,23 @@ static void receiver(int ready_fd)
             memcmp((void *)message->rm_Args[0], argument,
                    ARGUMENT_LENGTH) != 0)
             _exit(8);
+
+        /*
+         * A receiver is entitled to follow the reply port to the sender's
+         * task, and RexxMast does exactly that before looking at anything
+         * else. It must not be NULL, and the sender must not claim to be a
+         * Process: this one is in another address space, so its pr_CIS and
+         * pr_CurrentDir mean nothing here. Reporting NT_TASK sends RexxMast
+         * down the path it already has for a plain Task, which falls back to
+         * rm_Stdin and rm_Stdout -- where the real streams are.
+         */
+        if (!message->rm_Node.mn_ReplyPort)
+            _exit(11);
+        if (!message->rm_Node.mn_ReplyPort->mp_SigTask)
+            _exit(12);
+        if (((struct Task *)message->rm_Node.mn_ReplyPort->mp_SigTask)
+                ->tc_Node.ln_Type == NT_PROCESS)
+            _exit(13);
 
         /* The sender's own console, handed over with the message. This is
            what lets a script sent to another process print where the sender

@@ -49,6 +49,7 @@ int ace_dos_handle_descriptor(BPTR handle);
 
 #include <exec/ports.h>
 #include <exec/nodes.h>
+#include <dos/dosextens.h>
 #include <proto/exec.h>
 #include <proto/alib.h>
 #include <rexx/storage.h>
@@ -119,6 +120,43 @@ struct ace_rexx_local_port {
     struct MsgPort *port;
     struct ace_rexx_local_port *next;
 };
+
+/*
+ * What a message from another process names as its reply port.
+ *
+ * It cannot be the real one: that lives in the sender's memory. But it cannot
+ * be NULL either -- RexxMast's StartFileSlave() does
+ *
+ *     process = (struct Process *)msg->rm_Node.mn_ReplyPort->mp_SigTask;
+ *
+ * before it looks at anything else, so a NULL reply port is a crash rather
+ * than a missing feature.
+ *
+ * So a remote sender is represented as a Task rather than a Process, which is
+ * both true here -- from this process it is not a DOS process anything can
+ * see -- and exactly the case AmigaOS already handles: RexxMast checks
+ * ln_Type == NT_PROCESS before reading pr_CIS, pr_COS, pr_CES and
+ * pr_CurrentDir, and falls back to rm_Stdin and rm_Stdout when the sender is
+ * a plain Task. Which is where the real streams are, because they were passed
+ * with the message.
+ *
+ * Nothing is ever queued on this port: ReplyMsg() finds the message in the
+ * received table and routes it through the broker before it looks at
+ * mn_ReplyPort at all.
+ */
+static struct Task remote_sender_task;
+static struct MsgPort remote_sender_port;
+static pthread_once_t remote_sender_once = PTHREAD_ONCE_INIT;
+
+static void remote_sender_init(void)
+{
+    remote_sender_task.tc_Node.ln_Type = NT_TASK;
+    remote_sender_task.tc_Node.ln_Name = (char *)"ARexx sender";
+    remote_sender_port.mp_Node.ln_Type = NT_MSGPORT;
+    remote_sender_port.mp_Node.ln_Name = (char *)"ARexx sender";
+    remote_sender_port.mp_SigTask = &remote_sender_task;
+    NEWLIST(&remote_sender_port.mp_MsgList);
+}
 
 static pthread_mutex_t bridge_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct ace_rexx_sent *sent_messages;
@@ -406,10 +444,10 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
                 close(stdout_fd);
             return;
         }
-        /* No reply port: this message is not answered by putting it back on a
-           port in this process, and ReplyMsg() finds it in the table below
-           before it ever looks at mn_ReplyPort. */
-        message->rm_Node.mn_ReplyPort = NULL;
+        /* A stand-in for the sender's reply port; see remote_sender_port.
+           Not NULL, because a receiver is entitled to follow it. */
+        (void)pthread_once(&remote_sender_once, remote_sender_init);
+        message->rm_Node.mn_ReplyPort = &remote_sender_port;
         record = calloc(1, sizeof(*record));
         if (!record) {
             DeleteRexxMsg(message);
