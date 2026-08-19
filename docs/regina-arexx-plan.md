@@ -250,14 +250,29 @@ find and the send are one operation -- this is the `Forbid()` equivalent and
 the reason not to reuse the existing `PORT_FIND`. The broker assigns a message
 id, records the sender's connection, and pushes the message to the owner.
 
+Send it with `broker_request_bytes()`, not `broker_request()`. A send to a
+name nothing owns returns a distinct, nameable error: per 2.5 nobody starts
+RexxMast automatically, so "no such port" is the ordinary first experience and
+has to explain itself.
+
 1.3 Add `AMIGA_BROKER_PORT_REPLY`, taking the message id, routing the results
 back to the recorded sender.
 
-1.4 Serialise the message as **text**. `broker_request()` sets the payload
-length with `strlen(value)`, so raw binary is impossible and argstrings hold
-arbitrary bytes including NUL. Hex-encode each argstring. Carry `rm_Action`,
-`rm_Result1`, `rm_Result2`, `rm_Args[0..15]`, `rm_CommAddr`, `rm_FileExt`.
-Budget is `AMIGA_BROKER_MAX_PAYLOAD`, 16 KB, and hex doubles the size.
+1.4 Serialise the message as **counted binary, not text**. This step used to
+say hex-encode everything, because `broker_request()` measured payloads with
+`strlen()`. That has been fixed rather than worked around: the wire format was
+counted all along, and both ends now have counted entry points
+(`broker_request_bytes()`, `send_response_bytes()`). Exec's `PutMsg()` takes a
+Message with an `mn_Length` and never looks inside it; the broker now behaves
+the same way. So: no hex, no doubling, and argstrings keep their embedded NULs
+natively. Carry `rm_Action`, `rm_Result1`, `rm_Result2`, `rm_Args[0..15]`,
+`rm_CommAddr`, `rm_FileExt`. Budget is `AMIGA_BROKER_MAX_PAYLOAD`, 16 KB, now
+all of it usable.
+
+Note before raising that cap: `broker_exchange_bytes_locked()` declares two
+`char ignored[AMIGA_BROKER_MAX_PAYLOAD]` buffers **on the stack** for draining
+unwanted replies. 16 KB each is already substantial; 64 KB would not be
+sensible without moving them off the stack first.
 
 1.5 Pass `rm_Stdin`/`rm_Stdout` as descriptors with `SCM_RIGHTS` alongside the
 text payload. The receiver turns them into real handles for the script.
@@ -297,8 +312,13 @@ path, including failure -- senders wait forever by design.
 
 2.4 Then `RXADDLIB`, `RXADDCON`, `RXCLOSE`, and the Regina-private actions.
 
-2.5 Install as `SYS:C/REXXMAST`. Decide whether the broker starts it on demand
-or a user does; on AmigaOS it is started once and lives in the background.
+2.5 Install as `SYS:C/REXXMAST`. **Decided: a user starts it, not the broker.**
+On AmigaOS it is started once and lives in the background, so ACE does the
+same -- a `Run >NIL: REXXMAST` line in `S/Startup-Sequence`, and no
+process-spawning added to the broker. The one departure from silence: a send
+to a `REXX` port that nothing owns must come back as a distinct error saying
+so, rather than an anonymous `ESRCH`, because "ARexx does nothing and does not
+say why" is the worst failure this design can produce. See 1.2.
 
 ### 3. Wire ARexx into Regina and the shell
 
