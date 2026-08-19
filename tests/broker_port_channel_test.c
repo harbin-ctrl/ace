@@ -126,6 +126,32 @@ int main(void)
     check(native_broker_port_attach(record_sink, NULL, &again) == 0 &&
           again == channel, "the refusal left the channel intact");
 
+    /*
+     * Registering a name, finding it, and giving it up. Here because this is
+     * the only test that stands a private broker up for the port subsystem,
+     * and because remove reporting success is not something to take on trust:
+     * it returned ENAMETOOLONG on every successful call until the reply path
+     * stopped treating "caller wants no payload" as "caller's buffer is too
+     * small".
+     */
+    {
+        uint64_t port_id = 0;
+        uint64_t found = 0;
+
+        check(native_broker_port_add("broker-port-channel-test-port",
+                                     &port_id) == 0 && port_id != 0,
+              "a port name can be registered");
+        check(native_broker_port_find("broker-port-channel-test-port",
+                                      &found) == 0 && found == port_id,
+              "the registered name resolves to the same id");
+        check(native_broker_port_remove(port_id) == 0,
+              "removing a port reports success");
+        found = 0;
+        check(native_broker_port_find("broker-port-channel-test-port",
+                                      &found) != 0,
+              "the name is gone after removal");
+    }
+
     /* The task channel is a separate connection and must not collide. */
     check(native_broker_task_attach("broker-port-channel-test",
                                     NULL, NULL, &task_id) != 0,

@@ -495,6 +495,28 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
         return 1;
     }
 
+    /*
+     * A caller that asked for no payload is not asking for a size limit: it
+     * simply does not want the answer. Drain whatever arrived, to keep the
+     * connection's framing, and report success.
+     *
+     * This used to fall into the size check below, where result_size 0 made
+     * "payload_length >= result_size" true for even an empty reply -- so
+     * every operation that returns nothing reported ENAMETOOLONG on success.
+     * PORT_REM is the one such caller today, which is why a successful
+     * DeletePort() came back as a failure; it went unnoticed because its only
+     * caller casts the result to (void).
+     */
+    if (!result || result_size == 0) {
+        char ignored[AMIGA_BROKER_MAX_PAYLOAD];
+
+        if (response.payload_length &&
+            read_all(fd, ignored, response.payload_length) != 0)
+            return -1;
+        if (result_length)
+            *result_length = 0;
+        return 0;
+    }
     if (response.payload_length >= result_size) {
         char ignored[AMIGA_BROKER_MAX_PAYLOAD];
 
