@@ -1178,7 +1178,7 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
     return NULL;
 }
 
-APTR FindTask(CONST_STRPTR name)
+struct Task *FindTask(CONST_STRPTR name)
 {
     struct Task *local;
 
@@ -1191,7 +1191,7 @@ APTR FindTask(CONST_STRPTR name)
     if (!native_cli_loaded)
         (void)Cli();
     if (!name)
-        return &native_process;
+        return (struct Task *)&native_process;
     local = ace_aros_runtime_find_task(name);
     if (local)
         return local;

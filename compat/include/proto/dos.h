@@ -10,7 +10,17 @@ struct DosLibrary;
 extern struct DosLibrary *DOSBase;
 
 struct CommandLineInterface;
-APTR FindTask(CONST_STRPTR name);
+struct Task;
+/* Exec's signature, not a DOS one -- FindTask() is declared here because DOS
+   callers reach it through <proto/dos.h>, but the type is exec.library's and
+   must match compat/aros-real/include/proto/exec.h exactly.  The two used to
+   disagree (APTR here, struct Task * there), which no translation unit
+   noticed until one included both trees.  Guarded because the test-only
+   AMIGA_EXEC_COMPAT_ENABLED build #defines FindTask to an opaque shim that
+   declares itself. */
+#ifndef FindTask
+struct Task *FindTask(CONST_STRPTR name);
+#endif
 BOOL StartNotify(struct NotifyRequest *request);
 void EndNotify(struct NotifyRequest *request);
 

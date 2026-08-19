@@ -15,7 +15,10 @@ extern struct ExecBase *SysBase;
 
 struct Library *OpenLibrary(CONST_STRPTR name, ULONG version);
 void CloseLibrary(struct Library *library);
-APTR FindTask(CONST_STRPTR name);
+struct Task;
+#ifndef FindTask
+struct Task *FindTask(CONST_STRPTR name);
+#endif
 void ReplyMsg(struct Message *message);
 void Forbid(void);
 void Permit(void);

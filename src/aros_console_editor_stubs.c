@@ -6,7 +6,7 @@ struct Task;
    needs the two Exec calls that native_dos.c supplies for command processes.
    Keep these stubs graphical-only: native commands use their process
    implementations instead, which avoids two definitions in one executable. */
-APTR FindTask(CONST_STRPTR name)
+struct Task *FindTask(CONST_STRPTR name)
 {
     (void)name;
     return NULL;
