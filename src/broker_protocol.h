@@ -114,7 +114,19 @@ enum amiga_broker_operation {
     /* Report what this broker is: its build, where it lives, which SYS: it
        serves, and what it is currently holding.  Answering "which broker am
        I talking to" should not require reading ps output. */
-    AMIGA_BROKER_STATUS = 29
+    AMIGA_BROKER_STATUS = 29,
+    /* Public message ports.  A named port belongs to the process that
+       registered it, and the point of registering is that another process can
+       find it: that is what ADDRESS <port> means in ARexx, and it is the one
+       thing a purely in-process port registry cannot do.
+       PORT_ADD names a port and gets an id back; PORT_FIND turns a name into
+       that id for a process that does not own it; PORT_REM gives it up. A
+       port is also dropped when the connection that registered it closes, so
+       a process that exits without tidying up does not leave a name that
+       resolves to nothing. */
+    AMIGA_BROKER_PORT_ADD = 30,
+    AMIGA_BROKER_PORT_REM = 31,
+    AMIGA_BROKER_PORT_FIND = 32
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

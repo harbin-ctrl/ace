@@ -1082,13 +1082,70 @@ size_t ace_aros_console_take_output(void *context, void *data, size_t length)
  * an owning task exits. Until that exists this is deliberately the smaller,
  * honest thing rather than an in-process registry pretending to be public.
  */
+/*
+ * The broker's public-port calls, weakly declared.
+ *
+ * This object is linked into ace-console as well as into commands, and the
+ * console has no broker connection: it is a GUI process that owns a window,
+ * not a DOS session. Weak rather than a second copy of the port code, so that
+ * one CreatePort() serves both and the difference is only whether the name is
+ * published beyond this process. A console that creates a port gets a working
+ * local one; a command gets a public one.
+ */
+extern int native_broker_port_add(const char *name, uint64_t *port_id)
+    __attribute__((weak));
+extern int native_broker_port_remove(uint64_t port_id) __attribute__((weak));
+extern int native_broker_port_find(const char *name, uint64_t *port_id)
+    __attribute__((weak));
+
 struct ace_named_port {
     struct MsgPort *port;
+    uint64_t broker_id;     /* 0 while the broker has not been told */
     char name[64];
     struct ace_named_port *next;
 };
 
 static struct ace_named_port *named_ports;
+
+/*
+ * A port some other process registered.
+ *
+ * FindPort() has to answer with a struct MsgPort *, and the port the caller
+ * is asking about is in memory this process cannot see. What it gets is a
+ * stand-in: a real MsgPort here, remembered against the broker's id for the
+ * remote one, which PutMsg() recognises and forwards rather than queueing
+ * locally. The same shape native_dos.c already uses for tasks another process
+ * owns -- see native_remote_tasks[].
+ *
+ * One stand-in per remote port, reused, so that two FindPort() calls for the
+ * same name answer with the same pointer as they would on the Amiga.
+ */
+struct ace_remote_port {
+    struct MsgPort port;
+    uint64_t broker_id;
+    char name[64];
+    struct ace_remote_port *next;
+};
+
+static struct ace_remote_port *remote_ports;
+
+uint64_t ace_aros_runtime_remote_port_id(struct MsgPort *port)
+{
+    struct ace_remote_port *entry;
+    uint64_t id = 0;
+
+    if (!port)
+        return 0;
+    pthread_mutex_lock(&ports_lock);
+    for (entry = remote_ports; entry; entry = entry->next) {
+        if (&entry->port == port) {
+            id = entry->broker_id;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ports_lock);
+    return id;
+}
 
 struct MsgPort *CreatePort(CONST_STRPTR name, LONG priority)
 {
@@ -1108,6 +1165,12 @@ struct MsgPort *CreatePort(CONST_STRPTR name, LONG priority)
     strncpy(entry->name, (const char *)name, sizeof(entry->name) - 1);
     entry->port = port;
     port->mp_Node.ln_Name = entry->name;
+    /* Published, so another process can find it. A broker that will not take
+       the name -- because something already holds it, or there is no broker
+       at all -- leaves the port working locally rather than failing to create
+       it: a name nobody else can see is still a name this process can use. */
+    if (native_broker_port_add)
+        (void)native_broker_port_add(entry->name, &entry->broker_id);
     pthread_mutex_lock(&ports_lock);
     entry->next = named_ports;
     named_ports = entry;
@@ -1127,11 +1190,17 @@ void DeletePort(struct MsgPort *port)
         cursor = &(*cursor)->next;
     if (*cursor) {
         struct ace_named_port *entry = *cursor;
+        uint64_t broker_id = entry->broker_id;
 
         *cursor = entry->next;
         /* The port keeps no dangling pointer to the freed name. */
         port->mp_Node.ln_Name = NULL;
         free(entry);
+        pthread_mutex_unlock(&ports_lock);
+        if (broker_id && native_broker_port_remove)
+            (void)native_broker_port_remove(broker_id);
+        DeleteMsgPort(port);
+        return;
     }
     pthread_mutex_unlock(&ports_lock);
     DeleteMsgPort(port);
@@ -1146,6 +1215,9 @@ struct MsgPort *FindPort(CONST_STRPTR name)
     struct ace_named_port *entry;
     struct MsgPort *found = NULL;
 
+    struct ace_remote_port *remote;
+    uint64_t broker_id = 0;
+
     if (!name)
         return NULL;
     pthread_mutex_lock(&ports_lock);
@@ -1155,6 +1227,33 @@ struct MsgPort *FindPort(CONST_STRPTR name)
             break;
         }
     }
+    /* Already standing in for this one. */
+    if (!found) {
+        for (remote = remote_ports; remote; remote = remote->next) {
+            if (strcmp(remote->name, (const char *)name) == 0) {
+                found = &remote->port;
+                break;
+            }
+        }
+    }
     pthread_mutex_unlock(&ports_lock);
-    return found;
+    if (found)
+        return found;
+
+    /* Not this process's: ask who else has claimed the name. */
+    if (!native_broker_port_find ||
+        native_broker_port_find((const char *)name, &broker_id) != 0)
+        return NULL;
+    remote = calloc(1, sizeof(*remote));
+    if (!remote)
+        return NULL;
+    remote->broker_id = broker_id;
+    strncpy(remote->name, (const char *)name, sizeof(remote->name) - 1);
+    remote->port.mp_Node.ln_Name = remote->name;
+    NEWLIST(&remote->port.mp_MsgList);
+    pthread_mutex_lock(&ports_lock);
+    remote->next = remote_ports;
+    remote_ports = remote;
+    pthread_mutex_unlock(&ports_lock);
+    return &remote->port;
 }

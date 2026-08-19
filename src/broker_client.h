@@ -60,6 +60,11 @@ int native_broker_task_attach(const char *name,
                               native_broker_task_signal_handler handler,
                               void *context, uint64_t *task_id);
 int native_broker_task_find(const char *name, uint64_t *task_id);
+/* Public message ports: claim a name, give it up, or resolve one another
+   process claimed. See AMIGA_BROKER_PORT_ADD in broker_protocol.h. */
+int native_broker_port_add(const char *name, uint64_t *port_id);
+int native_broker_port_remove(uint64_t port_id);
+int native_broker_port_find(const char *name, uint64_t *port_id);
 int native_broker_task_signal(uint64_t task_id, uint32_t signals);
 int native_broker_task_set_foreground_pid(pid_t pid);
 int native_broker_task_break_foreground(uint32_t signals);

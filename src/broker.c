@@ -34,6 +34,9 @@
 #define MAX_VALUE    4096
 #define MAX_LIST_RESULT AMIGA_BROKER_MAX_PAYLOAD
 #define MAX_TASKS 256
+/* Ports are claimed by name and are rarer than tasks: one per application
+   that offers a command vocabulary, not one per running command. */
+#define MAX_PORTS 128
 #define DEFAULT_FAIL_LEVEL 10
 #define DEFAULT_PROMPT "%N.%S> "
 #define AMIGA_COMPONENT_LIMIT 107
@@ -106,6 +109,32 @@ struct broker_task {
 
 static struct broker_task tasks[MAX_TASKS];
 static uint64_t next_task_id = 1;
+
+/*
+ * Public message ports.
+ *
+ * Deliberately a registry of names rather than of ports: the broker never
+ * holds a struct MsgPort, which lives in the registering process's memory and
+ * means nothing here. What it holds is the fact that a name is claimed, by
+ * which process, over which connection -- enough for another process to ask
+ * "who is REXX" and be told something it can then send to.
+ *
+ * Keyed the same way tasks are, and released the same way: when the
+ * connection that registered a port goes away, so does the name. A process
+ * that exits without calling DeletePort() must not leave a name behind that
+ * resolves to a process which is no longer there, because the caller that
+ * finds it has no way to tell.
+ */
+struct broker_port {
+    uint64_t id;
+    int fd;
+    int session;
+    pid_t pid;
+    char name[MAX_NAME];
+};
+
+static struct broker_port ports[MAX_PORTS];
+static uint64_t next_port_id = 1;
 static struct variable_entry global_vars[MAX_VARS];
 static int server_fd = -1;
 static time_t broker_started;
@@ -2150,6 +2179,68 @@ static void drop_task_connection(struct broker_connection *connection)
     connection->task_id = 0;
 }
 
+/*
+ * A port outlives neither its process nor its connection. One connection may
+ * hold several ports -- an application with a command port and a reply port
+ * is the ordinary case -- so this drops every port it registered rather than
+ * one id kept on the connection.
+ */
+static void drop_connection_ports(struct broker_connection *connection)
+{
+    for (size_t index = 0; index < MAX_PORTS; index++) {
+        if (ports[index].id && ports[index].fd == connection->fd)
+            memset(&ports[index], 0, sizeof(ports[index]));
+    }
+}
+
+static struct broker_port *find_port_name(const char *name)
+{
+    for (size_t index = 0; index < MAX_PORTS; index++) {
+        if (ports[index].id && strcmp(ports[index].name, name) == 0)
+            return &ports[index];
+    }
+    return NULL;
+}
+
+static int add_port(struct broker_connection *connection,
+                    struct broker_session *session, const char *name,
+                    const char *pid_text, char *result, size_t result_size)
+{
+    char *end;
+    long pid = strtol(pid_text, &end, 10);
+
+    if (!name || !name[0] || strlen(name) >= MAX_NAME || !pid_text ||
+        !pid_text[0] || *end || pid <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* A name is claimed by one port at a time, as on the Amiga: the second
+       application to offer REXX does not quietly displace the first, and
+       finding out which one a message would reach is exactly what the caller
+       is asking. */
+    if (find_port_name(name)) {
+        errno = EEXIST;
+        return -1;
+    }
+    for (size_t index = 0; index < MAX_PORTS; index++) {
+        struct broker_port *port = &ports[index];
+
+        if (port->id)
+            continue;
+        port->id = next_port_id++;
+        if (!next_port_id)
+            next_port_id = 1;
+        port->fd = connection->fd;
+        port->session = (int)(session - sessions);
+        port->pid = (pid_t)pid;
+        strcpy(port->name, name);
+        snprintf(result, result_size, "%llu", (unsigned long long)port->id);
+        return 0;
+    }
+    errno = ENOSPC;
+    return -1;
+}
+
 static int attach_task(struct broker_connection *connection,
                        struct broker_session *session, const char *name,
                        const char *pid_text, char *result, size_t result_size)
@@ -2513,6 +2604,44 @@ static int handle_client(struct broker_connection *connection)
             status = errno;
         break;
 
+    case AMIGA_BROKER_PORT_ADD:
+        if (add_port(connection, session, path, value, result,
+                     sizeof(result)) != 0)
+            status = errno;
+        break;
+
+    case AMIGA_BROKER_PORT_REM: {
+        char *end;
+        unsigned long long id = strtoull(path, &end, 10);
+        int removed = 0;
+
+        if (!path[0] || *end) {
+            status = EINVAL;
+            break;
+        }
+        for (size_t index = 0; index < MAX_PORTS; index++) {
+            if (ports[index].id == id) {
+                memset(&ports[index], 0, sizeof(ports[index]));
+                removed = 1;
+                break;
+            }
+        }
+        if (!removed)
+            status = ESRCH;
+        break;
+    }
+
+    case AMIGA_BROKER_PORT_FIND: {
+        struct broker_port *port = find_port_name(path);
+
+        if (port)
+            snprintf(result, sizeof(result), "%llu",
+                     (unsigned long long)port->id);
+        else
+            status = ESRCH;
+        break;
+    }
+
     case AMIGA_BROKER_TASK_FIND:
         for (size_t index = 0; index < MAX_TASKS; index++) {
             if (tasks[index].id && strcmp(tasks[index].name, path) == 0) {
@@ -2865,6 +2994,8 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_LISTPATH ||
                request.operation == AMIGA_BROKER_TASK_ATTACH ||
                request.operation == AMIGA_BROKER_TASK_FIND ||
+               request.operation == AMIGA_BROKER_PORT_ADD ||
+               request.operation == AMIGA_BROKER_PORT_FIND ||
                request.operation == AMIGA_BROKER_TASK_LIST ||
                request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)
@@ -2920,6 +3051,7 @@ static void drop_connection(size_t index)
     struct broker_connection *connection = &connections[index];
 
     drop_task_connection(connection);
+    drop_connection_ports(connection);
 
     if (connection->anchor >= 0) {
         struct broker_session *session = &sessions[connection->anchor];

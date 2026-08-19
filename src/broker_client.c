@@ -563,6 +563,46 @@ int native_broker_task_attach(const char *name,
     return 0;
 }
 
+/*
+ * Public ports. The broker holds names, not ports: what comes back is an id
+ * standing for "the port some process registered under this name", which is
+ * all another process can be told about memory it does not share.
+ */
+int native_broker_port_add(const char *name, uint64_t *port_id)
+{
+    char result[32];
+    char pid_text[32];
+
+    if (!name || !port_id)
+        return -1;
+    snprintf(pid_text, sizeof(pid_text), "%ld", (long)getpid());
+    if (broker_request(AMIGA_BROKER_PORT_ADD, name, pid_text, 0, result,
+                       sizeof(result)) != 0)
+        return -1;
+    *port_id = strtoull(result, NULL, 10);
+    return *port_id ? 0 : -1;
+}
+
+int native_broker_port_remove(uint64_t port_id)
+{
+    char id_text[32];
+
+    snprintf(id_text, sizeof(id_text), "%llu", (unsigned long long)port_id);
+    return broker_request(AMIGA_BROKER_PORT_REM, id_text, NULL, 0, NULL, 0);
+}
+
+int native_broker_port_find(const char *name, uint64_t *port_id)
+{
+    char result[32];
+
+    if (!name || !port_id ||
+        broker_request(AMIGA_BROKER_PORT_FIND, name, NULL, 0, result,
+                       sizeof(result)) != 0)
+        return -1;
+    *port_id = strtoull(result, NULL, 10);
+    return *port_id ? 0 : -1;
+}
+
 int native_broker_task_find(const char *name, uint64_t *task_id)
 {
     char result[32];

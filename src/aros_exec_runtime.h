@@ -2,6 +2,7 @@
 #define ACE_AROS_EXEC_RUNTIME_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <exec/io.h>
 #include <exec/ports.h>
@@ -21,6 +22,9 @@ void ace_aros_runtime_set_current_task(struct Task *task);
 void ace_aros_runtime_signal(ULONG signals);
 void ace_aros_runtime_signal_task(struct Task *task, ULONG signals);
 void ace_aros_runtime_signal_local_tasks(ULONG signals);
+/* Non-zero when this MsgPort is a stand-in for one another process
+   registered, in which case the value is the broker's id for it. */
+uint64_t ace_aros_runtime_remote_port_id(struct MsgPort *port);
 ULONG ace_aros_runtime_set_signal(ULONG set_mask, ULONG clear_mask);
 ULONG ace_aros_runtime_check_signal(ULONG mask);
 LONG ace_aros_runtime_alloc_signal(LONG signal_number);
