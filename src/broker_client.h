@@ -7,6 +7,25 @@
 
 int native_broker_ensure(void);
 int native_broker_attach(void);
+
+/*
+ * Call this, and only this, in a freshly fork()ed child before it makes any
+ * broker request of its own -- e.g. to resolve its starting directory before
+ * exec().  fork() duplicates the connection's file descriptor, not the
+ * connection: parent and child would otherwise share one socket underneath
+ * them, each independently writing a request and reading a response on it
+ * with no coordination at all, since they are separate processes from the
+ * kernel's point of view the instant fork() returns.  Whichever one loses
+ * the race for the other's response bytes desyncs the protocol -- the next
+ * thing it reads is the tail of somebody else's answer, not the header it
+ * expects.
+ *
+ * This drops the child's reference to that inherited connection (closing it
+ * costs the parent nothing; each fd is its own reference to the shared
+ * kernel object) so the next broker call the child makes opens one of its
+ * own instead of reusing something another process is also using.
+ */
+void native_broker_reset_after_fork(void);
 int native_broker_resolve_path(const char *path, char *result, size_t result_size);
 int native_broker_resolve_beneath(const char *base, const char *relative,
                                   char *result, size_t result_size);

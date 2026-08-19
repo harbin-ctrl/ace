@@ -166,6 +166,7 @@ static LONG executeLine(ShellState *ss, STRPTR command_args)
         FILE *input = (FILE *)Input();
         FILE *output = (FILE *)Output();
 
+        native_broker_reset_after_fork();
         if (input)
             dup2(fileno(input), STDIN_FILENO);
         if (output)

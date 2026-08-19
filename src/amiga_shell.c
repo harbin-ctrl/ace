@@ -253,6 +253,7 @@ static int run_command(char **argv, const char *line)
         return 20;
     if (child == 0) {
         char cwd[PATH_MAX];
+        native_broker_reset_after_fork();
         if (native) {
             char *native_argv[MAX_WORDS];
             size_t index = 0;

@@ -699,6 +699,7 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
     }
     if (child == 0) {
         (void)sigprocmask(SIG_SETMASK, &previous_mask, NULL);
+        native_broker_reset_after_fork();
         if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
             (void)chdir(cwd);
         if (setenv("ACE_COMMAND_ARGUMENTS", arguments, 1) != 0)

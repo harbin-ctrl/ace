@@ -261,6 +261,29 @@ static void broker_disconnect(void)
     broker_fd = -1;
 }
 
+void native_broker_reset_after_fork(void)
+{
+    /* See broker_client.h for why: a fork()ed child that used the inherited
+       fd would share one socket with the parent, and both would read and
+       write on it with no coordination, desyncing the framing for whichever
+       one loses the race for the other's bytes.  Closing costs the parent
+       nothing -- each fd is its own reference to the same kernel object --
+       and forgetting it here means the next call in this process opens a
+       connection of its own. */
+    if (broker_fd >= 0)
+        close(broker_fd);
+    broker_fd = -1;
+    broker_attached = 0;
+    /* task_fd's reader thread does not exist in the child -- fork() only
+       carries over the calling thread -- so the fd is merely open and idle,
+       not in a race.  It is still someone else's connection, and this
+       process is not obliged to keep dragging it around until it happens to
+       exec() or exit(). */
+    if (task_fd >= 0)
+        close(task_fd);
+    task_fd = -1;
+}
+
 /*
  * Outcome of one attempt on one connection:
  *   0  the broker answered, successfully
