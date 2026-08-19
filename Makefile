@@ -1129,6 +1129,19 @@ $(BUILD)/console_spec.o: src/console_spec.c src/console_spec.h | $(BUILD)
 $(BUILD)/console-spec-test: tests/console_spec_test.c $(BUILD)/console_spec.o
 	$(CC) $(CFLAGS) -Isrc $(filter-out %.h,$^) -o $@
 
+# Where the last Vim build got its source. VIM_SRC names a tree outside this
+# checkout that nothing here can guess, so a build that has been told once
+# writes the answer down: install-vim builds Vim like every other install
+# target builds what it installs, and has somewhere to read the path from
+# when it was not passed again on the command line.
+VIM_SRC_STAMP := $(BUILD)/vim-source
+
+# Where to look when there is neither a VIM_SRC nor a stamp -- a first build in
+# a fresh checkout. A candidate counts only if it holds src/proto/os_amiga.pro,
+# which is the file the build script requires and refuses to generate, so a
+# directory merely named "vim" is never mistaken for a Vim checkout.
+VIM_SRC_SEARCH ?= $(CURDIR)/../vim $(HOME)/vim $(HOME)/src/vim
+
 # Vim remains an untouched external checkout. ACE supplies the Amiga backend
 # build objects and runtime seams, while the target makes the exact source
 # tree explicit and reproducible. The full DOS runtime is intentionally not a
@@ -1140,13 +1153,33 @@ $(BUILD)/vim: tools/build-vim-ace.sh \
               compat/vim/include/devices/conunit.h \
               $(BUILD)/ace-vim-runtime.o $(BROKER_CLIENT_OBJS) \
               $(BUILD)/native_process.o $(BUILD)/native_command.o \
+              $(BUILD)/aros-exec-runtime.o \
+              $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o \
               $(BUILD)/assign_compat.o \
               $(BUILD)/console_channel.o \
               $(BUILD)/aros-dos-getdeviceproc.o \
               $(BUILD)/aros-dos-freedeviceproc.o \
               $(AROS_DOSPAT_OBJS) | $(BUILD)
-	@test -n "$(VIM_SRC)" || (echo "use: make vim VIM_SRC=/path/to/untouched/vim" >&2; exit 2)
-	VIM_SRC="$(VIM_SRC)" ACE_ROOT="$(CURDIR)" ACE_BUILD="$(BUILD)" CC="$(CC)" "$<"
+	@vim_src="$(VIM_SRC)"; \
+	if [ -z "$$vim_src" ] && [ -f "$(VIM_SRC_STAMP)" ]; then \
+	    vim_src=`cat "$(VIM_SRC_STAMP)"`; \
+	fi; \
+	if [ -z "$$vim_src" ]; then \
+	    for candidate in $(VIM_SRC_SEARCH); do \
+	        if [ -f "$$candidate/src/proto/os_amiga.pro" ]; then \
+	            vim_src=$$candidate; \
+	            echo "vim: building from $$vim_src (set VIM_SRC to override)"; \
+	            break; \
+	        fi; \
+	    done; \
+	fi; \
+	if [ -z "$$vim_src" ]; then \
+	    echo "use: make vim VIM_SRC=/path/to/untouched/vim" >&2; \
+	    exit 2; \
+	fi; \
+	echo VIM_SRC="$$vim_src" ACE_ROOT="$(CURDIR)" ACE_BUILD="$(BUILD)" CC="$(CC)" "$<"; \
+	VIM_SRC="$$vim_src" ACE_ROOT="$(CURDIR)" ACE_BUILD="$(BUILD)" CC="$(CC)" "$<" && \
+	printf '%s\n' "$$vim_src" > "$(VIM_SRC_STAMP)"
 
 vim: $(BUILD)/vim
 
@@ -1209,11 +1242,15 @@ install: all tine
 	fi
 
 # Vim is built from an external checkout and is therefore intentionally not
-# part of the ordinary ACE install set. When it has been built, install it
-# beside ace-user-shell so the AROS command loader accepts it as a companion.
+# part of the ordinary ACE install set. It is still an install target like any
+# other, though: depending on the build means "make install-vim" on its own
+# builds Vim first when it is missing or out of date, and only then installs
+# it beside ace-user-shell so the AROS command loader accepts it as a
+# companion. The runtime check is a sanity check on that build, not a
+# substitute for it.
 install-vim: vim
 	@test -f "$(BUILD)/runtime/defaults.vim" || \
-		(echo "use: make vim VIM_SRC=/path/to/untouched/vim" >&2; exit 2)
+		(echo "install-vim: $(BUILD)/runtime is missing Vim's runtime files" >&2; exit 2)
 	$(INSTALL) -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(BINDIR)/runtime
 	$(INSTALL) -m 0755 $(BUILD)/vim $(DESTDIR)$(BINDIR)/vim
 	cp -a $(BUILD)/runtime/. $(DESTDIR)$(BINDIR)/runtime/

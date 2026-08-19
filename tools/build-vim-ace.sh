@@ -110,9 +110,24 @@ ace_objects=(
     "$object_dir/ace_vim_editor_stubs.o"
     "$ace_build/ace-vim-runtime.o"
     "$ace_build/broker_client.o"
+    # broker_client.c asks broker_identity.c where this system's socket is.
+    "$ace_build/broker-identity.o"
     "$ace_build/native_process.o"
     "$ace_build/native_command.o"
+    # native_command.c raises the Amiga break signals through the exec
+    # runtime, which is where a task's signal state lives; the runtime in
+    # turn answers for the clipboard device, and Delete() tells the bridge
+    # what it just removed.
+    "$ace_build/aros-exec-runtime.o"
+    "$ace_build/clipboard-device.o"
+    "$ace_build/clipboard-bridge.o"
     "$ace_build/assign_compat.o"
+    # A raw Read() on stdin reads the descriptor through the console
+    # channel, which is the path native_dos.c keeps for unchanged Amiga
+    # programs like Vim. The endpoint on the other side of that same Read()
+    # belongs to the shell's console handler and is stubbed instead: see
+    # src/ace_vim_editor_stubs.c for why it cannot be linked here.
+    "$ace_build/console_channel.o"
     "$ace_build/aros-dos-getdeviceproc.o"
     "$ace_build/aros-dos-freedeviceproc.o"
     "$ace_build/aros-dos-matchfirst.o"
