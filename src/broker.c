@@ -2159,10 +2159,26 @@ static size_t find_command_path(struct broker_session *session,
     return session->command_path_count;
 }
 
-static int send_response(int fd, int status, const char *payload)
+/*
+ * Replies with a counted payload of arbitrary bytes.
+ *
+ * The wire has always been counted -- payload_length is a uint32 and the
+ * bytes follow it -- but every reply used to be measured with strlen(), which
+ * quietly made the protocol text-only: a payload containing a NUL was cut
+ * short at the NUL, and one containing high bytes survived only by luck. Exec
+ * did not work that way. PutMsg() takes a Message with an mn_Length and never
+ * looks inside it; what a port carries is opaque to the system moving it.
+ * This is the broker doing the same.
+ *
+ * Names, paths and lists are still text and still go through send_response()
+ * below, which is now a thin wrapper. The distinction is real rather than
+ * cosmetic: an assign name is a string in AmigaDOS too, while a Rexx
+ * argstring is counted bytes.
+ */
+static int send_response_bytes(int fd, int status, const void *payload,
+                               size_t length)
 {
     struct amiga_broker_response response;
-    size_t length = payload ? strlen(payload) : 0;
 
     if (length > UINT32_MAX)
         return -1;
@@ -2172,6 +2188,12 @@ static int send_response(int fd, int status, const char *payload)
     if (write_all(fd, &response, sizeof(response)) != 0)
         return -1;
     return length ? write_all(fd, payload, length) : 0;
+}
+
+static int send_response(int fd, int status, const char *payload)
+{
+    return send_response_bytes(fd, status, payload,
+                               payload ? strlen(payload) : 0);
 }
 
 /*

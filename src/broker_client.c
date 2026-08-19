@@ -365,33 +365,64 @@ void native_broker_reset_after_fork(void)
  * The task socket at task_fd is deliberately not covered: it is a separate
  * connection read by its own thread, and carries no request/response pairs.
  */
-static int broker_exchange_locked(int fd, uint32_t operation, const char *path,
-                                  const char *value, uint32_t flags,
-                                  char *result, size_t result_size);
+static int broker_exchange_bytes_locked(int fd, uint32_t operation,
+                                        const void *path, size_t path_length,
+                                        const void *value, size_t value_length,
+                                        uint32_t flags, void *result,
+                                        size_t result_size,
+                                        size_t *result_length);
 
 static pthread_mutex_t broker_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * The counted form: path and value are arbitrary bytes, and the reply's
+ * length is reported rather than inferred.
+ *
+ * Both used to be measured with strlen() here and with strlen() again in the
+ * broker's reply, which made the protocol text-only even though the wire
+ * format was counted all along -- path_length, value_length and
+ * payload_length are all uint32 on the wire. A payload with a NUL in it was
+ * silently cut short at the NUL.
+ *
+ * Exec did not work that way, and the thing this has to carry is an ARexx
+ * argstring, which is counted bytes that may contain anything. So the counted
+ * form is now the real implementation and the string form below is the
+ * wrapper, rather than the other way round.
+ */
+static int broker_exchange_bytes(int fd, uint32_t operation,
+                                 const void *path, size_t path_length,
+                                 const void *value, size_t value_length,
+                                 uint32_t flags, void *result,
+                                 size_t result_size, size_t *result_length)
+{
+    int status;
+
+    pthread_mutex_lock(&broker_lock);
+    status = broker_exchange_bytes_locked(fd, operation, path, path_length,
+                                          value, value_length, flags, result,
+                                          result_size, result_length);
+    pthread_mutex_unlock(&broker_lock);
+    return status;
+}
 
 static int broker_exchange(int fd, uint32_t operation, const char *path,
                            const char *value, uint32_t flags,
                            char *result, size_t result_size)
 {
-    int status;
-
-    pthread_mutex_lock(&broker_lock);
-    status = broker_exchange_locked(fd, operation, path, value, flags, result,
-                                    result_size);
-    pthread_mutex_unlock(&broker_lock);
-    return status;
+    return broker_exchange_bytes(fd, operation, path, path ? strlen(path) : 0,
+                                 value, value ? strlen(value) : 0, flags,
+                                 result, result_size, NULL);
 }
 
-static int broker_exchange_locked(int fd, uint32_t operation, const char *path,
-                                  const char *value, uint32_t flags,
-                                  char *result, size_t result_size)
+static int broker_exchange_bytes_locked(int fd, uint32_t operation,
+                                        const void *path, size_t path_length,
+                                        const void *value, size_t value_length,
+                                        uint32_t flags, void *result,
+                                        size_t result_size,
+                                        size_t *result_length)
 {
     const char *session = broker_session();
     size_t session_length = strlen(session);
-    size_t path_length = path ? strlen(path) : 0;
-    size_t value_length = value ? strlen(value) : 0;
     struct amiga_broker_request request;
     struct amiga_broker_response response;
 
@@ -476,8 +507,13 @@ static int broker_exchange_locked(int fd, uint32_t operation, const char *path,
     if (response.payload_length &&
         read_all(fd, result, response.payload_length) != 0)
         return -1;
+    /* Still NUL-terminated: every string caller relies on it, and the
+       ENAMETOOLONG check above guarantees the room. Callers that asked for
+       bytes read the length instead and ignore the terminator. */
     if (result)
-        result[response.payload_length] = '\0';
+        ((char *)result)[response.payload_length] = '\0';
+    if (result_length)
+        *result_length = response.payload_length;
     return 0;
 }
 
@@ -504,14 +540,16 @@ static int broker_connection(void)
     return broker_fd;
 }
 
-static int broker_request(uint32_t operation, const char *path,
-                          const char *value, uint32_t flags,
-                          char *result, size_t result_size)
+static int broker_request_bytes(uint32_t operation,
+                                const void *path, size_t path_length,
+                                const void *value, size_t value_length,
+                                uint32_t flags, void *result,
+                                size_t result_size, size_t *result_length)
 {
     const char *session = broker_session();
 
-    if (strlen(session) > UINT32_MAX || (path && strlen(path) > UINT32_MAX) ||
-        (value && strlen(value) > UINT32_MAX)) {
+    if (strlen(session) > UINT32_MAX || path_length > UINT32_MAX ||
+        value_length > UINT32_MAX) {
         errno = EOVERFLOW;
         return -1;
     }
@@ -534,8 +572,9 @@ static int broker_request(uint32_t operation, const char *path,
         }
         if (fd < 0)
             return -1;
-        outcome = broker_exchange(fd, operation, path, value, flags, result,
-                                  result_size);
+        outcome = broker_exchange_bytes(fd, operation, path, path_length,
+                                        value, value_length, flags, result,
+                                        result_size, result_length);
         if (outcome == 0)
             return 0;
         if (outcome > 0)
@@ -543,6 +582,20 @@ static int broker_request(uint32_t operation, const char *path,
         broker_disconnect();
     }
     return -1;
+}
+
+/*
+ * The string form, which is what almost every operation wants: a name, a
+ * path, a list. Those are text in AmigaDOS too, so measuring them with
+ * strlen() is right rather than merely convenient.
+ */
+static int broker_request(uint32_t operation, const char *path,
+                          const char *value, uint32_t flags,
+                          char *result, size_t result_size)
+{
+    return broker_request_bytes(operation, path, path ? strlen(path) : 0,
+                                value, value ? strlen(value) : 0, flags,
+                                result, result_size, NULL);
 }
 
 /*
