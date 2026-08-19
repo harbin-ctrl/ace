@@ -85,11 +85,6 @@ Whatever sets it is somewhere else. `Type` reads `IoErr()` immediately after
 directory case through the same path reports `object is not of required
 type` correctly -- it is specifically the not-found code that arrives raw.
 
-**`Assign FOO: NOSUCH:` exits 0.** Assigning to a target that does not exist
-reports success. Observed from a standalone binary with no `ACE_SESSION` set,
-so this may just be session scoping rather than a real defect -- it has not
-been investigated.
-
 **The Makefile is not a prerequisite of what it builds.** Change a rule's
 recipe and the object is not rebuilt, so the change appears not to work. This
 cost time twice while porting Delete/Protect/Filenote, both times looking like
