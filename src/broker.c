@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
+#include "broker_dictionary.h"
 #include "broker_protocol.h"
 #include "clipboard_bridge.h"
 #include "dos_devices.h"
@@ -605,11 +606,23 @@ static int base32_decode(const char *text, unsigned char *result,
  * already free (one raw character each), and compression's per-string
  * overhead usually costs more than a few already-short bytes can save.
  *
+ * DEFLATE runs with a preset dictionary -- AMIGA_BROKER_DEFLATE_DICTIONARY
+ * in broker_dictionary.h -- because most names this tier ever sees are too
+ * short to build their own back-reference history: a single 90-byte name
+ * carries little of its own repetition to exploit, but it very often
+ * shares vocabulary with countless other names a compressor never gets to
+ * see, one file at a time. Priming the window with that shared vocabulary
+ * up front is what closes the gap.
+ *
  * Measured against the full Debian 12 package archive's file index
  * (Contents-amd64.gz, 913,356 unique basenames, fetched and tested
  * independently of wherever this idea first came from): 258 basenames
- * exceed AMIGA_COMPONENT_LIMIT outright, and every one of them round-trips
- * through this tier -- see tests/filesystem_translation_test.sh.
+ * exceed AMIGA_COMPONENT_LIMIT outright. Without the dictionary, 160 of
+ * those round-trip through this tier; with it, 213 -- and every one of the
+ * 258 was checked for regressions from adding the dictionary, since a
+ * preset dictionary only ever gives the compressor more to reference, never
+ * less, so no name can round-trip worse for having one. Zero did. See
+ * tests/filesystem_translation_test.sh.
  */
 enum {
     COMPRESS_PACK39 = 0,
@@ -840,6 +853,14 @@ static bool pack39_decode(const unsigned char *data, size_t length,
     return true;
 }
 
+/*
+ * Both directions set the dictionary immediately after init and before the
+ * first deflate()/inflate() call, not in response to Z_NEED_DICT: that
+ * signal is a zlib-wrapper feature (the FDICT bit and Adler-32 in a zlib
+ * header), and this is raw deflate (negative windowBits, no header) so it
+ * is never produced. zlib's own documentation says as much: for raw
+ * inflate, the dictionary must be set right after inflateInit2().
+ */
 static bool deflate_compress(const unsigned char *data, size_t length,
                              unsigned char *result, size_t result_size,
                              size_t *result_length)
@@ -851,6 +872,11 @@ static bool deflate_compress(const unsigned char *data, size_t length,
     if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, -15, 9,
                      Z_DEFAULT_STRATEGY) != Z_OK)
         return false;
+    if (deflateSetDictionary(&stream, (const Bytef *)AMIGA_BROKER_DEFLATE_DICTIONARY,
+                             AMIGA_BROKER_DEFLATE_DICTIONARY_LENGTH) != Z_OK) {
+        deflateEnd(&stream);
+        return false;
+    }
     stream.next_in = (Bytef *)data;
     stream.avail_in = (uInt)length;
     stream.next_out = (Bytef *)result;
@@ -872,6 +898,11 @@ static bool deflate_decompress(const unsigned char *data, size_t length,
     memset(&stream, 0, sizeof(stream));
     if (inflateInit2(&stream, -15) != Z_OK)
         return false;
+    if (inflateSetDictionary(&stream, (const Bytef *)AMIGA_BROKER_DEFLATE_DICTIONARY,
+                             AMIGA_BROKER_DEFLATE_DICTIONARY_LENGTH) != Z_OK) {
+        inflateEnd(&stream);
+        return false;
+    }
     stream.next_in = (Bytef *)data;
     stream.avail_in = (uInt)length;
     stream.next_out = buffer;
@@ -897,13 +928,19 @@ static bool deflate_decompress(const unsigned char *data, size_t length,
  * because a structural guarantee costs nothing extra here and the marker
  * already carries the main one.
  *
- * PACK39 has no failure mode of its own -- any byte string decodes to some
- * text -- so its result is proven correct only by encoding it back and
- * comparing, which is the actual guarantee, not a belt-and-braces extra.
- * DEFLATE's bitstream format is self-checking enough (Huffman code and
- * length/distance table validity) that inflate() reaching Z_STREAM_END is
- * already strong evidence, and this path is rare enough that the extra
- * certainty is not needed to justify the recompression it would cost.
+ * Both engines are proven correct here by encoding the decoded candidate
+ * back and comparing, not merely trusted to have decoded cleanly. PACK39
+ * has no failure mode of its own -- any byte string decodes to some text --
+ * so this was already the only real guarantee available. DEFLATE used to
+ * be trusted on inflate() reaching Z_STREAM_END alone, on the reasoning
+ * that its bitstream format is self-checking; that stopped being enough
+ * once a preset dictionary was added, because inflate() succeeding no
+ * longer proves the *dictionary* used to decode this payload was the one
+ * used to encode it. Raw deflate carries no checksum of its own to catch
+ * that mismatch, and AMIGA_BROKER_DEFLATE_DICTIONARY is frozen precisely so
+ * this check never needs to fire in practice -- but a name that somehow
+ * did encode against a different dictionary must fail predictably here,
+ * not decode to something plausible-looking and wrong.
  */
 static bool compressed_payload_decode(const char *suffix, char *text,
                                       size_t text_size)
@@ -926,8 +963,14 @@ static bool compressed_payload_decode(const char *suffix, char *text,
                verify_length == length - 1 &&
                memcmp(verify, payload, verify_length) == 0;
     }
-    if (trailer == COMPRESSED_TRAILER(COMPRESS_DEFLATE))
-        return deflate_decompress(payload, length - 1, text, text_size);
+    if (trailer == COMPRESSED_TRAILER(COMPRESS_DEFLATE)) {
+        if (!deflate_decompress(payload, length - 1, text, text_size))
+            return false;
+        return deflate_compress((const unsigned char *)text, strlen(text),
+                                verify, sizeof(verify), &verify_length) &&
+               verify_length == length - 1 &&
+               memcmp(verify, payload, verify_length) == 0;
+    }
     return false;
 }
 
@@ -1272,10 +1315,11 @@ static int map_component(const char *parent, const char *host_name,
      * scheme that fails on some names has to; one that fails predictably is
      * worth more than one that fails on a subset nobody can characterise.
      *
-     * Measured against the full Debian 12 package archive's file index
-     * (913,356 unique basenames): every one of the 258 that exceed
-     * AMIGA_COMPONENT_LIMIT is caught by the tier above; this path was not
-     * reached by anything in that corpus.
+     * Reached by 45 of the Debian corpus's 258 over-length basenames -- the
+     * rest are caught by the tier above.  These 45 are dominated by hash
+     * digests: high-entropy by construction, so neither PACK39 (a radix
+     * conversion, not an entropy coder) nor a dictionary (which can only
+     * help where content recurs) has anything to work with.
      */
     errno = ENAMETOOLONG;
     return -1;

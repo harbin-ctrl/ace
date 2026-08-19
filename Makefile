@@ -625,7 +625,7 @@ $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_c
 # its environment and falls back to its own directory, which for a build tree
 # is where the commands are -- which is exactly what gives a build tree a
 # different SYS:, and therefore a different broker, from an installed copy.
-$(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_dictionary.h src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) $(ZLIB_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h | $(BUILD)
