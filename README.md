@@ -53,13 +53,13 @@ a copy that `PATH` will not select.
 ### The optional programs: Vim, Regina and LhA
 
 Three programs ACE can run but does not own are built and installed
-separately from the ordinary set, each with a build target and an install
+separately from the ordinary set, each with a build, install and clean
 target:
 
 ```sh
-make vim         make install-vim
-make regina      make install-regina
-make lha         make install-lha
+make vim         make install-vim         make clean-vim
+make regina      make install-regina      make clean-regina
+make lha         make install-lha         make clean-lha
 ```
 
 Vim and Regina build from source vendored under `third_party/`, so a plain
@@ -80,6 +80,14 @@ To build against a different source tree instead of the vendored one:
 make vim VIM_SRC=/path/to/vim
 make regina REGINA_SRC=/path/to/aros-contrib/regina
 ```
+
+Each clean target removes only what its own build produced, so cleaning one
+does not cost a rebuild of the other two or of ACE itself; `make clean` remains
+the blunt instrument that empties `build/` entirely. None of them touch
+`third_party/`, which is source rather than output. `make clean-lha` also
+discards the downloaded tarball, so `make clean-lha lha` re-fetches and
+re-checksums it -- which is how to check that the download still works, not
+just the compile.
 
 `third_party/PROVENANCE.md` records where each tree came from, at which
 commit, and under which licence. Both build entirely out of tree, so

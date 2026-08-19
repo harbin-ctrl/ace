@@ -1347,6 +1347,44 @@ $(BUILD)/rexx: $(REGINA_OBJS) $(REGINA_ACE_OBJS) | $(BUILD)
 clean:
 	$(RM) -r $(BUILD)
 
+# Per-program cleans, one for each of the three optional programs.
+#
+# Each removes only what its own build produced, so cleaning one does not cost
+# a rebuild of the other two or of ACE itself -- which is the whole reason to
+# have these rather than just reaching for `clean`.
+#
+# None of them touch third_party/: that is source, not output. `make clean`
+# remains the blunt instrument that removes $(BUILD) entirely.
+#
+# The recipes are quiet because they expand to every object by name -- four
+# kilobytes of rm arguments apiece, which tells the reader nothing.
+
+# Deliberately not $(BUILD)/ace-vim-runtime.o, even though the Vim build needs
+# it: it is also linked into ace-console, dos-runtime.o and the console editor
+# test, so removing it here would quietly force a rebuild of most of ACE. The
+# same goes for every other $(BUILD)/*.o the vim target depends on. What is
+# Vim's alone is the binary, the objects the build script compiles into
+# vim-objects/, the runtime tree it copies in, and the stamp recording which
+# source tree was used.
+clean-vim:
+	@echo "cleaning vim"
+	@$(RM) -r $(BUILD)/vim $(BUILD)/vim-objects $(BUILD)/runtime \
+	          $(VIM_SRC_STAMP)
+
+clean-regina:
+	@echo "cleaning regina"
+	@$(RM) -r $(BUILD)/rexx $(REGINA_OBJS) $(addsuffix .d,$(REGINA_OBJS))
+
+# This one also throws away the fetched tarball and the tree unpacked from it,
+# so the next `make lha` downloads and re-checksums rather than trusting what
+# is already on disk. That is the point of a clean for a target whose source
+# arrives over the network: `make clean-lha lha` is how you check the download
+# and its SHA-256 still work, not just the compile.
+clean-lha:
+	@echo "cleaning lha, including the fetched tarball"
+	@$(RM) -r $(BUILD)/LhA $(LHA_AROS_OBJS) $(addsuffix .d,$(LHA_AROS_OBJS)) \
+	          $(LHA_AROS_ARCHIVE) $(LHA_AROS_DIR)
+
 # The launcher names the binary it was installed beside, rather than looking
 # ace-shell up on PATH. PATH order is not the desktop session's to promise,
 # and when a second install exists the icon silently runs whichever directory
@@ -1574,7 +1612,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean install tine lha lha-fetch regina test-broker-port-channel install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
