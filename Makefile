@@ -1221,6 +1221,7 @@ install: all tine
 	    ln -sf $(BINDIR)/$$command $(DESTDIR)$(SYSDIR)/C/$$command; \
 	done
 	$(INSTALL) -m 0644 data/Startup-Sequence $(DESTDIR)$(SYSDIR)/S/Startup-Sequence
+	$(INSTALL) -m 0644 data/Shell-Startup $(DESTDIR)$(SYSDIR)/S/Shell-Startup
 	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR)
 	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
 	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop

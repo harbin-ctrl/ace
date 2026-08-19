@@ -1,0 +1,35 @@
+; ACE Shell-Startup
+;
+; The per-shell script. On a real Amiga S:Startup-Sequence is the boot script,
+; run once by the Initial CLI, and this one runs for every shell started after
+; it. ACE has one kind of shell and no boot to tell them apart, so it runs
+; both, in that order, then S:ACE-Startup -- see run_startup_scripts() in
+; src/ace_user_shell.c. Aliases belong here rather than in the boot script
+; because an alias lives in the shell that defined it and in no other.
+;
+; Anything in here is overwritten by the next install. S:User-Startup is not,
+; which is the whole point of it, and is where a change of your own belongs.
+
+; Clear the screen, the way an Amiga spells it.
+;
+; "*E" is the AmigaDOS star-escape for ESC, so this is ESC [ 0 ; 0 H followed
+; by ESC [ J: home the cursor, then erase from there to the end of the
+; display. Both halves are needed. Erasing without homing leaves the cursor
+; where it was and clears only what follows it, which on a full screen clears
+; nothing at all.
+;
+; NOLINE because Echo otherwise ends with a newline, which would step the
+; cursor off the home position it was just moved to and leave the first line
+; blank.
+;
+; ACE's console accepts four spellings of this -- form feed, native CSI H/CSI
+; J, the ESC [ form used here, and ESC c -- all of them checked by
+; tests/console_device_bridge_test.c. It deliberately does not accept CSI 2J,
+; which is later ANSI rather than the AmigaOS 3.1 command, so do not "simplify"
+; this line to Echo "*E[2J".
+;
+; CLS is the Amiga name and CLEAR is the one Linux fingers type. Two aliases
+; rather than one aliased to the other, so that neither depends on the other
+; still existing.
+Alias CLS Echo "*E[0;0H*E[J" NOLINE
+Alias CLEAR Echo "*E[0;0H*E[J" NOLINE
