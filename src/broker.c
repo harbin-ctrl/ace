@@ -2265,11 +2265,20 @@ static void drop_task_connection(struct broker_connection *connection)
  * is the ordinary case -- so this drops every port it registered rather than
  * one id kept on the connection.
  */
+/* Defined below, beside the message table they work on. Declared here
+   because releasing a port or a channel is what makes messages unanswerable,
+   and those two live above it. */
+static void abandon_messages_for_port(uint64_t port_id, const char *reason);
+static void abandon_messages_for_owner(pid_t owner_pid, const char *reason);
+
 static void drop_connection_ports(struct broker_connection *connection)
 {
     for (size_t index = 0; index < MAX_PORTS; index++) {
-        if (ports[index].id && ports[index].fd == connection->fd)
+        if (ports[index].id && ports[index].fd == connection->fd) {
+            abandon_messages_for_port(ports[index].id,
+                                      "the port's owner disconnected");
             memset(&ports[index], 0, sizeof(ports[index]));
+        }
     }
 }
 
@@ -2285,8 +2294,15 @@ static void drop_connection_port_channels(struct broker_connection *connection)
 {
     for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
         if (port_channels[index].id &&
-            port_channels[index].fd == connection->fd)
+            port_channels[index].fd == connection->fd) {
+            /* A backstop rather than the usual path: a process that dies
+               loses its ports first (drop_connection_ports, above), and that
+               releases its senders by port. This catches a channel that goes
+               without the ports going with it. */
+            abandon_messages_for_owner(port_channels[index].pid,
+                                       "the receiving process is gone");
             memset(&port_channels[index], 0, sizeof(port_channels[index]));
+        }
     }
 }
 
@@ -2318,8 +2334,17 @@ static int attach_port_channel(struct broker_connection *connection,
         return -1;
     }
     existing = find_port_channel_pid((pid_t)pid);
-    if (existing)
+    if (existing) {
+        /* Anything delivered down the channel being replaced can no longer be
+           read, let alone answered: after an exec() the process holding it is
+           running a different program entirely. Releasing the senders here
+           rather than waiting for the old connection's close to be noticed,
+           because by then this record is gone and the close would match
+           nothing. */
+        abandon_messages_for_owner((pid_t)pid,
+                                   "the receiving process was replaced");
         memset(existing, 0, sizeof(*existing));
+    }
     for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
         struct broker_port_channel *channel = &port_channels[index];
 
@@ -2395,12 +2420,6 @@ static struct broker_port_message *find_port_message(uint64_t id)
 /*
  * A sender that goes away is no longer waiting for anything, so its
  * conversations are dropped with its connection.
- *
- * The other direction -- the *owner* dying with a message in hand -- is not
- * handled here. It must end with the broker replying on the dead owner's
- * behalf, because a sender waits for its reply indefinitely and by design.
- * That is step 1.7 in docs/regina-arexx-plan.md, and until it exists a killed
- * receiver strands its sender.
  */
 static void drop_connection_port_messages(struct broker_connection *connection)
 {
@@ -2409,6 +2428,49 @@ static void drop_connection_port_messages(struct broker_connection *connection)
             port_messages[index].sender_channel_fd == connection->fd)
             memset(&port_messages[index], 0, sizeof(port_messages[index]));
     }
+}
+
+/*
+ * Tells a sender that its message will never be answered.
+ *
+ * The sender is in WaitPort(), which has no timeout and cannot be broken out
+ * of, so a message whose receiver is gone has to be ended explicitly by the
+ * only party that can still see both ends. Silently forgetting it -- which is
+ * what happened before this existed -- leaves the sender waiting for the life
+ * of the process.
+ *
+ * Reported on stderr because it cannot happen on AmigaOS and should not pass
+ * unremarked here: it means a process died holding somebody else's message.
+ */
+static void abandon_port_message(struct broker_port_message *message,
+                                 const char *reason)
+{
+    fprintf(stderr,
+            "ace-broker: message %llu to port %llu abandoned: %s "
+            "(owner pid %ld, sender pid %ld)\n",
+            (unsigned long long)message->id,
+            (unsigned long long)message->port_id, reason,
+            (long)message->owner_pid, (long)message->sender_pid);
+    (void)push_port_record(message->sender_channel_fd,
+                           AMIGA_BROKER_PORT_ABANDONED, message->id,
+                           message->port_id, NULL, 0);
+    memset(message, 0, sizeof(*message));
+}
+
+static void abandon_messages_for_port(uint64_t port_id, const char *reason)
+{
+    for (size_t index = 0; index < MAX_PORT_MESSAGES; index++)
+        if (port_messages[index].id &&
+            port_messages[index].port_id == port_id)
+            abandon_port_message(&port_messages[index], reason);
+}
+
+static void abandon_messages_for_owner(pid_t owner_pid, const char *reason)
+{
+    for (size_t index = 0; index < MAX_PORT_MESSAGES; index++)
+        if (port_messages[index].id &&
+            port_messages[index].owner_pid == owner_pid)
+            abandon_port_message(&port_messages[index], reason);
 }
 
 static struct broker_port *find_port_name(const char *name)
@@ -2857,6 +2919,11 @@ static int handle_client(struct broker_connection *connection)
         }
         for (size_t index = 0; index < MAX_PORTS; index++) {
             if (ports[index].id == id) {
+                /* Same reasoning as a process dying: once the port is gone
+                   nothing can answer what was sent to it, and a sender in
+                   WaitPort() has no way out on its own. */
+                abandon_messages_for_port(ports[index].id,
+                                          "the port was deleted");
                 memset(&ports[index], 0, sizeof(ports[index]));
                 removed = 1;
                 break;
@@ -3093,6 +3160,7 @@ static int handle_client(struct broker_connection *connection)
         size_t live_tasks = 0;
         size_t live_ports = 0;
         size_t live_port_channels = 0;
+        size_t live_port_messages = 0;
         int written;
 
         length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
@@ -3113,6 +3181,9 @@ static int handle_client(struct broker_connection *connection)
         for (size_t i = 0; i < MAX_PORT_CHANNELS; i++)
             if (port_channels[i].id)
                 live_port_channels++;
+        for (size_t i = 0; i < MAX_PORT_MESSAGES; i++)
+            if (port_messages[i].id)
+                live_port_messages++;
 
         written = snprintf(result, sizeof(result),
                            "protocol\t0x%08x\n"
@@ -3124,13 +3195,14 @@ static int handle_client(struct broker_connection *connection)
                            "sessions\t%zu\n"
                            "tasks\t%zu\n"
                            "ports\t%zu\n"
-                           "port-channels\t%zu\n",
+                           "port-channels\t%zu\n"
+                           "port-messages\t%zu\n",
                            (unsigned)AMIGA_BROKER_PROTOCOL_VERSION,
                            executable, (long)getpid(),
                            (long long)(time(NULL) - broker_started),
                            socket_path, system_root,
                            live_sessions, live_tasks, live_ports,
-                           live_port_channels);
+                           live_port_channels, live_port_messages);
         if (written < 0 || (size_t)written >= sizeof(result)) {
             status = ENAMETOOLONG;
             break;
@@ -3398,9 +3470,13 @@ static void drop_connection(size_t index)
     struct broker_connection *connection = &connections[index];
 
     drop_task_connection(connection);
+    /* Order matters: release the messages this process can no longer answer
+       before forgetting the messages it was itself waiting on. A process that
+       is both a sender and a receiver would otherwise have its outgoing
+       conversations dropped before its incoming ones were released. */
     drop_connection_ports(connection);
-    drop_connection_port_messages(connection);
     drop_connection_port_channels(connection);
+    drop_connection_port_messages(connection);
 
     if (connection->anchor >= 0) {
         struct broker_session *session = &sessions[connection->anchor];

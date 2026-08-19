@@ -164,7 +164,30 @@ enum amiga_broker_operation {
        connection with SO_PEERCRED rather than believing what it is told,
        which is also how Exec knew which task had called it. */
     AMIGA_BROKER_PORT_PUT = 34,
-    AMIGA_BROKER_PORT_REPLY = 35
+    AMIGA_BROKER_PORT_REPLY = 35,
+    /* Push-only: never sent as a request, only pushed down a *sender's*
+       channel to say that the process holding its message is gone and no
+       reply is coming.
+
+       This exists because Linux can produce a situation AmigaOS could not.
+       There, a receiver cannot die mid-delivery -- multitasking is frozen
+       across the send -- and a task that dies holding a message has usually
+       taken the machine with it. Here a receiver can simply be killed, and
+       the sender would otherwise wait for a reply that can never arrive,
+       forever and by design.
+
+       Deliberately its own record type rather than a PORT_REPLY with a flag.
+       "Nobody answered" is not "answered with nothing", and the broker should
+       not have to pretend otherwise: it knows the difference and says so.
+       Turning it into an ARexx failure result is the client's job, and has
+       to happen there anyway -- the broker never looks inside a payload.
+
+       Not a timeout, and there must never be one. A receiver that is alive
+       and simply never replies hangs its sender on AmigaOS too:
+       WaitPort() is Wait(1 << mp_SigBit) with no timeout and no
+       SIGBREAKF_CTRL_C in the mask, so not even a break gets out of it. That
+       is the semantics, not a defect, and ACE reproduces it. */
+    AMIGA_BROKER_PORT_ABANDONED = 36
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u

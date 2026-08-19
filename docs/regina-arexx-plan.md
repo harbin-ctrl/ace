@@ -177,9 +177,9 @@ git status --short third_party # must be empty
 * **A message crosses processes and the reply comes back**
   (`AMIGA_BROKER_PORT_PUT`, `AMIGA_BROKER_PORT_REPLY`), carrying arbitrary
   bytes intact. What is not built yet is `PutMsg()` using any of it (1.6), the
-  sender's streams travelling with the message (1.5), and the broker answering
-  for a receiver that dies (1.7) -- until that last one, killing a receiver
-  mid-message strands its sender for good.
+  sender's streams travelling with the message (1.5). A receiver that dies,
+  deletes the port, or is replaced by an `exec()` no longer strands its sender
+  (1.7); one that stays alive and silent still does, deliberately.
 
 ## The two semantics questions, answered from AmigaOS
 
@@ -311,9 +311,49 @@ the reply port. `rm_Result2` arrives as an argstring the sender will
 `DeleteArgstring()`, so recreate it locally with `CreateArgstring()`; never
 hand back a pointer into broker memory.
 
-1.7 The broker replies on the sender's behalf when the owning process dies,
-with a failure result. This is the doc's "deterministic failure when a target
-port disappears", and it is what makes 1.4's indefinite wait safe.
+1.7 **Done.** `AMIGA_BROKER_PORT_ABANDONED` is pushed down a *sender's*
+channel when the process holding its message is gone. This is what makes the
+indefinite wait safe.
+
+* **Its own record type, not a `PORT_REPLY` with a flag.** "Nobody answered"
+  is not "answered with nothing", and the broker knows the difference. It also
+  never looks inside a payload, so it could not fabricate an ARexx failure
+  result even if that were wanted -- see below for where that happens instead.
+* **Triggers:** the owner's ports going (the usual path -- a dying process
+  loses its ports first), the owner's channel going, the port being deleted
+  with `PORT_REM`, and a channel being replaced by a second attach from the
+  same pid, which is the `exec()` case where the old channel can no longer be
+  read by anyone.
+* **Not a timeout, and there must never be one.** A receiver that is alive and
+  simply never replies produces nothing at all, because that is what AmigaOS
+  does: `WaitPort()` is `Wait(1 << mp_SigBit)` (`rom/exec/waitport.c:79`) with
+  no timeout and no `SIGBREAKF_CTRL_C` in the mask, so not even a break gets
+  out of it. Hanging there is the semantics, not a defect. The test asserts
+  this explicitly, and it is the half most likely to be "fixed" by mistake.
+
+**Where the ARexx failure result gets made, and why not here.** Regina's
+`sendandwait()` (`amifuncs.c:601`) is:
+
+```c
+while ( msg2 != msg ) {
+   WaitPort( atsd->replyport );
+   msg2 = (struct RexxMsg *)GetMsg( atsd->replyport );
+   if ( msg2 != msg )
+      ReplyMsg( (struct Message *)msg2 );
+}
+```
+
+Anything arriving on that reply port which is not the original message
+*pointer* is replied to and the wait resumes. So there is no out-of-band way
+to release Regina: when 1.6 lands, ACE must turn an abandonment into
+`rm_Result1 = RC_FATAL` (20, `compat/include/rexx/errors.h`) written into the
+sender's own `struct RexxMsg`, and put *that* on the reply port. The broker
+stays honest about what happened; the ARexx vocabulary is applied at the only
+layer that has it.
+
+That loop has a second consequence worth remembering: a process waiting on a
+reply port will `ReplyMsg()` anything else that lands there, so ACE must never
+use a sender's reply port for anything but its own replies.
 
 1.8 Acceptance: run `listen4msg` and `sendrexxmsg`, unmodified, as two
 processes. `sendrexxmsg` must print `Result1:`, get its own message back, and
@@ -393,6 +433,7 @@ a commit.
 
 * **After 1.1.** Done. `make test-broker-port-channel`.
 * **After 1.2 and 1.3.** Done. `make test-broker-port-message`.
+* **After 1.7.** Done. `make test-broker-port-abandon`.
 * **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
   one process. Argstrings with embedded NULs and high bytes, all sixteen
   `rm_Args` slots, and one oversized message that must fail cleanly against
