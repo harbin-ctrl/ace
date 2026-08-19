@@ -22,14 +22,21 @@ Read in this order:
 
 ## Facts you will not find in those documents
 
-**The Regina source is not in this repository.** It is a pristine sparse
-checkout at `$HOME/stash/aros-contrib`, at contrib commit
-`ec3f6b50cd9af84ea6bd3e581d93d0e874a6affb`, sparse-checked-out to `regina/`.
-Keep `git status` there empty. Anything Regina needs belongs in ACE, or --
-only if genuinely unavoidable -- in a reviewable patch under `patches/`. The
-point of the exercise is that ACE implements the contract, not that Regina was
-cut down until it fitted. If the checkout is missing, `docs/regina-amiga-port.md`
-has the clone command.
+**The Regina source is vendored at `third_party/regina`,** imported unmodified
+from contrib commit `ec3f6b50cd9af84ea6bd3e581d93d0e874a6affb`. It used to be
+an external sparse checkout at `$HOME/stash/aros-contrib`, and that path is
+still honoured -- `REGINA_SRC` or `AROS_CONTRIB_ROOT` picks it -- but the
+in-repo tree is what `make regina` builds by default.
+
+Moving it in-repo does not change the rule it was out-of-repo to enforce:
+**keep `git status` clean under `third_party/`.** Anything Regina needs belongs
+in ACE, or -- only if genuinely unavoidable -- in a reviewable patch under
+`patches/`. The point of the exercise is that ACE implements the contract, not
+that Regina was cut down until it fitted, and a diff against upstream is a bug
+report about ACE. The difference now is that nothing external stops an edit,
+so the discipline has to be deliberate: `git diff third_party/` is the check
+that used to be free. `third_party/PROVENANCE.md` records the origin and
+commit.
 
 **`grep -r` silently skips `amifuncs.c`.** It is ISO-8859 text (a `©` in its
 copyright header), so grep decides it is binary and says nothing. You will
@@ -56,42 +63,15 @@ Any test that asserts on broker behaviour must run against a broker of its
 own, via `ACE_BROKER_SOCKET`; `tests/broker_port_channel_test.sh` is the
 shape, and `tests/filesystem_translation_test.sh` is the older example.
 
-**Test objects only build under their own test targets.** `make all` will not
-catch a test that no longer compiles. After changing any API a test calls, run
-the tests, not just the build.
-
-**`ace-console` links `aros-exec-runtime.o` but deliberately not
-`broker_client.o`** -- it is a GUI process with no DOS session. That is why the
-broker port calls in `aros_exec_runtime.c` are `__attribute__((weak))` and
-checked for NULL before use. Do not "fix" this by adding `broker_client.o` to
-the console link.
-
-**A built `rexx` must sit beside `ace-user-shell`.** `ADDRESS COMMAND` goes
-through `SystemTags()` -> `launch_command()`, which finds the shell next to the
-running executable. Run `rexx` from anywhere else and `ADDRESS COMMAND`
-silently does nothing while returning 0.
-
-**`compat/aros-real/include/proto/exec.h` is hand-written and partly wrong.**
-Three return types disagreed with AROS and with ACE's own definitions --
-`FindTask`, `Signal`, `SetTaskPri` -- each found only when something finally
-included both compat trees at once. Assume more are wrong. Check against
-`$HOME/aros/rom/exec/*.c`, which is the authority.
-
-**Include order for Regina is `compat/aros-real/include` before
-`compat/include`,** plus `-include ace_regina_compat.h` from
-`compat/regina/include`. That header exists because the aros-real tree's own
-thin `proto/dos.h` and `proto/alib.h` win the lookup and hide `StrDup()` and
-`SystemTags()`, which ACE does implement. Do not add a third `proto/` tree; it
-would add a third candidate to the same ambiguous lookup.
-
-**Make's built-in rules will rewrite the pristine Regina checkout.** `regina/`
-ships a generated `yaccsrc.c` beside its `yaccsrc.y`, and `lexsrc.c` beside
+**Make's built-in rules will rewrite the Regina source in place.** Regina ships
+a generated `yaccsrc.c` beside its `yaccsrc.y`, and `lexsrc.c` beside
 `lexsrc.l`. Make's implicit `%.c: %.y` rule considers the `.y` newer, runs
 `yacc`, and moves the result *over the checked-in `.c`, in the source
 directory* -- so the tree that has to stay clean quietly stops being clean,
 and the regenerated file does not even compile. The Makefile cancels both
-implicit rules. Do not remove that cancellation, and check
-`git -C ~/stash/aros-contrib status` after any build change.
+implicit rules. Do not remove that cancellation. This mattered when the source
+was an external checkout and matters more now that it is `third_party/regina`,
+where the damage lands in this repository's own `git status`.
 
 **A rule's prerequisites are expanded where the rule is written, not when it
 runs.** `DOS_RUNTIME_OBJ` is defined two-thirds of the way down the Makefile;
@@ -145,9 +125,11 @@ which is where it has to be, or `ADDRESS COMMAND` silently does nothing. The
 file list is `regina/mmakefile.src`'s `rexx` target verbatim and the version
 comes from `regina/regina.ver`, so neither can drift from upstream.
 
-`regina` is deliberately not part of `all`: it needs the external checkout,
-and says so plainly when that is missing. `AROS_CONTRIB_ROOT` overrides where
-the checkout lives.
+`regina` is deliberately not part of `all`. It builds from `third_party/regina`
+by default; `REGINA_SRC=/path/to/aros-contrib/regina` builds against a working
+checkout instead, which is how the vendored tree gets refreshed.
+`make install-regina` installs `rexx` beside `ace-user-shell` and symlinks it
+into `SYS:C`.
 
 `-Uunix -U__unix__ -U__unix` is not optional. `mt_notmt.c` picks its
 `OS_Dep_funcs` from an `#if/#elif` chain in which the unix branch comes before
@@ -161,7 +143,7 @@ After touching any of it:
 
 ```sh
 make regina && build/rexx -v   # REXX-Regina_3.5 5.00 31 Dec 2009
-git -C ~/stash/aros-contrib status  # must be empty
+git status --short third_party # must be empty
 ```
 
 ## What works today
@@ -298,7 +280,7 @@ console. Add it as `tests/rexx_port_test.sh`.
 
 ### 2. Port RexxMast
 
-`$HOME/stash/aros-contrib/regina/rexxmast/RexxMast.c`. Only useful once 1 is
+`third_party/regina/rexxmast/RexxMast.c`. Only useful once 1 is
 done.
 
 2.1 Create the public `REXX` port and serve it. `RexxMast.c:93` is
@@ -341,15 +323,14 @@ where the live path detects the failure -- **not** in
 `$HOME/aros/rom/exec/*.c`. Three wrong return types so far, found one at a
 time.
 
-4.3 **Done.** `make regina`; see "Building it" above. It carries the include
-order, the `-U` flags with an assertion behind them, and the version defines
-read out of `regina.ver`. Two things it does *not* do yet: install `rexx`
-alongside the other binaries (it must land beside `ace-user-shell`, so the
-`install` target needs a decision about a target that is not in `all`), and
-build the `regina` shared-library target -- only the standalone `rexx`.
-`docs/regina-amiga-port.md`'s open question about merging the two compat
-trees is still open; the Regina header remains the current answer, not
+4.3 **Done.** `make regina` and `make install-regina`; see "Building it" above.
+The build carries the include order, the `-U` flags with an assertion behind
+them, and the version defines read out of `regina.ver`. The one thing it does
+not do is build the `regina` shared-library target -- only the standalone
+`rexx`. `docs/regina-amiga-port.md`'s open question about merging the two
+compat trees is still open; the Regina header remains the current answer, not
 necessarily the final one.
+
 4.4 `struct ace_gfx_font_choice` is built field by field by its callers, so
 adding a member leaves it uninitialised in any caller that misses one. This
 already broke `graphics_test.c` once. The same hazard applies to any struct

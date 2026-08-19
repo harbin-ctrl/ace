@@ -50,27 +50,40 @@ apart silently, since the older set keeps working perfectly well and only the
 newer one stops being reached. `make install` warns when it has just installed
 a copy that `PATH` will not select.
 
-Vim is an optional external-source build. Build it from an untouched Vim
-checkout, then install it beside ACE's shell and runtime:
+### The optional programs: Vim, Regina and LhA
+
+Three programs ACE can run but does not own are built and installed
+separately from the ordinary set, each with a build target and an install
+target:
 
 ```sh
-make CC='ccache cc' vim VIM_SRC=/path/to/untouched/vim
-make install-vim
+make vim         make install-vim
+make regina      make install-regina
+make lha         make install-lha
 ```
 
-Regina, the Rexx interpreter, is an optional external-source build too. Its
-sources are a pristine sparse checkout of the AROS contrib tree rather than
-part of this repository, so that what the build proves is that ACE implements
-the interfaces Regina expects:
+Vim and Regina build from source vendored under `third_party/`, so a plain
+checkout builds them with nothing else to fetch. LhA is fetched instead --
+its upstream ships release tarballs rather than a tree ACE tracks -- so
+`make lha` downloads and checksums one into `build/`.
+
+Each install target builds first if it needs to, so `make install-regina` on
+its own is enough. Each installs into the same directory as the rest of ACE
+and symlinks the command into `SYS:C`. That shared directory is a
+requirement, not tidiness: `build/rexx` finds `ace-user-shell` beside its own
+executable, and a `rexx` installed anywhere else leaves `ADDRESS COMMAND`
+silently doing nothing while reporting success.
+
+To build against a different source tree instead of the vendored one:
 
 ```sh
-make regina
+make vim VIM_SRC=/path/to/vim
+make regina REGINA_SRC=/path/to/aros-contrib/regina
 ```
 
-`AROS_CONTRIB_ROOT` says where that checkout lives (default
-`~/stash/aros-contrib`), and `docs/regina-amiga-port.md` has the command that
-creates it. The result is `build/rexx`, which has to stay beside
-`ace-user-shell` for `ADDRESS COMMAND` to reach the shell at all.
+`third_party/PROVENANCE.md` records where each tree came from, at which
+commit, and under which licence. Both build entirely out of tree, so
+`git status` under `third_party/` should never report a change from building.
 
 Use `./build/ace-shell` when testing an uninstalled checkout; use `ace-shell`
 only after `make install` and `make install-vim` have installed the matching

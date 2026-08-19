@@ -78,6 +78,13 @@ BUILD := $(CURDIR)/build
 # listed separately in sixty link lines.
 BROKER_CLIENT_OBJS := $(BUILD)/broker_client.o $(BUILD)/broker-identity.o
 AROS_ROOT ?= $(HOME)/aros
+# Third-party source ACE builds but does not own: Regina and Vim live here,
+# each in its own directory. Both are built entirely out of tree -- every
+# object lands under $(BUILD) -- so a vendored tree stays exactly as it was
+# imported, and `git status` staying clean under third_party/ remains a real
+# check that ACE was changed rather than the thing it is meant to run.
+# See third_party/PROVENANCE.md for where each came from.
+THIRD_PARTY := $(CURDIR)/third_party
 VIM_SRC ?=
 HOST_ARCH ?= $(shell uname -m)
 ifeq ($(HOST_ARCH),aarch64)
@@ -202,7 +209,13 @@ LHA_AROS_CFLAGS := -D_AMIGA -D__AROS__ -DEXPAND_WILDCARDS \
 # cut down until it fitted.  docs/regina-amiga-port.md has the clone command;
 # AROS_CONTRIB_ROOT overrides where it lives.
 AROS_CONTRIB_ROOT ?= $(HOME)/stash/aros-contrib
-REGINA_SRC := $(AROS_CONTRIB_ROOT)/regina
+REGINA_VENDOR_SRC := $(THIRD_PARTY)/regina
+# The vendored tree wins when it is there; the external sparse checkout is
+# still honoured so a working copy of aros-contrib can be built against
+# directly, which is how a vendored tree gets refreshed in the first place.
+# os_amiga.c is the marker file because it is the one source that only this
+# port has, so a directory merely named "regina" is never mistaken for one.
+REGINA_SRC ?= $(if $(wildcard $(REGINA_VENDOR_SRC)/os_amiga.c),$(REGINA_VENDOR_SRC),$(AROS_CONTRIB_ROOT)/regina)
 # The file list is regina/mmakefile.src's `rexx` target verbatim: its OFILES,
 # plus the three the target adds.  nosaa and mt_notmt are what make this the
 # standalone interpreter rather than the shared library.
@@ -1217,7 +1230,8 @@ VIM_SRC_STAMP := $(BUILD)/vim-source
 # a fresh checkout. A candidate counts only if it holds src/proto/os_amiga.pro,
 # which is the file the build script requires and refuses to generate, so a
 # directory merely named "vim" is never mistaken for a Vim checkout.
-VIM_SRC_SEARCH ?= $(CURDIR)/../vim $(HOME)/vim $(HOME)/src/vim
+VIM_SRC_SEARCH ?= $(THIRD_PARTY)/vim $(CURDIR)/../vim $(HOME)/vim \
+                  $(HOME)/src/vim
 
 # Vim remains an untouched external checkout. ACE supplies the Amiga backend
 # build objects and runtime seams, while the target makes the exact source
@@ -1293,8 +1307,9 @@ REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o \
 ifeq ($(wildcard $(REGINA_SRC)/os_amiga.c),)
 regina:
 	@echo "regina: no Regina source at $(REGINA_SRC)" >&2
-	@echo "  docs/regina-amiga-port.md has the sparse-checkout command;" >&2
-	@echo "  or pass AROS_CONTRIB_ROOT=/path/to/aros-contrib." >&2
+	@echo "  Expected it in third_party/regina, or in an aros-contrib" >&2
+	@echo "  checkout; docs/regina-amiga-port.md has the clone command." >&2
+	@echo "  Override with REGINA_SRC=... or AROS_CONTRIB_ROOT=..." >&2
 	@exit 2
 else
 regina: $(BUILD)/rexx
@@ -1379,13 +1394,25 @@ install: all tine
 	    fi; \
 	fi
 
-# Vim is built from an external checkout and is therefore intentionally not
-# part of the ordinary ACE install set. It is still an install target like any
-# other, though: depending on the build means "make install-vim" on its own
-# builds Vim first when it is missing or out of date, and only then installs
-# it beside ace-user-shell so the AROS command loader accepts it as a
-# companion. The runtime check is a sanity check on that build, not a
-# substitute for it.
+# The three optional programs -- Vim, Regina and LhA -- are built and
+# installed the same way, by three pairs of targets:
+#
+#   make vim     make regina     make lha
+#   make install-vim  make install-regina  make install-lha
+#
+# Each install target depends on its build target, so "make install-regina" on
+# its own builds first when the binary is missing or out of date, exactly as
+# "make install" builds "all". Each installs into $(BINDIR) beside
+# ace-user-shell -- which is not a tidiness preference but a requirement, since
+# every ACE program finds its companions beside its own executable -- and then
+# symlinks the command into SYS:C so typing its name resolves through C:.
+#
+# Vim and Regina build from source under third_party/; LhA fetches a release
+# tarball into $(BUILD), because its upstream is a tarball rather than a tree
+# ACE tracks. LhA is also part of AMIGA_COMMANDS and so is covered by the
+# ordinary "make install" as well; install-lha exists to install just it,
+# without rebuilding and reinstalling everything else.
+
 install-vim: vim
 	@test -f "$(BUILD)/runtime/defaults.vim" || \
 		(echo "install-vim: $(BUILD)/runtime is missing Vim's runtime files" >&2; exit 2)
@@ -1395,6 +1422,29 @@ install-vim: vim
 	# In SYS:C like any other command, so typing "vim" finds it through C:.
 	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
 	ln -sf $(BINDIR)/vim $(DESTDIR)$(SYSDIR)/C/vim
+
+# rexx must land in $(BINDIR) rather than only in SYS:C, and the symlink must
+# point there rather than being a copy: ADDRESS COMMAND goes through
+# SystemTags() -> launch_command(), which looks for ace-user-shell beside the
+# running executable. A rexx that resolved to somewhere else would run, and
+# report success, while silently doing nothing.
+install-regina: regina
+	$(INSTALL) -d $(DESTDIR)$(BINDIR)
+	$(INSTALL) -m 0755 $(BUILD)/rexx $(DESTDIR)$(BINDIR)/rexx
+	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
+	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/rexx
+	@if [ -z "$(DESTDIR)" ] && [ ! -x "$(BINDIR)/ace-user-shell" ]; then \
+	    echo; \
+	    echo "warning: installed $(BINDIR)/rexx, but ace-user-shell is not"; \
+	    echo "         beside it. ADDRESS COMMAND will do nothing and still"; \
+	    echo "         report success. Run \"make install\" too."; \
+	fi
+
+install-lha: lha
+	$(INSTALL) -d $(DESTDIR)$(BINDIR)
+	$(INSTALL) -m 0755 $(BUILD)/LhA $(DESTDIR)$(BINDIR)/LhA
+	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
+	ln -sf $(BINDIR)/LhA $(DESTDIR)$(SYSDIR)/C/LhA
 
 test-console-device: $(BUILD)/console-device-test
 	$(BUILD)/console-device-test
@@ -1524,7 +1574,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean install tine lha lha-fetch regina test-broker-port-channel install-vim vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch regina test-broker-port-channel install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
