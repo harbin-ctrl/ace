@@ -430,6 +430,15 @@ struct native_lock {
        calls.  The host scan itself stays open across those calls, so this
        only needs to be a non-zero, monotonically increasing token. */
     IPTR scan_key;
+    /* telldir() position immediately before the readdir() call that
+       produced the entry currently reflected by scan_key.  AROS's ExAll()
+       (rom/dos/exall.c) rolls fib_DiskKey back by one entry when its
+       buffer fills up mid-scan, then calls ExNext() again on the same fib,
+       expecting that same entry back so it can retry it in the next
+       batch.  A real filesystem handler can reconstruct any entry from its
+       disk key directly; readdir() is forward-only, so ExNext() detects
+       the rollback and seeks back here to replay it. */
+    long scan_prev_pos;
 };
 
 /* CurrentDir() in AmigaDOS only swaps the process's lock pointer; it does not
@@ -1883,6 +1892,7 @@ LONG Examine(BPTR handle, struct FileInfoBlock *fib)
         closedir(lock->scan);
     lock->scan = fib->fib_DirEntryType > 0 ? opendir(lock->path) : NULL;
     lock->scan_key = 0;
+    lock->scan_prev_pos = lock->scan ? telldir(lock->scan) : 0;
     return DOSTRUE;
 }
 
@@ -1891,31 +1901,73 @@ LONG ExNext(BPTR handle, struct FileInfoBlock *fib)
     struct native_lock *lock = handle;
     struct dirent *entry;
     char child[PATH_MAX];
+    long pos;
 
     if (!lock || !fib || !lock->scan) {
         native_ioerr = ERROR_NO_MORE_ENTRIES;
         return DOSFALSE;
     }
+
+    /* Replay the entry ExAll() rolled back to via fib_DiskKey (see the
+       scan_prev_pos comment on struct native_lock) before scanning on. */
+    if (lock->scan_key > 0 && fib->fib_DiskKey == lock->scan_key - 1) {
+        seekdir(lock->scan, lock->scan_prev_pos);
+        lock->scan_key--;
+    }
+
     for (;;) {
-        entry = readdir(lock->scan);
-        if (!entry) {
-            closedir(lock->scan);
-            lock->scan = NULL;
-            native_ioerr = ERROR_NO_MORE_ENTRIES;
+        for (;;) {
+            pos = telldir(lock->scan);
+            entry = readdir(lock->scan);
+            if (!entry) {
+                closedir(lock->scan);
+                lock->scan = NULL;
+                native_ioerr = ERROR_NO_MORE_ENTRIES;
+                return DOSFALSE;
+            }
+            if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+                break;
+        }
+        if (snprintf(child, sizeof(child), "%s/%s", lock->path, entry->d_name) >=
+            (int)sizeof(child)) {
+            native_ioerr = ERROR_LINE_TOO_LONG;
             return DOSFALSE;
         }
-        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
-            break;
+        if (native_fill_fib(child, entry->d_name, fib) != 0) {
+            /* A name too long to spell, compressed or not, is not this
+             * entry's fault and not this scan's failure: real AmigaDOS
+             * never meets one, since a real filesystem enforces its own
+             * naming rules at creation time, so by the time a directory is
+             * being listed every name in it already fits.  ACE is exposing
+             * an arbitrary Linux directory that gives no such guarantee, so
+             * this is the one place that gap is actually visible, and
+             * failing the whole scan over it is far worse than the gap
+             * itself: AROS's own ExAll() (rom/dos/exall.c) treats any
+             * ExNext() failure other than ERROR_NO_MORE_ENTRIES as a real
+             * error and discards every entry the caller had already
+             * collected, and Dir.c's recursive descent (ALL) propagates
+             * that failure back up through every parent directory on the
+             * way to the root -- so one unrepresentable name anywhere in a
+             * tree could blank out a listing of thousands of ordinary
+             * ones.  Skip it and keep scanning instead: the entry is
+             * genuinely missing from what ACE can show, which is the
+             * honest limit already documented where component_needs_mapping()
+             * gives up, but it costs that one entry, not everything after
+             * it.
+             *
+             * Only these two errors mean "the name itself is the problem";
+             * anything else (a stat() failure, disk I/O) is not something
+             * skipping the entry would fix, and must still fail the scan
+             * the way it always has. */
+            if (native_ioerr == ERROR_INVALID_COMPONENT_NAME ||
+                native_ioerr == ERROR_LINE_TOO_LONG)
+                continue;
+            return DOSFALSE;
+        }
+        lock->scan_prev_pos = pos;
+        fib->fib_DiskKey = ++lock->scan_key;
+        return DOSTRUE;
     }
-    if (snprintf(child, sizeof(child), "%s/%s", lock->path, entry->d_name) >=
-        (int)sizeof(child)) {
-        native_ioerr = ERROR_LINE_TOO_LONG;
-        return DOSFALSE;
-    }
-    if (native_fill_fib(child, entry->d_name, fib) != 0)
-        return DOSFALSE;
-    fib->fib_DiskKey = ++lock->scan_key;
-    return DOSTRUE;
 }
 
 BPTR DupLock(BPTR handle)
