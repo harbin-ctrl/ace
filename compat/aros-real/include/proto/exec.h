@@ -53,7 +53,7 @@ void AddTail(struct List *list, struct Node *node);
 void Remove(struct Node *node);
 
 #if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_AROS_REAL_HANDLER_TYPES_H) || \
-    defined(ACE_GRAPHICS_INTERN_H)
+    defined(ACE_GRAPHICS_INTERN_H) || defined(ACE_REGINA_LIBRARY_H)
 
 #include <exec/types.h>
 #include <exec/nodes.h>
@@ -71,6 +71,13 @@ void Remove(struct Node *node);
  * set. In particular, support.c assembles CSI sequences split across writes
  * with AllocMem(); leaving that declaration implicit truncates its pointer
  * return on a 64-bit host.
+ *
+ * Regina's library object set is here for exactly that reason.
+ * mt_amigalib.c does node = (tsd_node_t *)AllocPooled(...) for every task's
+ * Regina state, and it compiles either way -- the Regina build suppresses the
+ * warning, because upstream C of that age generates a great many. Without
+ * these declarations the pointer comes back through an int and is truncated,
+ * which is not a diagnostic but a crash later on.
  */
 APTR AllocMem(ULONG byteSize, ULONG requirements);
 void FreeMem(APTR memoryBlock, ULONG byteSize);

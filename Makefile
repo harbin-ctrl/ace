@@ -318,6 +318,7 @@ AROS_BOOPSI_NAMES := rootclass makeclass freeclass addclass removeclass \
                      nextobject
 AROS_ALIB_NAMES := domethod dosupermethod coercemethod alib_util
 AROS_BOOPSI_OBJS := $(addprefix $(BUILD)/aros-boopsi-,$(addsuffix .o,$(AROS_BOOPSI_NAMES))) \
+                    $(BUILD)/aros-exec-memory.o \
                     $(addprefix $(BUILD)/aros-alib-,$(addsuffix .o,$(AROS_ALIB_NAMES)))
 AROS_GRAPHICS_DIR := $(AROS_ROOT)/rom/devs/console
 AROS_GRAPHICS_NAMES := stdconclass consoleclass support
@@ -1302,6 +1303,28 @@ $(BUILD)/ace-shell: $(BUILD)/ace-launcher.o
 $(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
+# Regina built as its library rather than as the standalone interpreter.
+#
+# mmakefile.src's `contrib-regina-module` target: the same OFILES again, plus
+# rexxsaa (RexxStart), client, mt_amigalib and isreginamsg. RexxMast links
+# against this, not against the `rexx` program.
+#
+# The objects carry their own prefix because they are *not* the ones the
+# standalone build produces: RXLIB and INCL_REXXSAA change what the shared
+# sources compile to, so one set cannot serve both.
+#
+# regina_init.c is deliberately absent. It is AROS module glue -- it includes
+# LC_LIBDEFS_FILE and hangs off genmodule's symbol sets to build a .library --
+# and ACE has no module system. What it provided is in src/regina_library_init.c.
+# mt_amigalib replaces mt_notmt here, which is upstream's choice: the library
+# keeps per-task state and needs the threaded variant.
+REGINA_LIB_NAMES := $(filter-out mt_notmt nosaa,$(REGINA_NAMES)) \
+                    rexxsaa client mt_amigalib isreginamsg
+REGINA_LIB_OBJS := $(addprefix $(BUILD)/regina-lib-,\
+                     $(addsuffix .o,$(REGINA_LIB_NAMES)))
+REGINA_LIB_CFLAGS := $(REGINA_CFLAGS) -DRXLIB -DINCL_REXXSAA -Dlint \
+                     -include ace_regina_library.h
+
 # The ACE side of the link: the same DOS runtime every ACE command gets, plus
 # rexxsyslib.o for the ARexx message surface Regina's amifuncs.c calls --
 # CreateRexxMsg, IsRexxMsg, the argstrings.  aros-exec-runtime.o is not listed
@@ -1344,6 +1367,22 @@ endif
 
 $(BUILD)/regina-%.o: $(REGINA_SRC)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) $(REGINA_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
+
+$(BUILD)/regina-lib-%.o: $(REGINA_SRC)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_LIB_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
+
+# aros-real first, for the pool and list prototypes in its proto/exec.h --
+# the same ordering the rest of the Regina build uses.
+# Pools and semaphores, shared by the BOOPSI runtime and Regina's library.
+$(BUILD)/aros-exec-memory.o: src/aros_exec_memory.c | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_REAL_INCLUDES) -I$(COMPAT) -Isrc \
+	    -I$(CURDIR)/compat/regina/include \
+	    -include ace_regina_library.h -c $< -o $@
+
+$(BUILD)/regina-library-init.o: src/regina_library_init.c | $(BUILD)
+	$(CC) $(CFLAGS) $(AROS_REAL_INCLUDES) -I$(COMPAT) -Isrc \
+	    -I$(CURDIR)/compat/regina/include \
+	    -include ace_regina_library.h -c $< -o $@
 
 # The one object worth checking after the fact.  If the -U flags above are
 # ever dropped or reordered away, this file compiles cleanly against the unix
