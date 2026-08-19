@@ -1253,9 +1253,29 @@ struct Task *FindTask(CONST_STRPTR name)
     return NULL;
 }
 
+/*
+ * Send a message back to whoever sent it, per rom/exec/replymsg.c. This used
+ * to do nothing at all, which is invisible until something waits for the
+ * reply: an ARexx client PutMsg()s a RexxMsg and then WaitPort()s its reply
+ * port, and with no reply ever arriving it waits there for ever.
+ *
+ * A message with no reply port is not an error -- it is a message nobody is
+ * waiting on -- and is marked NT_FREEMSG so its sender can tell it is no
+ * longer in flight.
+ */
 void ReplyMsg(struct Message *message)
 {
-    (void)message;
+    struct MsgPort *port;
+
+    if (!message)
+        return;
+    port = message->mn_ReplyPort;
+    if (!port) {
+        message->mn_Node.ln_Type = NT_FREEMSG;
+        return;
+    }
+    message->mn_Node.ln_Type = NT_REPLYMSG;
+    PutMsg(port, message);
 }
 
 struct LocalVar *FindVar(CONST_STRPTR name, LONG type)
