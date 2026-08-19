@@ -35,6 +35,10 @@ GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
 BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
 BLKID_LIBS := $(shell pkg-config --libs blkid)
+
+# The broker's over-length filename fallback compresses with raw DEFLATE.
+ZLIB_CFLAGS := $(shell pkg-config --cflags zlib)
+ZLIB_LIBS := $(shell pkg-config --libs zlib)
 GFX_CFLAGS := $(shell pkg-config --cflags cairo fontconfig)
 GFX_LIBS := $(shell pkg-config --libs cairo fontconfig)
 WAYLAND_CFLAGS := $(shell pkg-config --cflags wayland-client)
@@ -622,7 +626,7 @@ $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_c
 # is where the commands are -- which is exactly what gives a build tree a
 # different SYS:, and therefore a different broker, from an installed copy.
 $(BUILD)/broker.o: src/broker.c src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h | $(BUILD)
-	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) $(BLKID_CFLAGS) $(ZLIB_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
@@ -1108,7 +1112,7 @@ $(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BU
 $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o \
                      $(BUILD)/broker-identity.o \
                      $(BUILD)/clipboard-bridge.o
-	$(CC) $(CFLAGS) $(filter-out %.h,$^) $(BLKID_LIBS) -o $@
+	$(CC) $(CFLAGS) $(filter-out %.h,$^) $(BLKID_LIBS) $(ZLIB_LIBS) -o $@
 
 $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@

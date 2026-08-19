@@ -8,6 +8,14 @@ mapping_test_dir=$(mktemp -d "$repo_dir/.ace-filesystem-mapping.XXXXXX")
 mapping_colon_dir="$mapping_test_dir/Hi:This:is:a:long:filename:blahblahblah"
 mapping_long_component=$(awk 'BEGIN { for (i = 0; i < 150; i++) printf "l" }')
 mapping_long_dir="$mapping_test_dir/$mapping_long_component"
+# A real Debian package-archive basename (Contents-amd64.gz, an sha256sum
+# style account- hash) that exceeds AMIGA_COMPONENT_LIMIT and stays that way
+# after compression: 39 hex digits pack into ~0.66 bytes/char under PACK39
+# regardless of "randomness" -- it is a positional radix conversion, not an
+# entropy coder -- and 140 chars still lands at ~92 bytes, well past the
+# ~65-byte budget 106 base32 characters actually buy.
+mapping_incompressible_component="account-002bee2f8e16f5de4db0d3b8ce9227c8c0b7f9688348b028e022cb43f210968b40a69cdc8531fd4a2e7c9e144eec48bb477733d70ce5f9b85338a07cb10b849ad8fb"
+mapping_incompressible_dir="$mapping_test_dir/$mapping_incompressible_component"
 mapping_dot_dir="$mapping_test_dir/:"
 mapping_dotdot_dir="$mapping_test_dir/::"
 mapping_dot_create_parent="$mapping_test_dir/ace-dot-names"
@@ -40,7 +48,8 @@ softlink_target_file="$softlink_target_dir/inside.txt"
 relative_target_file="$softlink_dir/relative-target.txt"
 absolute_target_file="$mapping_test_dir/absolute-target.txt"
 absolute_missing_target="$mapping_test_dir/absolute-missing.txt"
-mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_dot_dir" \
+mkdir "$mapping_colon_dir" "$mapping_long_dir" "$mapping_incompressible_dir" \
+      "$mapping_dot_dir" \
       "$mapping_dotdot_dir" "$mapping_dot_create_parent" "$mapping_union_first" \
       "$mapping_union_second" "$mapping_union_second/only-second" \
       "$delete_dir" "$delete_dir/nested" "$note_dir" "$softlink_dir" \
@@ -101,7 +110,8 @@ cleanup()
     rmdir "$mapping_dot_create_dir" "$mapping_dotdot_create_dir" \
           "$mapping_dot_create_parent" "$mapping_union_second/only-second" \
           "$mapping_union_first" "$mapping_union_second" "$mapping_colon_dir" \
-          "$mapping_long_dir" "$mapping_dot_dir" "$mapping_dotdot_dir" \
+          "$mapping_long_dir" "$mapping_incompressible_dir" \
+          "$mapping_dot_dir" "$mapping_dotdot_dir" \
           "$case_collision_dir" \
           "$softlink_target_dir" \
           "$softlink_dir" \
@@ -217,12 +227,27 @@ mapped_colon_component=${mapped_colon##*/}
 only_base32 "${mapped_colon_component#*^}" ||
     { echo "unsafe component was not given a visible mapping: $mapped_colon" >&2; exit 1; }
 [ "$(control resolve "$mapped_colon")" = "$(realpath "$mapping_colon_dir")" ]
-# A name too long to spell is refused, not given a synthetic one.  106 base32
-# characters carry 530 bits and a name may be NAME_MAX bytes, so no encoding
-# maps every such name into a component -- and a scheme that fails predictably
-# is worth more than one that fails on an uncharacterisable subset.
-if control name "$mapping_long_dir" >/dev/null 2>&1; then
-    echo "an unspellable name was given a spelling: $(control name "$mapping_long_dir")" >&2
+# A name too long to spell as a literal escape gets one more chance: the
+# tail component_split_point() chose to keep -- the same split the literal
+# form already tried -- is compressed with whichever of two engines does
+# better, PACK39 (direct radix packing of [a-z0-9_.-]) or raw DEFLATE.  150
+# identical characters is the easy case for both.
+mapped_long=$(control name "$mapping_long_dir") ||
+    { echo "a compressible over-length name was refused" >&2; exit 1; }
+mapped_long_component=${mapped_long##*/}
+[ "${#mapped_long_component}" -le 107 ] ||
+    { echo "compressed component exceeds the AROS FileInfoBlock limit: $mapped_long_component" >&2; exit 1; }
+[ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
+
+# Not every over-length name can be rescued this way, and the fallback is to
+# fail rather than guess: 106 base32 characters carry 530 bits, a name may be
+# NAME_MAX bytes, and a positional radix pack or a general compressor can
+# only do so much with genuinely high-entropy content -- there are simply
+# more names than payloads at the limit.  A scheme that fails predictably on
+# what compression cannot rescue is worth more than one that fails on a
+# subset nobody can characterise.
+if control name "$mapping_incompressible_dir" >/dev/null 2>&1; then
+    echo "an uncompressible unspellable name was given a spelling: $(control name "$mapping_incompressible_dir")" >&2
     exit 1
 fi
 
@@ -688,6 +713,7 @@ kill -0 "$recovered_pid"
 # Previously each broker invented random suffixes, so every name minted before
 # a restart became permanently unopenable.
 for pair in "$mapping_colon_dir|$mapped_colon" \
+            "$mapping_long_dir|$mapped_long" \
             "$case_collision_secondary|$case_secondary_name"; do
     host=${pair%%|*}
     before=${pair#*|}

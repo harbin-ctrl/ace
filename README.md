@@ -272,29 +272,69 @@ alphabet distinguishing `A` from `a` would let two encodings name one file.
 Deciding whether a caret opens an escape takes more than "the rest is base32".
 `x^AAAA` is valid base32 and decodes to two zero bytes, which would read as a
 host name containing an embedded NUL -- something no filesystem can hold. So
-the decoded bytes must spell a form ACE actually emits: a name tail ended by
-its own NUL and containing no other, or the eight bytes of a hash, which never
-ends in NUL. Both directions ask that same question, so whatever is left
-unescaped is also left undecoded and every name survives the round trip.
+the decoded bytes must spell one of the two forms ACE actually emits, told
+apart by their last byte:
 
-The payload always ends in a NUL, which is the host name's own terminator:
-decoding reconstructs the name without touching the disk, and a caret followed
-by anything that does not decode to such a payload is just a caret.
+* `0x00` -- literal: the rest of the host name, and no other NUL before it.
+  Decoding reconstructs the name without touching the disk.
+* `0x80` / `0x81` -- compressed: see below. The engine's own decode must
+  succeed, not merely look plausible.
 
-A name too long to encode is **refused**, not given a synthetic spelling. 106
-base32 characters carry 530 bits and a name may be up to `NAME_MAX` bytes, so
-no encoding maps every name into a component -- there are more names than
-payloads. Compression does not rescue it either: measured on 460,946 real
-directory entries from this machine, a zstd dictionary trained on 40,000 of
-those very names still left three of the six longest over budget, because a
-UUID does not compress however well an apt list does.
+Anything else is not a payload ACE could have produced, so the caret is just
+a caret. Both directions ask this same question, so whatever `map_component`
+declines to escape, `unmap_component` declines to decode, and every name
+survives the round trip.
+
+### When the literal escape still doesn't fit
+
+106 base32 characters carry 530 bits, and a name may be up to `NAME_MAX`
+bytes -- there is no encoding that maps every name into that space, because
+there are more possible names than payloads. Rather than refuse outright,
+the tail `component_split_point()` already chose to keep -- not the whole
+name, which was tried and measured worse, since header bytes are already
+free (one raw character each) and compression's per-string overhead usually
+costs more than a few already-short bytes can save -- gets one more chance:
+compressed with whichever of two engines does better.
+
+* **PACK39** -- direct radix-39 bit-packing of `[a-z0-9_.-]`. No header, no
+  per-block overhead, which is what lets it beat general compression on
+  short strings. Build-system-generated names are almost always made of
+  exactly this alphabet.
+* **DEFLATE** -- raw DEFLATE (zlib, no wrapper) for anything outside it:
+  mixed case, accented bytes, punctuation the direct pack does not cover.
+
+Two engines, chosen by one bit. An earlier version of this idea carried
+four engines and reserved a sixteen-symbol header alphabet to tell them
+apart; measured against the real corpus below, the two here alone already
+reach the same result the four did, so the other two -- and the header
+space spent naming four -- were paying for nothing.
+
+A name that compression still cannot fit is **refused**, not given a
+synthetic spelling that only half-works. A high-entropy hash-style name (39
+hex digits pack into roughly 0.66 bytes per character regardless of how
+"random" they look -- PACK39 is a positional radix conversion, not an
+entropy coder) can still land well past the roughly 65-byte compressed
+budget 106 base32 characters buy.
 
 So the mapper fails predictably instead of on a subset nobody can
 characterise. An unspellable name reports `ERROR_INVALID_COMPONENT_NAME`, and
 because a directory listing has to name every entry, one such file makes its
-directory unlistable rather than silently omitting it. In that same survey --
-a full Debian install plus 28GB of working data -- no name exceeded 107 bytes
-and the longest was 90.
+directory unlistable rather than silently omitting it.
+
+Measured against the full Debian 12 (bookworm) package archive's file index
+-- `Contents-amd64.gz`, 913,356 unique basenames, fetched and tested
+independently -- 258 basenames exceed `AMIGA_COMPONENT_LIMIT` outright.
+Every one of ACE's own commands re-derives its own compressed form and round-
+trips correctly with zero of them producing the wrong name. How many of the
+258 are rescued by compression alone (the comment field is not used, and
+carries the risk that plain `Copy` and LhA do not preserve it, only `Copy
+CLONE` does) depends heavily on content: an all-identical-character 150-byte
+name compresses to a handful of bytes and fits; a 140-character hex hash does
+not, and is refused the same way it always was. On this host's own live
+filesystem -- a full Debian install plus 28GB of working data, 460,946
+directory entries -- no name exceeded 107 bytes and the longest was 90, so
+this tier exists for corpora shaped like a package archive, not for what
+ordinarily ends up on a running system.
 
 The first filesystem handler supports VFAT and ext2, ext3, and ext4. The
 broker also enumerates the live Linux mount table. Block-backed mounts are

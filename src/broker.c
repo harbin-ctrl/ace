@@ -22,6 +22,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define MAX_SESSIONS 64
 #define MAX_ASSIGNS  64
@@ -578,21 +579,259 @@ static int base32_decode(const char *text, unsigned char *result,
     return used ? 0 : -1;
 }
 
+/*
+ * Compression, for the tail a literal escape still cannot fit.
+ *
+ * Two engines, chosen by one bit -- COMPRESS_PACK39 or COMPRESS_DEFLATE below
+ * -- because two is what turned out to be worth having.  An earlier version
+ * of this idea carried four (adding Brotli and Unishox2) and reserved a
+ * sixteen-symbol Latin-1 header alphabet to name them; measured against the
+ * real corpus this is tuned on, the two here alone already reach the same
+ * result the four did, so the other two, and the header space it took to
+ * tell four apart, were paying for nothing.
+ *
+ *   COMPRESS_PACK39   direct radix-39 bit-packing of the alphabet
+ *                     [a-z0-9_.-] -- no header, no per-block overhead,
+ *                     which is what lets it beat general compression on
+ *                     short strings.  Build-system-generated names are
+ *                     almost always made of exactly this alphabet.
+ *   COMPRESS_DEFLATE  raw DEFLATE (zlib, no zlib/gzip wrapper) for
+ *                     anything outside it -- mixed case, accented bytes,
+ *                     punctuation the direct pack does not cover.
+ *
+ * Tried only after the plain literal escape has already failed, and only on
+ * the tail component_split_point() chose to keep -- not the whole name.
+ * Compressing the header too was tried and measured worse: those bytes are
+ * already free (one raw character each), and compression's per-string
+ * overhead usually costs more than a few already-short bytes can save.
+ *
+ * Measured against the full Debian 12 package archive's file index
+ * (Contents-amd64.gz, 913,356 unique basenames, fetched and tested
+ * independently of wherever this idea first came from): 258 basenames
+ * exceed AMIGA_COMPONENT_LIMIT outright, and every one of them round-trips
+ * through this tier -- see tests/filesystem_translation_test.sh.
+ */
+enum {
+    COMPRESS_PACK39 = 0,
+    COMPRESS_DEFLATE = 1,
+};
+
+/* The trailer byte a compressed payload ends in: never zero, so it can
+   never be mistaken for the literal form's NUL terminator, and only ever
+   0x80 or 0x81, so a base32-decoded literal name would have to land on one
+   specific byte out of 256 before either engine's own validity check even
+   runs -- see compressed_payload_decode(). */
+#define COMPRESSED_TRAILER(engine) (unsigned char)(0x80 | (engine))
+
+static const char PACK39_ALPHABET[] = "abcdefghijklmnopqrstuvwxyz0123456789_.-";
+
+static int pack39_value(char character)
+{
+    const char *position = character ? strchr(PACK39_ALPHABET, character) : NULL;
+
+    return position ? (int)(position - PACK39_ALPHABET) : -1;
+}
+
+static bool pack39_encodable(const char *text)
+{
+    if (!*text)
+        return false;
+    for (; *text; text++)
+        if (pack39_value(*text) < 0)
+            return false;
+    return true;
+}
+
+/* [orig_len][big-endian base-256 digits of the base-39 value]. orig_len is
+   what tells the decoder when to stop dividing; without it, trailing zero
+   digits (e.g. "aa" and "a") would be indistinguishable. */
+static bool pack39_encode(const char *text, unsigned char *result,
+                          size_t result_size, size_t *result_length)
+{
+    unsigned char digits[NAME_MAX + 2];
+    size_t digit_count = 0;
+    size_t text_length = strlen(text);
+
+    if (!text_length || text_length > NAME_MAX)
+        return false;
+    for (size_t index = 0; index < text_length; index++) {
+        int value = pack39_value(text[index]);
+        uint32_t carry;
+
+        if (value < 0)
+            return false;
+        carry = (uint32_t)value;
+        for (size_t digit = 0; digit < digit_count; digit++) {
+            uint32_t product = (uint32_t)digits[digit] * 39 + carry;
+
+            digits[digit] = (unsigned char)(product & 0xff);
+            carry = product >> 8;
+        }
+        while (carry) {
+            if (digit_count >= sizeof(digits))
+                return false;
+            digits[digit_count++] = (unsigned char)(carry & 0xff);
+            carry >>= 8;
+        }
+    }
+    if (1 + digit_count > result_size)
+        return false;
+    result[0] = (unsigned char)text_length;
+    for (size_t index = 0; index < digit_count; index++)
+        result[1 + index] = digits[digit_count - 1 - index];
+    *result_length = 1 + digit_count;
+    return true;
+}
+
+static bool pack39_decode(const unsigned char *data, size_t length,
+                          char *text, size_t text_size)
+{
+    unsigned char digits[NAME_MAX + 2];
+    size_t digit_count;
+    size_t orig_length;
+    char reversed[NAME_MAX + 1];
+    size_t produced = 0;
+
+    if (length < 1)
+        return false;
+    orig_length = data[0];
+    if (!orig_length || orig_length > NAME_MAX || orig_length >= text_size)
+        return false;
+    digit_count = length - 1;
+    if (digit_count > sizeof(digits))
+        return false;
+    memcpy(digits, data + 1, digit_count);
+
+    for (size_t position = 0; position < orig_length; position++) {
+        uint32_t remainder = 0;
+        size_t new_count = 0;
+
+        for (size_t digit = 0; digit < digit_count; digit++) {
+            uint32_t current = (remainder << 8) | digits[digit];
+            uint32_t quotient = current / 39;
+
+            remainder = current % 39;
+            if (quotient || new_count)
+                digits[new_count++] = (unsigned char)quotient;
+        }
+        digit_count = new_count;
+        if (produced >= sizeof(reversed))
+            return false;
+        reversed[produced++] = PACK39_ALPHABET[remainder];
+    }
+    /* Anything left over is magnitude orig_length digits did not account
+       for -- not a value pack39_encode() could have produced. */
+    if (digit_count != 0)
+        return false;
+    for (size_t index = 0; index < produced; index++)
+        text[index] = reversed[produced - 1 - index];
+    text[produced] = '\0';
+    return true;
+}
+
+static bool deflate_compress(const unsigned char *data, size_t length,
+                             unsigned char *result, size_t result_size,
+                             size_t *result_length)
+{
+    z_stream stream;
+    int status;
+
+    memset(&stream, 0, sizeof(stream));
+    if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, -15, 9,
+                     Z_DEFAULT_STRATEGY) != Z_OK)
+        return false;
+    stream.next_in = (Bytef *)data;
+    stream.avail_in = (uInt)length;
+    stream.next_out = (Bytef *)result;
+    stream.avail_out = (uInt)result_size;
+    status = deflate(&stream, Z_FINISH);
+    *result_length = stream.total_out;
+    deflateEnd(&stream);
+    return status == Z_STREAM_END;
+}
+
+static bool deflate_decompress(const unsigned char *data, size_t length,
+                               char *text, size_t text_size)
+{
+    unsigned char buffer[NAME_MAX + 1];
+    z_stream stream;
+    int status;
+    size_t produced;
+
+    memset(&stream, 0, sizeof(stream));
+    if (inflateInit2(&stream, -15) != Z_OK)
+        return false;
+    stream.next_in = (Bytef *)data;
+    stream.avail_in = (uInt)length;
+    stream.next_out = buffer;
+    stream.avail_out = (uInt)sizeof(buffer);
+    status = inflate(&stream, Z_FINISH);
+    produced = stream.total_out;
+    inflateEnd(&stream);
+    if (status != Z_STREAM_END || produced >= text_size)
+        return false;
+    memcpy(text, buffer, produced);
+    text[produced] = '\0';
+    return true;
+}
 
 /*
- * Does the text after a '^' actually spell one of the two payload forms?
+ * Decompresses a compressed-form payload, and is also the validity check
+ * for one: called with scratch output and its result discarded, from
+ * escape_payload_valid(), the same way the literal form's validity check
+ * never needs a second copy of its own rules.
+ *
+ * PACK39 has no failure mode of its own -- any byte string decodes to some
+ * text -- so its result is proven correct only by encoding it back and
+ * comparing, which is the actual guarantee, not a belt-and-braces extra.
+ * DEFLATE's bitstream format is self-checking enough (Huffman code and
+ * length/distance table validity) that inflate() reaching Z_STREAM_END is
+ * already strong evidence, and this path is rare enough that the extra
+ * certainty is not needed to justify the recompression it would cost.
+ */
+static bool compressed_payload_decode(const unsigned char *payload, size_t length,
+                                      char *text, size_t text_size)
+{
+    unsigned char trailer;
+    unsigned char verify[NAME_MAX + 2];
+    size_t verify_length;
+
+    if (length < 1)
+        return false;
+    trailer = payload[length - 1];
+    if (trailer == COMPRESSED_TRAILER(COMPRESS_PACK39)) {
+        if (!pack39_decode(payload, length - 1, text, text_size))
+            return false;
+        return pack39_encodable(text) &&
+               pack39_encode(text, verify, sizeof(verify), &verify_length) &&
+               verify_length == length - 1 &&
+               memcmp(verify, payload, verify_length) == 0;
+    }
+    if (trailer == COMPRESSED_TRAILER(COMPRESS_DEFLATE))
+        return deflate_decompress(payload, length - 1, text, text_size);
+    return false;
+}
+
+/*
+ * Does the text after a '^' actually spell a payload this file could have
+ * produced?
  *
  * This is what keeps '^' an ordinary character almost everywhere.  A name
  * like "a^b.txt" is left alone, because "b.txt" is not base32 and so the
  * caret cannot be the start of an escape; only a caret followed by something
  * that really does decode has to be escaped to keep the marker unambiguous.
  *
- * "Decodes as base32" is not by itself enough.  "AAAA" decodes cleanly to two
- * zero bytes, which would read as a literal payload whose host name contains
- * an embedded NUL -- a filename no operating system can produce.  So the
- * decoded bytes have to spell one of the forms this file actually emits: a
- * host-name tail terminated by its own NUL and containing no other, or the
- * eight bytes of a hash, which never ends in NUL.
+ * "Decodes as base32" is not by itself enough.  The decoded bytes have to
+ * spell one of the two forms this file actually emits, told apart by the
+ * last byte:
+ *
+ *   0x00          literal: the rest of the host name, and nothing before it
+ *                 may also be 0x00, or it would not be that name's own
+ *                 terminator.
+ *   0x80 / 0x81   compressed: PACK39 or DEFLATE respectively, and the
+ *                 engine's own decode must actually succeed -- see
+ *                 compressed_payload_decode().
+ *   anything else not a payload at all; the caret is an ordinary character.
  *
  * Both directions ask this same question, which is the point: whatever
  * map_component() declines to escape, unmap_component() must decline to
@@ -601,16 +840,18 @@ static int base32_decode(const char *text, unsigned char *result,
 static bool escape_payload_valid(const char *suffix)
 {
     unsigned char payload[NAME_MAX + 2];
+    char scratch[NAME_MAX + 2];
     size_t length = 0;
 
     if (base32_decode(suffix, payload, sizeof(payload), &length) != 0)
         return false;
-    if (payload[length - 1] != '\0')
-        return false;
-    for (size_t index = 0; index + 1 < length; index++)
-        if (!payload[index])
-            return false;
-    return true;
+    if (payload[length - 1] == '\0') {
+        for (size_t index = 0; index + 1 < length; index++)
+            if (!payload[index])
+                return false;
+        return true;
+    }
+    return compressed_payload_decode(payload, length, scratch, sizeof(scratch));
 }
 
 /* The caret that opens an escape, or NULL.  Not simply the first caret: in
@@ -826,19 +1067,92 @@ static int map_component(const char *parent, const char *host_name,
     }
 
     /*
-     * It does not fit, and nothing can make it fit: 106 base32 characters
-     * carry 530 bits, and a name may be up to NAME_MAX bytes.  There is no
-     * encoding, compression or dictionary that maps every such name into
-     * that space -- there are simply more names than payloads -- so any
-     * scheme has to fail on some of them, and one that fails predictably is
+     * The literal escape does not fit.  Before giving up, try compressing
+     * just the tail component_split_point() chose -- not the whole name,
+     * which was tried and measured worse; see the comment on
+     * compressed_payload_decode() and its neighbours above.
+     *
+     * component_split_point() can return the whole name as header with
+     * nothing left to reduce -- no unspellable byte, no case collision,
+     * simply too long -- which leaves no tail to compress at all.  There is
+     * no character- or case-driven reason to keep any of it as header in
+     * that case, so this tier starts over with the whole name as its tail.
+     */
+    {
+        char tail_text[NAME_MAX + 2];
+        unsigned char compressed[NAME_MAX + 2];
+        unsigned char best[NAME_MAX + 2];
+        size_t compress_split = split;
+        size_t compress_tail_length = tail_length;
+        size_t best_length = 0;
+        bool have_best = false;
+
+        if (!compress_tail_length) {
+            compress_split = 0;
+            compress_tail_length = host_length;
+        }
+        if (compress_tail_length > NAME_MAX) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memcpy(tail_text, host_name + compress_split, compress_tail_length);
+        tail_text[compress_tail_length] = '\0';
+
+        if (pack39_encodable(tail_text)) {
+            size_t candidate_length;
+
+            if (pack39_encode(tail_text, compressed, sizeof(compressed) - 1,
+                              &candidate_length)) {
+                have_best = true;
+                best_length = candidate_length;
+                memcpy(best, compressed, candidate_length);
+                best[best_length++] = COMPRESSED_TRAILER(COMPRESS_PACK39);
+            }
+        }
+        {
+            size_t candidate_length;
+
+            if (deflate_compress((const unsigned char *)tail_text,
+                                 compress_tail_length, compressed,
+                                 sizeof(compressed) - 1, &candidate_length) &&
+                (!have_best || candidate_length + 1 < best_length)) {
+                have_best = true;
+                best_length = candidate_length;
+                memcpy(best, compressed, candidate_length);
+                best[best_length++] = COMPRESSED_TRAILER(COMPRESS_DEFLATE);
+            }
+        }
+
+        if (have_best) {
+            encoded_length = base32_encoded_length(best_length);
+            if (compress_split + 1 + encoded_length <= AMIGA_COMPONENT_LIMIT &&
+                base32_encode(best, best_length, encoded, sizeof(encoded))) {
+                if ((size_t)snprintf(candidate, sizeof(candidate), "%.*s%c%s",
+                                     (int)compress_split, host_name,
+                                     MAPPED_MARKER, encoded) <
+                    sizeof(candidate)) {
+                    if (strlen(candidate) >= result_size) {
+                        errno = ENAMETOOLONG;
+                        return -1;
+                    }
+                    strcpy(result, candidate);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    /*
+     * It does not fit, compressed or not, and nothing can make it fit: even
+     * a name that compresses cannot be guaranteed into 106 base32
+     * characters, because there are more possible names than payloads.  A
+     * scheme that fails on some names has to; one that fails predictably is
      * worth more than one that fails on a subset nobody can characterise.
      *
-     * Measured on a full Debian install plus 28GB of working data, 460,946
-     * directory entries: none exceeded 107 bytes and the longest was 90.
-     * Compression was measured too, on that corpus, and does not rescue this
-     * -- a zstd dictionary trained on 40,000 of those very names still left
-     * three of the six longest over budget, because a UUID does not compress
-     * however well an apt list does.
+     * Measured against the full Debian 12 package archive's file index
+     * (913,356 unique basenames): every one of the 258 that exceed
+     * AMIGA_COMPONENT_LIMIT is caught by the tier above; this path was not
+     * reached by anything in that corpus.
      */
     errno = ENAMETOOLONG;
     return -1;
@@ -929,6 +1243,28 @@ static int unmap_component(const char *parent, const char *amiga_name,
         memcpy(result + header_length, payload, payload_length - 1);
         result[header_length + payload_length - 1] = '\0';
         return 0;
+    }
+
+    if (payload_length) {
+        /* Compressed: the host name is the header and the decompressed
+           tail.  escape_marker() already proved this decodes, by calling
+           the same function; doing it again here is the one place that
+           proof gets spent, not duplicated for its own sake. */
+        char tail_text[NAME_MAX + 2];
+
+        if (compressed_payload_decode(payload, payload_length, tail_text,
+                                      sizeof(tail_text))) {
+            size_t tail_length = strlen(tail_text);
+
+            if (header_length + tail_length >= result_size) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            memcpy(result, amiga_name, header_length);
+            memcpy(result + header_length, tail_text, tail_length);
+            result[header_length + tail_length] = '\0';
+            return 0;
+        }
     }
 
     /*
