@@ -41,11 +41,42 @@
 static const char *const default_font_candidates[] = {
     "Liberation Mono", "DejaVu Sans Mono", "monospace", NULL
 };
-#define DEFAULT_FONT_SIZE 16
+/* Font sizes are POINTS everywhere above the graphics runtime, because that
+ * is what the GTK font chooser speaks and what every other terminal on the
+ * desktop stores.  ace.conf's font-size is points too.
+ *
+ * The graphics runtime below is deliberately the other way round: an Amiga
+ * struct TextFont measures tf_YSize in pixels -- topaz.font 8 is eight pixels
+ * tall, not eight points -- so ace_gfx_font_choice.pixel_size is correctly
+ * named and stays pixels.  This file is the boundary between the two, and
+ * font_pixels() is the only crossing.
+ *
+ * These used to be the same number, which meant an 11 chosen in ACE rendered
+ * at 11 pixels while an 11 chosen in any other terminal rendered at 11 points
+ * -- 14.67 pixels at 96 dpi.  ACE drew every font at 75% of the requested
+ * size, and the font chooser's own preview disagreed with the result.
+ */
+#define DEFAULT_FONT_POINTS 12
+
+/* Pango's default resolution, used when nothing overrides it.  ACE cannot ask
+ * GDK for the real one here: the console font is loaded before gtk_init(), so
+ * that the cell size is known in time to size the window.  A screen with a
+ * non-default Xft.dpi will therefore render ACE at 96 dpi while GTK apps
+ * around it scale -- if that needs fixing, this is the one place to change.
+ */
+#define FONT_REFERENCE_DPI 96.0
+
+static int font_pixels(int points)
+{
+    int pixels = (int)(points * FONT_REFERENCE_DPI / 72.0 + 0.5);
+
+    return pixels > 0 ? pixels : 1;
+}
 #define CONFIG_GROUP "ACE Shell"
 #define ACE_ICON_NAME "ace"
 #define CONFIG_FONT_FAMILY "font-family"
 #define CONFIG_FONT_SIZE "font-size"
+#define CONFIG_FONT_WEIGHT "font-weight"
 #define CONFIG_PALETTE_PREFIX "palette-"
 
 static const uint32_t default_palette[ACE_CONSOLE_PEN_COUNT] = {
@@ -126,7 +157,9 @@ struct console_window {
     pid_t child_pid;
     pid_t controller_pid;
     char *font_family;
-    int font_size;
+    int font_points;
+    /* CSS/Pango weight: 400 Regular, 500 Medium.  0 means unset. */
+    int font_weight;
     uint32_t palette[ACE_CONSOLE_PEN_COUNT];
     guint menu_probe_source;
     guint resize_source;
@@ -236,13 +269,33 @@ static void load_config(struct console_window *console)
         return;
     }
 
+    {
+        int weight = g_key_file_get_integer(key_file, CONFIG_GROUP,
+                                            CONFIG_FONT_WEIGHT, &error);
+
+        if (!error && weight >= 100 && weight <= 1000)
+            console->font_weight = weight;
+        g_clear_error(&error);
+    }
+
     family = g_key_file_get_string(key_file, CONFIG_GROUP,
                                     CONFIG_FONT_FAMILY, &error);
-    if (family && *family && strlen(family) < 128 &&
-        ace_gfx_font_family_complete(family)) {
-        g_free(console->font_family);
-        console->font_family = family;
-        family = NULL;
+    if (family && *family && strlen(family) < 128) {
+        /* Keep the family even when the saved weight is not available in it:
+           a font the user chose at the wrong weight beats falling back to a
+           different typeface entirely.  Dropping the weight here also stops a
+           stale one following the family around after a font is reinstalled
+           without its Medium face. */
+        if (!ace_gfx_font_family_complete(
+                family, ace_gfx_weight_from_css(console->font_weight)) &&
+            ace_gfx_font_family_complete(family, 0))
+            console->font_weight = 0;
+        if (ace_gfx_font_family_complete(
+                family, ace_gfx_weight_from_css(console->font_weight))) {
+            g_free(console->font_family);
+            console->font_family = family;
+            family = NULL;
+        }
     }
     g_free(family);
     g_clear_error(&error);
@@ -250,7 +303,7 @@ static void load_config(struct console_window *console)
     size = g_key_file_get_integer(key_file, CONFIG_GROUP, CONFIG_FONT_SIZE,
                                   &error);
     if (!error && size > 0 && size <= 512)
-        console->font_size = size;
+        console->font_points = size;
     g_clear_error(&error);
 
     for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
@@ -294,7 +347,9 @@ static void save_config(struct console_window *console)
     g_key_file_set_string(key_file, CONFIG_GROUP, CONFIG_FONT_FAMILY,
                           console->font_family);
     g_key_file_set_integer(key_file, CONFIG_GROUP, CONFIG_FONT_SIZE,
-                           console->font_size);
+                           console->font_points);
+    g_key_file_set_integer(key_file, CONFIG_GROUP, CONFIG_FONT_WEIGHT,
+                           console->font_weight);
     for (i = 0; i < ACE_CONSOLE_PEN_COUNT; i++) {
         char key[32];
         char value[7];
@@ -355,10 +410,11 @@ static void choose_font(GtkWidget *widget, gpointer data)
     struct console_window *console = data;
     GtkWidget *dialog;
     GtkFontChooser *chooser;
-    PangoFontFamily *selected_family;
+    PangoFontDescription *description;
     const char *family;
     char *initial_font;
-    int pixel_size;
+    int point_size;
+    int weight;
 
     (void)widget;
     dialog = gtk_font_chooser_dialog_new("Choose Typeface",
@@ -366,8 +422,14 @@ static void choose_font(GtkWidget *widget, gpointer data)
     gtk_window_set_type_hint(GTK_WINDOW(dialog), GDK_WINDOW_TYPE_HINT_UTILITY);
     chooser = GTK_FONT_CHOOSER(dialog);
     gtk_font_chooser_set_filter_func(chooser, font_is_monospace, NULL, NULL);
-    initial_font = g_strdup_printf("%s %d", console->font_family,
-                                   console->font_size);
+    /* Built as a Pango description so the dialog reopens on the face the user
+       actually chose.  Weight is a Pango enum value in that syntax, so it is
+       written as a number rather than a name. */
+    initial_font = g_strdup_printf("%s weight=%d %d", console->font_family,
+                                   console->font_weight > 0
+                                       ? console->font_weight
+                                       : PANGO_WEIGHT_NORMAL,
+                                   console->font_points);
     gtk_font_chooser_set_font(chooser, initial_font);
     g_free(initial_font);
 
@@ -375,18 +437,37 @@ static void choose_font(GtkWidget *widget, gpointer data)
         gtk_widget_destroy(dialog);
         return;
     }
-    selected_family = gtk_font_chooser_get_font_family(chooser);
-    family = selected_family ? pango_font_family_get_name(selected_family) : NULL;
-    pixel_size = gtk_font_chooser_get_font_size(chooser) / PANGO_SCALE;
-    if (!family || pixel_size <= 0 ||
-        ace_console_device_set_font(console->device, family, pixel_size) != 0) {
+    /* The whole description, not gtk_font_chooser_get_font_family(): that
+       returns the PangoFontFamily and so throws the face away.  Pango groups
+       FiraCode Nerd Font's Light/Regular/Retina/Medium/SemiBold as faces
+       inside one family, so choosing "FiraCode Nerd Font Medium" yields
+       family "FiraCode Nerd Font" and a Medium weight -- keeping only the
+       family silently selected Regular, and the choice appeared not to
+       stick no matter how many times it was made. */
+    description = gtk_font_chooser_get_font_desc(chooser);
+    family = description ? pango_font_description_get_family(description) : NULL;
+    /* GtkFontChooser reports points, so this is the size the user picked --
+       the device wants pixels and gets them from font_pixels(). */
+    point_size = description
+                     ? pango_font_description_get_size(description) / PANGO_SCALE
+                     : 0;
+    weight = description ? (int)pango_font_description_get_weight(description)
+                         : PANGO_WEIGHT_NORMAL;
+    if (!family || point_size <= 0 ||
+        ace_console_device_set_font(console->device, family,
+                                    font_pixels(point_size),
+                                    ace_gfx_weight_from_css(weight)) != 0) {
+        if (description)
+            pango_font_description_free(description);
         gtk_widget_destroy(dialog);
         show_error(console, "That typeface could not be loaded by ACE Shell.");
         return;
     }
     g_free(console->font_family);
     console->font_family = g_strdup(family);
-    console->font_size = pixel_size;
+    console->font_points = point_size;
+    console->font_weight = weight;
+    pango_font_description_free(description);
     save_config(console);
     refresh_console_title(console);
     gtk_widget_queue_draw(console->drawing_area);
@@ -860,8 +941,8 @@ static void draw_text_overlay(struct console_window *console, cairo_t *cr,
                                       console->font_family
                                           ? console->font_family
                                           : "monospace");
-    pango_font_description_set_absolute_size(font,
-                                             console->font_size * PANGO_SCALE);
+    pango_font_description_set_absolute_size(
+        font, font_pixels(console->font_points) * PANGO_SCALE);
     pango_layout_set_font_description(layout, font);
     pango_layout_set_text(layout, text, -1);
     pango_layout_set_width(layout, MAX(1, width - 12) * PANGO_SCALE);
@@ -1885,7 +1966,7 @@ int main(int argc, char **argv)
     console.stream_fd = -1;
     console.child_pid = -1;
     console.controller_pid = -1;
-    console.font_size = DEFAULT_FONT_SIZE;
+    console.font_points = DEFAULT_FONT_POINTS;
     g_strlcpy(console.current_title, "ACE Shell",
               sizeof(console.current_title));
     memcpy(console.palette, default_palette, sizeof(console.palette));
@@ -1931,7 +2012,7 @@ int main(int argc, char **argv)
                   sizeof(console.current_title));
     console.font_family = g_strdup(default_font_candidates[0]);
     for (i = 0; default_font_candidates[i]; i++) {
-        if (ace_gfx_font_family_complete(default_font_candidates[i])) {
+        if (ace_gfx_font_family_complete(default_font_candidates[i], 0)) {
             g_free(console.font_family);
             console.font_family = g_strdup(default_font_candidates[i]);
             break;
@@ -1943,7 +2024,10 @@ int main(int argc, char **argv)
     console.device = ace_console_device_open(
         window_spec.has_size ? window_spec.width : CONSOLE_WIDTH,
         window_spec.has_size ? window_spec.height : CONSOLE_HEIGHT,
-                                             font_candidates, console.font_size);
+                                             font_candidates,
+                                             font_pixels(console.font_points),
+                                             ace_gfx_weight_from_css(
+                                                 console.font_weight));
     if (!console.device) {
         fprintf(stderr, "ace-console: failed to set up console.device\n");
         return 20;

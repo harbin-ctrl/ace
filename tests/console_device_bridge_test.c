@@ -111,7 +111,7 @@ static void assert_clear_copy(const unsigned char *sequence, size_t length,
     char *copied;
     size_t copied_length;
 
-    device = ace_console_device_open(width, height, font_candidates, 16);
+    device = ace_console_device_open(width, height, font_candidates, 16, 0);
     assert(device != NULL);
     ace_console_device_write(device, sequence, length);
     copied = ace_console_device_copy_all(device, &copied_length);
@@ -135,7 +135,7 @@ int main(void)
     int x, y, w, h;
     int i;
 
-    device = ace_console_device_open(width, height, font_candidates, 16);
+    device = ace_console_device_open(width, height, font_candidates, 16, 0);
     assert(device != NULL);
 
     /* AmigaOS console.device emits native C1 CSI, not ESC [.  In
@@ -150,7 +150,7 @@ int main(void)
         char *copied;
         size_t copied_length;
 
-        controls = ace_console_device_open(width, height, font_candidates, 16);
+        controls = ace_console_device_open(width, height, font_candidates, 16, 0);
         assert(controls != NULL);
         ace_console_device_write(controls, delete_character,
                                  sizeof(delete_character));
@@ -172,7 +172,7 @@ int main(void)
         char *copied;
         size_t copied_length;
 
-        controls = ace_console_device_open(width, height, font_candidates, 16);
+        controls = ace_console_device_open(width, height, font_candidates, 16, 0);
         assert(controls != NULL);
         ace_console_device_write(controls, prefix, sizeof(prefix));
         ace_console_device_write(controls, suffix, sizeof(suffix));
@@ -237,7 +237,7 @@ int main(void)
         int cell_width;
         int cell_height;
 
-        controls = ace_console_device_open(width, height, font_candidates, 16);
+        controls = ace_console_device_open(width, height, font_candidates, 16, 0);
         assert(controls != NULL);
         write_text(controls, "before\n");
         ace_console_device_write(controls, reset_escape,
@@ -428,8 +428,8 @@ int main(void)
     height = 560;
     assert(ace_console_device_resize(device, width, height) == 0);
 
-    assert(ace_console_device_set_font(device, "Liberation Mono", 20) == 0 ||
-           ace_console_device_set_font(device, "DejaVu Sans Mono", 20) == 0);
+    assert(ace_console_device_set_font(device, "Liberation Mono", 20, 0) == 0 ||
+           ace_console_device_set_font(device, "DejaVu Sans Mono", 20, 0) == 0);
     frame = read_frame(device, width, height);
     assert(frame_has_ink(frame, width, height, 0x123456u));
     assert(frame_pixel(frame, width, width - 2, height - 2) == 0x123456u);

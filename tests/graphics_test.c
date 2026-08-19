@@ -77,16 +77,19 @@ static void find_font(struct ace_gfx_font_choice *choice)
        selectable -- it used to be rejected for the sole reason that the
        family it resolved to was not called "monospace". A host with any
        usable monospace font at all has this one. */
-    assert(ace_gfx_font_family_complete("monospace") &&
+    assert(ace_gfx_font_family_complete("monospace", 0) &&
            "the monospace alias must resolve to a usable family");
     /* An alias is not a licence to accept anything: a name that names
        nothing is still refused rather than quietly substituted. */
-    assert(!ace_gfx_font_family_complete("ACE No Such Family At All"));
+    assert(!ace_gfx_font_family_complete("ACE No Such Family At All", 0));
 
     for (i = 0; candidates[i]; i++) {
-        if (ace_gfx_font_family_complete(candidates[i])) {
+        if (ace_gfx_font_family_complete(candidates[i], 0)) {
             choice->family = candidates[i];
             choice->pixel_size = 16;
+            /* Every field, so that a caller's uninitialised stack cannot
+               reach load_face() as a weight nothing will match. */
+            choice->weight = 0;
             return;
         }
     }

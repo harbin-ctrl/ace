@@ -37,7 +37,7 @@ struct ace_console_device;
  */
 struct ace_console_device *ace_console_device_open(
     int width, int height, const char *const *font_candidates,
-    int pixel_size);
+    int pixel_size, int weight);
 void ace_console_device_close(struct ace_console_device *device);
 
 /*
@@ -58,7 +58,8 @@ void ace_console_device_notify_resize(struct ace_console_device *device);
 /* Rebuilds the console unit around a new complete monospace font and replays
    the saved console stream into the new cell grid. */
 int ace_console_device_set_font(struct ace_console_device *device,
-                                const char *family, int pixel_size);
+                                const char *family, int pixel_size,
+                                int weight);
 
 /* Recolors the current console by rebuilding the RastPort and replaying the
    saved stream with the new eight-pen palette. */

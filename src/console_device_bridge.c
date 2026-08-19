@@ -111,19 +111,31 @@ static const uint32_t default_palette[ACE_GFX_PEN_COUNT] = {
     0x5555ffu, 0xffff55u, 0xff55ffu, 0x55ffffu,
 };
 
-static struct TextFont *load_font(const char *const *candidates, int pixel_size)
+static struct TextFont *load_font(const char *const *candidates, int pixel_size,
+                                  int weight)
 {
     struct ace_gfx_font_choice choice;
     struct TextFont *font;
     const char *reason = NULL;
     int i;
+    int pass;
 
     choice.pixel_size = pixel_size;
-    for (i = 0; candidates && candidates[i]; i++) {
-        choice.family = candidates[i];
-        font = ace_gfx_load_font(&choice, &reason);
-        if (font)
-            return font;
+    /* Two passes: the requested weight, then the ordinary one.  A weight is a
+       preference, not a requirement -- most families ship only Regular and
+       Bold, so insisting on a Medium that a fallback font has never had would
+       leave the console with no font at all rather than a slightly wrong one.
+       The first pass is what makes a real Medium win where one exists. */
+    for (pass = 0; pass < 2; pass++) {
+        choice.weight = pass == 0 ? weight : 0;
+        if (pass == 1 && weight <= 0)
+            break;
+        for (i = 0; candidates && candidates[i]; i++) {
+            choice.family = candidates[i];
+            font = ace_gfx_load_font(&choice, &reason);
+            if (font)
+                return font;
+        }
     }
     fprintf(stderr, "ace-console: no complete monospace font family found\n");
     return NULL;
@@ -150,7 +162,7 @@ static void clamp_to_cell(const struct TextFont *font, int *width, int *height)
 
 struct ace_console_device *ace_console_device_open(
     int width, int height, const char *const *font_candidates,
-    int pixel_size)
+    int pixel_size, int weight)
 {
     struct ace_console_device *device;
     struct TagItem tags[] = {
@@ -188,7 +200,7 @@ struct ace_console_device *ace_console_device_open(
     }
     device->console_base.stdConClass = device->std_class;
 
-    device->font = load_font(font_candidates, pixel_size);
+    device->font = load_font(font_candidates, pixel_size, weight);
     if (!device->font) {
         fprintf(stderr, "ace_console_device_open: font load failed\n");
         goto fail;
@@ -1271,7 +1283,7 @@ void ace_console_device_write(struct ace_console_device *device,
 }
 
 int ace_console_device_set_font(struct ace_console_device *device,
-                                const char *family, int pixel_size)
+                                const char *family, int pixel_size, int weight)
 {
     struct ace_gfx_font_choice choice;
     struct TextFont *font;
@@ -1281,6 +1293,7 @@ int ace_console_device_set_font(struct ace_console_device *device,
         return -1;
     choice.family = family;
     choice.pixel_size = pixel_size;
+    choice.weight = weight;
     font = ace_gfx_load_font(&choice, NULL);
     if (!font)
         return -1;

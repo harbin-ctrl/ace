@@ -204,19 +204,36 @@ static int resolve_family_alias(const char *family, char *result,
     return copied;
 }
 
-static cairo_font_face_t *load_face(const char *family, int bold, int italic)
+int ace_gfx_weight_from_css(int css_weight)
+{
+    if (css_weight <= 0)
+        return 0;
+    return FcWeightFromOpenType(css_weight);
+}
+
+static cairo_font_face_t *load_face(const char *family, int weight, int bold,
+                                    int italic)
 {
     FcPattern *pattern;
     FcPattern *matched;
     FcResult result;
     cairo_font_face_t *face;
+    int wanted;
+
+    if (weight <= 0)
+        weight = FC_WEIGHT_REGULAR;
+    /* Bold is bold whatever the base weight is: choosing Medium as the body
+       face asks for a lighter *unemphasised* face, not a lighter bold one.
+       A base already at or above bold keeps its own weight so that asking
+       for a Black family does not quietly get thinned to bold. */
+    wanted = bold ? (weight > FC_WEIGHT_BOLD ? weight : FC_WEIGHT_BOLD)
+                  : weight;
 
     pattern = FcPatternCreate();
     FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *)family);
     FcPatternAddInteger(pattern, FC_SLANT,
                         italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
-    FcPatternAddInteger(pattern, FC_WEIGHT,
-                        bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
+    FcPatternAddInteger(pattern, FC_WEIGHT, wanted);
     FcConfigSubstitute(NULL, pattern, FcMatchPattern);
     FcDefaultSubstitute(pattern);
 
@@ -243,7 +260,8 @@ static cairo_font_face_t *load_face(const char *family, int bold, int italic)
 
         if (!matched_family || strcasecmp((const char *)matched_family, family) != 0 ||
             (italic && matched_slant == FC_SLANT_ROMAN) ||
-            (bold && matched_weight < FC_WEIGHT_BOLD)) {
+            (bold && matched_weight < FC_WEIGHT_BOLD) ||
+            (!bold && matched_weight != wanted)) {
             FcPatternDestroy(matched);
             return NULL;
         }
@@ -258,7 +276,7 @@ static cairo_font_face_t *load_face(const char *family, int bold, int italic)
     return face;
 }
 
-int ace_gfx_font_family_complete(const char *family)
+int ace_gfx_font_family_complete(const char *family, int weight)
 {
     cairo_font_face_t *faces[4];
     char resolved[128];
@@ -268,10 +286,10 @@ int ace_gfx_font_family_complete(const char *family)
     if (!family || resolve_family_alias(family, resolved, sizeof(resolved)) != 0)
         return 0;
     family = resolved;
-    faces[ACE_GFX_STYLE_REGULAR] = load_face(family, 0, 0);
-    faces[ACE_GFX_STYLE_BOLD] = load_face(family, 1, 0);
-    faces[ACE_GFX_STYLE_ITALIC] = load_face(family, 0, 1);
-    faces[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(family, 1, 1);
+    faces[ACE_GFX_STYLE_REGULAR] = load_face(family, weight, 0, 0);
+    faces[ACE_GFX_STYLE_BOLD] = load_face(family, weight, 1, 0);
+    faces[ACE_GFX_STYLE_ITALIC] = load_face(family, weight, 0, 1);
+    faces[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(family, weight, 1, 1);
 
     for (i = 0; i < 4; i++) {
         if (!faces[i])
@@ -382,10 +400,10 @@ struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
         free(priv);
         return NULL;
     }
-    priv->face[ACE_GFX_STYLE_REGULAR] = load_face(resolved, 0, 0);
-    priv->face[ACE_GFX_STYLE_BOLD] = load_face(resolved, 1, 0);
-    priv->face[ACE_GFX_STYLE_ITALIC] = load_face(resolved, 0, 1);
-    priv->face[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(resolved, 1, 1);
+    priv->face[ACE_GFX_STYLE_REGULAR] = load_face(resolved, choice->weight, 0, 0);
+    priv->face[ACE_GFX_STYLE_BOLD] = load_face(resolved, choice->weight, 1, 0);
+    priv->face[ACE_GFX_STYLE_ITALIC] = load_face(resolved, choice->weight, 0, 1);
+    priv->face[ACE_GFX_STYLE_BOLD_ITALIC] = load_face(resolved, choice->weight, 1, 1);
 
     if (!priv->face[ACE_GFX_STYLE_REGULAR] || !priv->face[ACE_GFX_STYLE_BOLD] ||
         !priv->face[ACE_GFX_STYLE_ITALIC] || !priv->face[ACE_GFX_STYLE_BOLD_ITALIC]) {

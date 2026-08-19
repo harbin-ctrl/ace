@@ -38,6 +38,13 @@ struct TextFont;
 struct ace_gfx_font_choice {
     const char *family;
     int pixel_size;
+    /* Base weight, on fontconfig's scale (FC_WEIGHT_*).  Zero means
+       FC_WEIGHT_REGULAR.  A family like FiraCode Nerd Font ships Light,
+       Regular, Retina, Medium and SemiBold faces that Pango reports as faces
+       *within* one family, not as families of their own, so a family name
+       alone cannot say which of them was asked for.  Bold stays bold
+       regardless: this picks which face is the unemphasised one. */
+    int weight;
 };
 
 /*
@@ -56,8 +63,14 @@ struct TextFont *ace_gfx_load_font(const struct ace_gfx_font_choice *choice,
                                    const char **reason_out);
 void ace_gfx_unload_font(struct TextFont *font);
 
-/* Whether a family has real regular/bold/italic/bold-italic faces. */
-int ace_gfx_font_family_complete(const char *family);
+/* Whether a family has real base/bold/italic/bold-italic faces at the given
+   weight.  Pass 0 for the ordinary regular weight. */
+int ace_gfx_font_family_complete(const char *family, int weight);
+
+/* Maps a CSS/OpenType weight number -- Pango's scale, where 400 is Regular
+   and 500 Medium -- onto fontconfig's, where those are 80 and 100.  Returns
+   0 for the default weight so callers can pass it straight through. */
+int ace_gfx_weight_from_css(int css_weight);
 
 #define ACE_GFX_PEN_COUNT 8
 /* The bitplane depth behind that pen count, as the mask a COMPLEMENT draw
