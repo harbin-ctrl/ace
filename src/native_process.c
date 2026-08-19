@@ -117,8 +117,9 @@ static int duplicate_script_handle(BPTR handle)
     return descriptor >= 0 ? dup(descriptor) : -1;
 }
 
-static int launch_command(CONST_STRPTR command, BPTR input, BPTR output,
-                          BPTR error, BPTR script_input, BOOL asynch)
+/* Returns the command's return code, or -1 if it could not be started. */
+static LONG launch_command(CONST_STRPTR command, BPTR input, BPTR output,
+                           BPTR error, BPTR script_input, BOOL asynch)
 {
     char directory[PATH_MAX];
     char shell_path[PATH_MAX];
@@ -242,9 +243,25 @@ static int launch_command(CONST_STRPTR command, BPTR input, BPTR output,
         close(script_fd);
     if (!asynch) {
         int status;
-        waitpid(child, &status, 0);
+
+        if (waitpid(child, &status, 0) < 0) {
+            SetIoErr(ERROR_OBJECT_NOT_FOUND);
+            return -1;
+        }
+        /* System() answers with the command's return code, which is what
+           makes RC mean anything to the caller -- a Rexx script's RC after
+           ADDRESS COMMAND, and the shell's own FailAt handling, both read
+           it. This used to waitpid() and discard the status, so every command
+           looked like it had succeeded no matter how it ended. */
+        if (WIFEXITED(status))
+            return (LONG)WEXITSTATUS(status);
+        /* Killed rather than returned: no code of its own, and RETURN_FAIL is
+           what the shell reports for a command that did not finish. */
+        return RETURN_FAIL;
     }
 
+    /* Asynchronous: nothing has run yet, so there is no code to report and
+       the launch itself succeeded. */
     return 0;
 }
 
@@ -271,9 +288,16 @@ LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags)
     }
 
     if (command) {
-        if (launch_command(command, input, output, error, script_input,
-                           asynch) != 0)
+        /* Negative means the command could not be started at all, which is
+           System()'s -1; zero and above is the code it returned. Amiga return
+           codes are non-negative (RETURN_OK through RETURN_FAIL), so the two
+           cannot be confused. */
+        LONG code = launch_command(command, input, output, error, script_input,
+                                   asynch);
+
+        if (code < 0)
             return -1;
+        return code;
     } else {
         if (launch_console(input) != 0)
             return -1;

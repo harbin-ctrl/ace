@@ -14,6 +14,36 @@
 #include "ace_shell_break.h"
 #include "native_host.h"
 
+/*
+ * A Shell exits with the return code of the last command it ran. That is what
+ * makes RC mean anything to whoever started the Shell: System() hands it to a
+ * Rexx script's RC after ADDRESS COMMAND, and Execute hands it to the script
+ * that ran. This process used to exit 0 no matter how the session went, so a
+ * command that failed was indistinguishable from one that worked -- the error
+ * was printed and the caller was told everything was fine.
+ *
+ * ace_aros_shell_main() is the unmodified AROS Shell and does not return the
+ * code, so it is read from the broker, which is where every ACE command
+ * records it and where the Cli() structure gets cli_ReturnCode from. Its
+ * GETCLI payload is newline-separated with the return code first.
+ *
+ * Not an error if the broker cannot be asked: a Shell that got this far has
+ * run, and reporting a failure that did not happen is worse than reporting
+ * the success that most sessions end in.
+ */
+static LONG shell_return_code(void)
+{
+    char state[AMIGA_BROKER_MAX_PAYLOAD];
+    char *newline;
+
+    if (native_broker_getcli(state, sizeof(state)) != 0)
+        return RETURN_OK;
+    newline = strchr(state, '\n');
+    if (newline)
+        *newline = '\0';
+    return (LONG)strtol(state, NULL, 10);
+}
+
 static void publish_shell_path(void)
 {
     char executable[PATH_MAX];
@@ -128,6 +158,8 @@ static void run_startup_scripts(void)
 
 int main(int argc, char **argv)
 {
+    int status;
+
     publish_shell_path();
     ace_shell_break_init();
     if (native_broker_ensure() != 0) {
@@ -148,5 +180,26 @@ int main(int argc, char **argv)
         return 20;
     }
     run_startup_scripts();
-    return ace_aros_shell_main(argc, argv);
+    status = ace_aros_shell_main(argc, argv);
+    /* A non-zero here is the Shell itself failing, and is not a command's
+       return code to be second-guessed. */
+    if (status != 0)
+        return status;
+    /*
+     * Only a Shell started to run one command on somebody's behalf reports
+     * that command's code. That is the System() case: launch_command() writes
+     * the command to a script, names it in ACE_STARTUP_SCRIPT, and waits for
+     * this process, so this exit status is the only way the code gets back to
+     * the caller -- and it is what a Rexx script's RC after ADDRESS COMMAND
+     * ends up reading.
+     *
+     * A Shell somebody is typing at exits 0 as it always has. Its last
+     * command's code is answered by Why and by the RC variable, and is not the
+     * exit status of the session: a window closed after a command that failed
+     * has not itself failed, and anything waiting on the process -- the
+     * console does waitpid() on it -- would start reading a failure into it.
+     */
+    if (!getenv(ACE_STARTUP_SCRIPT_VARIABLE))
+        return 0;
+    return (int)shell_return_code();
 }
