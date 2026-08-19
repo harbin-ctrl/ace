@@ -45,6 +45,29 @@
 struct CommandLineInterface *Cli(void);
 
 static struct Process native_process;
+/*
+ * Which struct Process the calling thread is.  NULL means the one this Linux
+ * process was started as, which is every thread except those CreateNewProc()
+ * made: an AmigaDOS process created with NP_Entry runs in this address space,
+ * so a second struct Process has to exist and FindTask(NULL) has to tell them
+ * apart.  Thread-local rather than a field, because the whole point is that
+ * two threads asking the same question get different answers.
+ *
+ * Main-thread behaviour is unchanged: the accessor falls back to
+ * native_process, so nothing that ran before CreateNewProc() existed can
+ * observe the difference.
+ */
+static _Thread_local struct Process *native_current_process;
+
+struct Process *native_this_process(void)
+{
+    return native_current_process ? native_current_process : &native_process;
+}
+
+void native_set_this_process(struct Process *process)
+{
+    native_current_process = process;
+}
 /* IoErr() is the process's pr_Result2, not a variable beside it. The AROS
    DOS sources ACE compiles set it that way -- rom/dos/readargs.c ends with
    "me->pr_Result2 = error;" and never calls SetIoErr() -- so a separate
@@ -52,7 +75,7 @@ static struct Process native_process;
    the command's PrintFault(IoErr(), name) printed nothing and the shell saw
    a bare failure. Keeping one storage location is what makes ACE's stubs and
    upstream's own code agree about the error. */
-#define native_ioerr (native_process.pr_Result2)
+#define native_ioerr (native_this_process()->pr_Result2)
 
 static struct ExecBase native_exec_base;
 static struct UtilityBase native_utility_base;
@@ -182,6 +205,13 @@ static void native_unregister_task(void)
 
 static void native_activate_task(void)
 {
+    /* A CreateNewProc() thread registered its own task and set its own
+       identity before calling its entry point, and the state below is this
+       Linux process's, not that thread's.  Running it here would publish the
+       parent's task as the caller's, which is precisely the question
+       FindTask(NULL) is being asked. */
+    if (native_current_process)
+        return;
     native_task_name_init();
     ace_aros_runtime_set_current_task(&native_process.pr_Task);
     if (!native_task_registered &&
@@ -1197,7 +1227,7 @@ struct Task *FindTask(CONST_STRPTR name)
     if (!native_cli_loaded)
         (void)Cli();
     if (!name)
-        return (struct Task *)&native_process;
+        return (struct Task *)native_this_process();
     local = ace_aros_runtime_find_task(name);
     if (local)
         return local;

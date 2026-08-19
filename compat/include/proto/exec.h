@@ -23,6 +23,14 @@ void ReplyMsg(struct Message *message);
 void Forbid(void);
 void Permit(void);
 ULONG Wait(ULONG signals);
+/* Implemented in src/native_dos.c.  Declared here because a DOS-side caller
+   reaches Exec through this header, and undeclared it was an implicit int
+   returning a pointer-sized value.  Guarded like FindTask above: the
+   test-only AMIGA_EXEC_COMPAT_ENABLED build defines Signal to a shim that
+   takes an APTR and declares itself. */
+#ifndef Signal
+void Signal(struct Task *task, ULONG signals);
+#endif
 ULONG SetSignal(ULONG set_mask, ULONG clear_mask);
 ULONG CheckSignal(ULONG mask);
 LONG AllocSignal(LONG signal_number);

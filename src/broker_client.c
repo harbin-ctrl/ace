@@ -292,9 +292,45 @@ void native_broker_reset_after_fork(void)
  *      answer
  *  -1  the exchange itself broke; the connection is unusable
  */
+/*
+ * One request and its response are a unit on this socket, and there is one
+ * socket per process rather than one per caller.  Interleaving two of them
+ * does not lose a reply, it hands each caller the other's -- and the header
+ * check below is what notices, which is why it already says a bad magic most
+ * likely means "the tail of a previous reply".
+ *
+ * Serialised rather than given a connection per thread: an ACE process is
+ * single-threaded almost all of the time, so the lock is uncontended, and a
+ * second connection would need its own ATTACH and its own session identity
+ * to go with it.  CreateNewProc() is what made this reachable -- an
+ * AmigaDOS process created with NP_Entry runs in this address space, so
+ * parent and child share this fd.
+ *
+ * The task socket at task_fd is deliberately not covered: it is a separate
+ * connection read by its own thread, and carries no request/response pairs.
+ */
+static int broker_exchange_locked(int fd, uint32_t operation, const char *path,
+                                  const char *value, uint32_t flags,
+                                  char *result, size_t result_size);
+
+static pthread_mutex_t broker_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int broker_exchange(int fd, uint32_t operation, const char *path,
                            const char *value, uint32_t flags,
                            char *result, size_t result_size)
+{
+    int status;
+
+    pthread_mutex_lock(&broker_lock);
+    status = broker_exchange_locked(fd, operation, path, value, flags, result,
+                                    result_size);
+    pthread_mutex_unlock(&broker_lock);
+    return status;
+}
+
+static int broker_exchange_locked(int fd, uint32_t operation, const char *path,
+                                  const char *value, uint32_t flags,
+                                  char *result, size_t result_size)
 {
     const char *session = broker_session();
     size_t session_length = strlen(session);

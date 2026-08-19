@@ -1064,3 +1064,97 @@ size_t ace_aros_console_take_output(void *context, void *data, size_t length)
     pthread_mutex_unlock(&unit->lock);
     return count;
 }
+
+/*
+ * The amiga.lib port helpers.
+ *
+ * CreatePort()/DeletePort() are the older spelling of CreateMsgPort() and
+ * DeleteMsgPort() with a name attached, and a named port is meant to be
+ * public: any process can FindPort() it and PutMsg() to it. That last part
+ * is the whole point of ARexx, and it is not what this does.
+ *
+ * The registry below is process-local. A port named here can be found by
+ * another thread of this process and by nothing else, which is enough for
+ * Regina's own use -- amifuncs.c creates an unnamed reply port and talks to
+ * its own helper task -- and is not enough for ADDRESS <port> to reach
+ * another application. Making it enough is the broker's named-port service:
+ * cross-process PutMsg/GetMsg/ReplyMsg, message ownership, and cleanup when
+ * an owning task exits. Until that exists this is deliberately the smaller,
+ * honest thing rather than an in-process registry pretending to be public.
+ */
+struct ace_named_port {
+    struct MsgPort *port;
+    char name[64];
+    struct ace_named_port *next;
+};
+
+static struct ace_named_port *named_ports;
+
+struct MsgPort *CreatePort(CONST_STRPTR name, LONG priority)
+{
+    struct MsgPort *port = CreateMsgPort();
+    struct ace_named_port *entry;
+
+    (void)priority;
+    if (!port)
+        return NULL;
+    if (!name || !*name)
+        return port;
+    entry = calloc(1, sizeof(*entry));
+    if (!entry) {
+        DeleteMsgPort(port);
+        return NULL;
+    }
+    strncpy(entry->name, (const char *)name, sizeof(entry->name) - 1);
+    entry->port = port;
+    port->mp_Node.ln_Name = entry->name;
+    pthread_mutex_lock(&ports_lock);
+    entry->next = named_ports;
+    named_ports = entry;
+    pthread_mutex_unlock(&ports_lock);
+    return port;
+}
+
+void DeletePort(struct MsgPort *port)
+{
+    struct ace_named_port **cursor;
+
+    if (!port)
+        return;
+    pthread_mutex_lock(&ports_lock);
+    cursor = &named_ports;
+    while (*cursor && (*cursor)->port != port)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        struct ace_named_port *entry = *cursor;
+
+        *cursor = entry->next;
+        /* The port keeps no dangling pointer to the freed name. */
+        port->mp_Node.ln_Name = NULL;
+        free(entry);
+    }
+    pthread_mutex_unlock(&ports_lock);
+    DeleteMsgPort(port);
+}
+
+/* This was a stub in src/aros_console_editor.c that always returned NULL --
+   the console editor needed the symbol, not the answer.  The real one lives
+   here now, beside the registry it reads; every link that takes the console
+   editor takes this object too. */
+struct MsgPort *FindPort(CONST_STRPTR name)
+{
+    struct ace_named_port *entry;
+    struct MsgPort *found = NULL;
+
+    if (!name)
+        return NULL;
+    pthread_mutex_lock(&ports_lock);
+    for (entry = named_ports; entry; entry = entry->next) {
+        if (strcmp(entry->name, (const char *)name) == 0) {
+            found = entry->port;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ports_lock);
+    return found;
+}

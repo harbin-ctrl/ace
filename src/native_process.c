@@ -2,6 +2,8 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -13,11 +15,17 @@
 #include <unistd.h>
 
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <dos/dostags.h>
+#include <exec/lists.h>
 #include <utility/tagitem.h>
 
+#include "aros_exec_runtime.h"
 #include "broker_client.h"
 #include "native_host.h"
+
+struct Process *native_this_process(void);
+void native_set_this_process(struct Process *process);
 
 static int executable_directory(char *directory, size_t directory_size)
 {
@@ -272,4 +280,235 @@ LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags)
         native_console_close(input);
     }
     return 0;
+}
+
+/*
+ * CreateNewProc() -- an AmigaDOS process, which is a thread here.
+ *
+ * SystemTagList() above starts a *command*: it has a name to look up, so it
+ * forks and execs ace-user-shell, and the child shares nothing but its
+ * streams.  NP_Entry is the other kind of process creation and cannot work
+ * that way.  The entry point is a function pointer in this executable, and
+ * the code on the far side of it reaches back into memory the caller is still
+ * using -- Regina's StartCommand() reads a ChildInfo the parent filled in
+ * just before the call, and writes the return code the parent reads after.
+ * A forked child would get a copy of all of it and the parent would see none
+ * of the writes.
+ *
+ * A thread is also what the Amiga actually does.  Exec has one address space
+ * and CreateNewProc() adds a thread of execution to it; two processes sharing
+ * memory is the normal case there, not a compromise made here.
+ *
+ * What a created process needs before it may run:
+ *   - its own struct Process, so FindTask(NULL) tells it apart from its
+ *     parent -- see native_this_process();
+ *   - its own entry in the task registry, so Signal()/Wait() between parent
+ *     and child address two different tasks;
+ *   - the three standard streams it was given, and the NP_Close* ownership
+ *     that says which of them it must close on the way out.
+ *
+ * NP_Seglist is rejected rather than ignored.  It names code to load and run,
+ * which is SystemTagList()'s job, and quietly starting a process that runs
+ * nothing would be much harder to diagnose than a refusal.
+ */
+
+struct native_new_process {
+    struct Process process;
+    char name[64];
+    void (*entry)(void);
+    BPTR input;
+    BPTR output;
+    BPTR error;
+    int close_input;
+    int close_output;
+    int close_error;
+};
+
+static void native_new_process_free(struct native_new_process *created)
+{
+    /* Ownership is per stream and defaults to TRUE, which is AmigaDOS's rule:
+       a process closes what it was handed unless the caller kept it. */
+    if (created->close_input && created->input)
+        Close(created->input);
+    if (created->close_output && created->output)
+        Close(created->output);
+    if (created->close_error && created->error)
+        Close(created->error);
+    ace_aros_runtime_unregister_task(&created->process.pr_Task);
+    free(created);
+}
+
+static void *native_new_process_thread(void *argument)
+{
+    struct native_new_process *created = argument;
+
+    /* Identity first, and before anything that might call FindTask(): from
+       here on this thread is a different AmigaDOS process from the one that
+       created it. */
+    native_set_this_process(&created->process);
+    ace_aros_runtime_set_current_task(&created->process.pr_Task);
+    created->entry();
+    native_set_this_process(NULL);
+    native_new_process_free(created);
+    return NULL;
+}
+
+struct Process *CreateNewProc(const struct TagItem *tags)
+{
+    const struct TagItem *tag;
+    struct native_new_process *created;
+    const char *name = "New Process";
+    pthread_t thread;
+    static int process_counter;
+
+    created = calloc(1, sizeof(*created));
+    if (!created) {
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return NULL;
+    }
+    /* AmigaDOS closes each supplied stream on exit unless told otherwise. */
+    created->close_input = 1;
+    created->close_output = 1;
+    created->close_error = 1;
+
+    for (tag = tags; tag && tag->ti_Tag != TAG_DONE; tag++) {
+        switch (tag->ti_Tag) {
+        case NP_Entry:
+            created->entry = (void (*)(void))(uintptr_t)tag->ti_Data;
+            break;
+        case NP_Input:
+            created->input = (BPTR)(uintptr_t)tag->ti_Data;
+            break;
+        case NP_Output:
+            created->output = (BPTR)(uintptr_t)tag->ti_Data;
+            break;
+        case NP_Error:
+            created->error = (BPTR)(uintptr_t)tag->ti_Data;
+            break;
+        case NP_CloseInput:
+            created->close_input = tag->ti_Data ? 1 : 0;
+            break;
+        case NP_CloseOutput:
+            created->close_output = tag->ti_Data ? 1 : 0;
+            break;
+        case NP_CloseError:
+            created->close_error = tag->ti_Data ? 1 : 0;
+            break;
+        case NP_Name:
+            name = (const char *)(uintptr_t)tag->ti_Data;
+            break;
+        case NP_Seglist:
+            /* See the note above: this is SystemTagList()'s job. */
+            free(created);
+            SetIoErr(ERROR_OBJECT_WRONG_TYPE);
+            return NULL;
+        default:
+            /* NP_Cli, NP_StackSize, NP_Priority and the rest are accepted and
+               not acted on.  A created process here already has the CLI its
+               Linux process has, gets a host thread stack rather than one it
+               was told the size of, and is scheduled by the host.  Refusing
+               them would stop callers that pass them for good reason. */
+            break;
+        }
+    }
+
+    if (!created->entry) {
+        /* Neither NP_Entry nor NP_Seglist: there is nothing to run. */
+        free(created);
+        SetIoErr(ERROR_REQUIRED_ARG_MISSING);
+        return NULL;
+    }
+
+    snprintf(created->name, sizeof(created->name), "%s %d", name,
+             ++process_counter);
+    created->process.pr_Task.tc_Node.ln_Name = created->name;
+    created->process.pr_CIS = created->input;
+    created->process.pr_COS = created->output;
+    created->process.pr_CES = created->error;
+    NEWLIST(&created->process.pr_LocalVars);
+
+    /* Registered by the creator rather than by the new thread, so that a
+       Signal() sent to the returned process before that thread is scheduled
+       still finds a task to deliver to. */
+    if (ace_aros_runtime_register_task(&created->process.pr_Task) != 0) {
+        free(created);
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return NULL;
+    }
+    if (pthread_create(&thread, NULL, native_new_process_thread, created) != 0) {
+        ace_aros_runtime_unregister_task(&created->process.pr_Task);
+        free(created);
+        SetIoErr(ERROR_NO_FREE_STORE);
+        return NULL;
+    }
+    /* Detached: AmigaDOS has no join, and the process frees itself on exit. */
+    pthread_detach(thread);
+    return &created->process;
+}
+
+struct Process *CreateNewProcTags(IPTR tag1, ...)
+{
+    struct TagItem tags[32];
+    size_t count = 0;
+    va_list arguments;
+    IPTR tag = tag1;
+
+    va_start(arguments, tag1);
+    while (count < sizeof(tags) / sizeof(tags[0]) - 1 && tag != TAG_DONE) {
+        tags[count].ti_Tag = tag;
+        tags[count].ti_Data = va_arg(arguments, IPTR);
+        count++;
+        tag = va_arg(arguments, IPTR);
+    }
+    va_end(arguments);
+    tags[count].ti_Tag = TAG_DONE;
+    tags[count].ti_Data = 0;
+    return CreateNewProc(tags);
+}
+
+/*
+ * CreateTask() -- the same thing CreateNewProc() makes, with less of it.
+ *
+ * Exec distinguishes a Task from a Process: a Process is a Task plus the DOS
+ * state that makes DOS calls legal from it. ACE creates a Process either way,
+ * because struct Process begins with its struct Task and because the
+ * alternative -- a bare Task whose FindTask(NULL) has nowhere to point -- is
+ * a trap. Regina's helper is the case in point: amifuncs.c starts
+ * ReginaHandleMessages this way and that code waits on signals like any other
+ * task, which needs an identity to deliver to.
+ *
+ * The cost of the difference is a struct Process rather than a struct Task
+ * per created task, which is the smaller problem.
+ */
+struct Task *CreateTask(CONST_STRPTR name, LONG priority, APTR init_pc,
+                        ULONG stack_size)
+{
+    struct Process *created;
+
+    /* Stack size is the host thread's to choose, and priority is the host
+       scheduler's; both are accepted so that callers written for Exec still
+       compile and run. */
+    (void)stack_size;
+    created = CreateNewProcTags(NP_Entry, (IPTR)init_pc,
+                                NP_Name, (IPTR)(name ? name : "New Task"),
+                                NP_Priority, (IPTR)priority,
+                                TAG_DONE, (IPTR)0);
+    return created ? (struct Task *)created : NULL;
+}
+
+/*
+ * Returns the previous priority, per rom/exec/settaskpri.c.  ACE does not
+ * reorder anything on the strength of it: these are host threads and the host
+ * scheduler decides.  Recorded rather than discarded so that a caller reading
+ * the value back gets what it set.
+ */
+BYTE SetTaskPri(struct Task *task, LONG priority)
+{
+    BYTE previous;
+
+    if (!task)
+        return 0;
+    previous = task->tc_Node.ln_Pri;
+    task->tc_Node.ln_Pri = (BYTE)priority;
+    return previous;
 }

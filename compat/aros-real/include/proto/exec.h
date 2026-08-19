@@ -20,10 +20,16 @@ struct Task *FindTask(CONST_STRPTR name);
 void Forbid(void);
 void Permit(void);
 ULONG Wait(ULONG signals);
-ULONG Signal(struct Task *task, ULONG signals);
+/* void, per rom/exec/signal.c's AROS_LH2(void, Signal, ...).  This said
+   ULONG, which no caller noticed because none of them use the result, and
+   which disagreed with ACE's own definition in src/native_dos.c. */
+void Signal(struct Task *task, ULONG signals);
 LONG AllocSignal(LONG signal_number);
 void FreeSignal(LONG signal_number);
-void SetTaskPri(struct Task *task, LONG priority);
+/* BYTE, per rom/exec/settaskpri.c's AROS_LH2(BYTE, SetTaskPri, ...): the
+   previous priority.  Said void, which no caller noticed because none of
+   them use the result. */
+BYTE SetTaskPri(struct Task *task, LONG priority);
 struct MsgPort *CreateMsgPort(void);
 void DeleteMsgPort(struct MsgPort *port);
 struct MsgPort *CreatePort(CONST_STRPTR name, LONG signal);

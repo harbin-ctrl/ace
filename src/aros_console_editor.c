@@ -46,12 +46,6 @@ UWORD PeekQualifier(void)
     return 0;
 }
 
-struct MsgPort *FindPort(CONST_STRPTR name)
-{
-    (void)name;
-    return NULL;
-}
-
 struct Node *RemHead(struct List *list)
 {
     return REMHEAD(list);

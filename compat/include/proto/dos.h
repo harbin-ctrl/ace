@@ -28,6 +28,11 @@ struct CommandLineInterface *Cli(void);
 BOOL SetPrompt(CONST_STRPTR prompt);
 LONG VPrintf(CONST_STRPTR format, APTR arguments);
 LONG SystemTagList(CONST_STRPTR command, const struct TagItem *tags);
+struct Process;
+/* Starts an AmigaDOS process on NP_Entry.  See src/native_process.c for what
+   is honoured and what is accepted but not acted on. */
+struct Process *CreateNewProc(const struct TagItem *tags);
+struct Process *CreateNewProcTags(IPTR tag1, ...);
 BPTR OpenFromLock(BPTR handle);
 BPTR DupLockFromFH(BPTR fh);
 LONG WriteChars(CONST_STRPTR buf, ULONG buflen);
