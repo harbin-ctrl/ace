@@ -240,6 +240,16 @@ static int task_fd = -1;
 static pthread_t task_thread;
 static native_broker_task_signal_handler task_handler;
 static void *task_handler_context;
+/* The message-delivery channel: a third connection, held open for the life of
+   the process once anything has used a public port.  Kept apart from task_fd
+   for the reason AMIGA_BROKER_PORT_ATTACH gives -- a delivered message is
+   variable length and can be large, a task signal is neither, and a Ctrl-C
+   must not queue behind a script. */
+static int port_fd = -1;
+static pthread_t port_thread;
+static native_broker_port_record_handler port_handler;
+static void *port_handler_context;
+static uint64_t port_channel_id;
 
 static void *task_signal_reader(void *unused)
 {
@@ -250,6 +260,43 @@ static void *task_signal_reader(void *unused)
         if (signal.magic == AMIGA_BROKER_MAGIC &&
             signal.operation == AMIGA_BROKER_TASK_SIGNAL && task_handler)
             task_handler(signal.signals, task_handler_context);
+    }
+    return NULL;
+}
+
+/*
+ * Reads delivered messages and replies until the broker closes the channel.
+ *
+ * The payload is read even when the record is not one this process can use,
+ * because the stream is framed by length: skipping the header alone would
+ * leave the payload to be misread as the next header, and there is no way to
+ * resynchronise afterwards.  An oversized length is the one case that cannot
+ * be drained safely, so it ends the loop and closes the channel.
+ */
+static void *port_record_reader(void *unused)
+{
+    struct amiga_broker_port_record record;
+    char *payload = NULL;
+
+    (void)unused;
+    while (read_all(port_fd, &record, sizeof(record)) == 0) {
+        if (record.magic != AMIGA_BROKER_MAGIC ||
+            record.payload_length > AMIGA_BROKER_MAX_PAYLOAD)
+            break;
+        payload = calloc((size_t)record.payload_length + 1, 1);
+        if (!payload)
+            break;
+        if (record.payload_length &&
+            read_all(port_fd, payload, record.payload_length) != 0) {
+            free(payload);
+            break;
+        }
+        if (port_handler)
+            port_handler(record.operation, record.message_id, record.port_id,
+                         payload, (size_t)record.payload_length,
+                         port_handler_context);
+        free(payload);
+        payload = NULL;
     }
     return NULL;
 }
@@ -282,6 +329,15 @@ void native_broker_reset_after_fork(void)
     if (task_fd >= 0)
         close(task_fd);
     task_fd = -1;
+    /* Same reasoning for the port channel, with one addition: messages
+       addressed to the parent must not be delivered to a child that merely
+       inherited the fd.  Dropping it here means a child that goes on to use a
+       port attaches a channel of its own, under its own pid. */
+    if (port_fd >= 0)
+        close(port_fd);
+    port_fd = -1;
+    port_handler = NULL;
+    port_handler_context = NULL;
 }
 
 /*
@@ -560,6 +616,73 @@ int native_broker_task_attach(const char *name,
         return -1;
     }
     (void)pthread_detach(task_thread);
+    return 0;
+}
+
+/*
+ * Opens this process's delivery channel, or confirms it is already open.
+ *
+ * Idempotent on purpose: every entry point that can be the first port use in
+ * a process calls it, and which one gets there first depends on whether this
+ * process is registering a port or sending to somebody else's.  A second call
+ * that names the same handler is the normal case and must not fail.
+ */
+int native_broker_port_attach(native_broker_port_record_handler handler,
+                              void *context, uint64_t *channel_id)
+{
+    char result[32];
+    char pid[32];
+    uint64_t id;
+    int outcome;
+
+    if (!handler) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (port_fd >= 0) {
+        if (port_handler != handler || port_handler_context != context) {
+            errno = EBUSY;
+            return -1;
+        }
+        if (channel_id)
+            *channel_id = port_channel_id;
+        return 0;
+    }
+    port_fd = connect_broker();
+    if (port_fd < 0)
+        return -1;
+    snprintf(pid, sizeof(pid), "%ld", (long)getpid());
+    outcome = broker_exchange(port_fd, AMIGA_BROKER_PORT_ATTACH, pid, NULL,
+                              0, result, sizeof(result));
+    if (outcome != 0) {
+        close(port_fd);
+        port_fd = -1;
+        return -1;
+    }
+    id = strtoull(result, NULL, 10);
+    if (!id) {
+        close(port_fd);
+        port_fd = -1;
+        errno = EPROTO;
+        return -1;
+    }
+    /* Published before the thread starts, so the first record cannot arrive
+       to find no handler set. */
+    port_handler = handler;
+    port_handler_context = context;
+    port_channel_id = id;
+    if (pthread_create(&port_thread, NULL, port_record_reader, NULL) != 0) {
+        close(port_fd);
+        port_fd = -1;
+        port_handler = NULL;
+        port_handler_context = NULL;
+        port_channel_id = 0;
+        errno = EAGAIN;
+        return -1;
+    }
+    (void)pthread_detach(port_thread);
+    if (channel_id)
+        *channel_id = id;
     return 0;
 }
 

@@ -46,6 +46,16 @@ reads exactly like the live path, including a `checkLine()` and an
 `make build/foo.o` fails with "No rule to make target". Use
 `make $PWD/build/foo.o`.
 
+**The broker's socket name is keyed to the protocol version, which is a hash
+of `broker_protocol.h`.** So a change confined to `broker.c` does *not* get a
+new socket: the next client finds the broker that is already running -- an
+older binary, possibly days old -- and talks to it happily. A test then
+exercises the old broker and reports whatever that one does. This passed a
+deliberately broken `drop_connection_port_channels()` before it was noticed.
+Any test that asserts on broker behaviour must run against a broker of its
+own, via `ACE_BROKER_SOCKET`; `tests/broker_port_channel_test.sh` is the
+shape, and `tests/filesystem_translation_test.sh` is the older example.
+
 **Test objects only build under their own test targets.** `make all` will not
 catch a test that no longer compiles. After changing any API a test calls, run
 the tests, not just the build.
@@ -122,6 +132,11 @@ port. Confirm with `nm mt_notmt.o | grep regina_OS` -- it must say
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
   **unmodified**. `sendrexxmsg` now gets past `FindPort("REXX")` and blocks at
   `WaitPort`, because delivery is not implemented.
+* A process now has a **message-delivery channel** to the broker
+  (`AMIGA_BROKER_PORT_ATTACH`): a second push connection with its own reader
+  thread, opened lazily on first port use and released when the process goes.
+  Nothing travels down it yet -- that is 1.2 and 1.3. `ace-brokerctl status`
+  reports `ports` and `port-channels` alongside `tasks`.
 
 ## The two semantics questions, answered from AmigaOS
 
@@ -161,11 +176,36 @@ receiving process gets genuine handles onto the sender's streams.
 The next thing to build, and the only thing between here and a working
 `RexxMast`.
 
-1.1 Add `AMIGA_BROKER_PORT_ATTACH`: a per-process push connection with its own
-reader thread, modelled on `AMIGA_BROKER_TASK_ATTACH` in `broker_client.c`
-(`task_signal_reader`). Keep it a **separate** connection from the task
-channel rather than sharing its fixed-size record framing. Senders need it
-too, because replies arrive the same way. Attach lazily, on first port use.
+1.1 **Done.** `AMIGA_BROKER_PORT_ATTACH` is a per-process push connection with
+its own reader thread, separate from the task channel: `port_fd`,
+`port_record_reader()` and `native_broker_port_attach()` in `broker_client.c`,
+`attach_port_channel()` and the `port_channels` table in `broker.c`. Points
+worth knowing before building on it:
+
+* The channel is keyed by **pid**, not by port. Routing a delivery is
+  therefore two hops -- port name to owning pid, pid to channel -- and it is
+  the second hop that lets a reply reach a sender which owns no port at all.
+* `struct amiga_broker_port_record` is a *header*, with `payload_length`
+  bytes following it. The reader drains the payload even for a record it
+  cannot use, because the stream is framed by length and a skipped payload
+  would be misread as the next header. An oversized length is the one case it
+  cannot drain, so it closes the channel.
+* `native_broker_port_attach()` is idempotent by design: whichever port call
+  is first in a process opens the channel and the rest join it. A second call
+  naming a *different* handler is `EBUSY` -- two owners of one stream is a
+  bug, not a configuration.
+* `native_broker_reset_after_fork()` drops the channel, so a child cannot
+  receive messages addressed to its parent.
+* A second attach from the same pid replaces the first rather than being
+  refused, for the `exec()` case where the old connection's close has not
+  been noticed yet.
+
+Tested by `make test-broker-port-channel`, which covers the lifetime: one
+channel per process, agreement between the calls that race for it, a channel
+each for two processes, and the broker letting go when a process exits. The
+reader thread's framing is not yet exercised end to end -- nothing pushes
+until 1.2 -- so treat the first PORT_PUT as also being the first real test of
+`port_record_reader()`.
 
 1.2 Add `AMIGA_BROKER_PORT_PUT`, taking a **port name**, not an id, so the
 find and the send are one operation -- this is the `Forbid()` equivalent and
@@ -257,3 +297,45 @@ header is the current answer, not necessarily the final one.
 adding a member leaves it uninitialised in any caller that misses one. This
 already broke `graphics_test.c` once. The same hazard applies to any struct
 here that callers fill in by hand.
+
+## Where to stop and test
+
+The numbered steps are not all separable. 1.2 through 1.6 are one mechanism:
+a half-built delivery cannot be tested, because a message that goes out and
+never comes back just hangs -- by design, since there are no timeouts. These
+are the points where something observable actually changes, and each is worth
+a commit.
+
+* **After 1.1.** Done. `make test-broker-port-channel`.
+* **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
+  one process. Argstrings with embedded NULs and high bytes, all sixteen
+  `rm_Args` slots, and one oversized message that must fail cleanly against
+  the 16 KB cap rather than truncate. A pure unit test, and the cheapest
+  bug-catching in the whole step.
+* **After 1.2 + 1.3 + 1.6, deferring 1.5.** Delivery and reply working with
+  `rm_Stdin`/`rm_Stdout` left `BNULL`. Test with a purpose-built pair of
+  processes rather than `sendrexxmsg`/`listen4msg`: one registers a port and
+  replies with a known result, the other checks it got back *the same
+  `struct RexxMsg` pointer* with `rm_Result1` set. Prove that pointer identity
+  here, because everything downstream assumes it.
+* **After 1.5.** Narrowly: the receiver writes a fixed string to `rm_Stdin`
+  and it appears on the sender's console. Kept separate from the step above so
+  that a failure names the descriptor passing rather than the protocol.
+* **After 1.7.** Its own checkpoint, because it is the failure path that makes
+  the indefinite wait safe. `SIGKILL` the owner mid-message -- not a clean
+  exit -- and confirm the sender's `WaitPort` returns a failure result instead
+  of hanging. Then kill it between the find and the send, which is the case
+  `Forbid()` existed to prevent.
+* **1.8 is the acceptance gate, not a step.** By the time unmodified
+  `sendrexxmsg` and `listen4msg` run, it should already work; if it does not,
+  the checkpoints above were under-tested.
+* **After 2.1 + 2.2.** `RXCOMM` with `RXFF_RESULT` only, `rm_Stdin` still
+  unused. Deliberately fail a script and confirm a reply still arrives -- that
+  path is easy to leave unwritten and it deadlocks senders forever.
+* **After 2.3.** A script sent to `REXX` writes to the sender's console.
+* **After 2.5, from the installed location.** Re-run the two checkpoints above
+  against `SYS:C/REXXMAST` rather than the build tree. The trap here is the
+  same one that makes `rexx` need to sit beside `ace-user-shell`: run it from
+  the wrong place and it fails silently while reporting success. Decide
+  broker-starts-on-demand versus user-starts *before* installing, because it
+  changes what the test has to do.

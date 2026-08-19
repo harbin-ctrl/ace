@@ -126,7 +126,24 @@ enum amiga_broker_operation {
        resolves to nothing. */
     AMIGA_BROKER_PORT_ADD = 30,
     AMIGA_BROKER_PORT_REM = 31,
-    AMIGA_BROKER_PORT_FIND = 32
+    AMIGA_BROKER_PORT_FIND = 32,
+    /* A dedicated, broker-to-process connection for message delivery, in the
+       same spirit as TASK_ATTACH and for the same reason: a process waiting
+       in WaitPort() is not in a position to answer a request, so the broker
+       must be able to push to it.
+
+       Deliberately a second connection rather than a second record type on
+       the task channel.  A task signal is a fixed-size record; a delivered
+       message is a serialised RexxMsg of up to MAX_PAYLOAD bytes, so the two
+       cannot share a framing, and a long message must not be able to delay a
+       Ctrl-C.
+
+       One per process, not one per port.  A process that owns three ports
+       receives all three on this channel, and a process that owns none at
+       all still needs it -- a sender waiting for its reply is woken the same
+       way.  Which is why the client attaches lazily, on first port use of
+       any kind, rather than when a port is registered. */
+    AMIGA_BROKER_PORT_ATTACH = 33
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
@@ -175,6 +192,23 @@ struct amiga_broker_task_signal {
     uint32_t operation;
     uint64_t task_id;
     uint32_t signals;
+};
+
+/* Records sent only from broker to a PORT_ATTACH connection, after its
+   ordinary successful attach response.
+
+   Unlike a task signal this is a header, not a whole record: payload_length
+   bytes of serialised message follow it immediately.  message_id is the
+   broker's correlation id for one send, and it is what a reply is routed
+   back by -- the sender kept its own struct RexxMsg and needs to know which
+   one this answers.  payload_length is bounded by AMIGA_BROKER_MAX_PAYLOAD;
+   anything larger is a protocol error, not a large message. */
+struct amiga_broker_port_record {
+    uint32_t magic;
+    uint32_t operation;
+    uint64_t message_id;
+    uint64_t port_id;
+    uint32_t payload_length;
 };
 
 #endif

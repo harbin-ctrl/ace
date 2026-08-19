@@ -60,6 +60,24 @@ int native_broker_task_attach(const char *name,
                               native_broker_task_signal_handler handler,
                               void *context, uint64_t *task_id);
 int native_broker_task_find(const char *name, uint64_t *task_id);
+/* This process's message-delivery channel. Attached lazily on first port
+   use, by whichever call gets there first, and idempotent so that the others
+   can call it too. The handler runs on the channel's own reader thread, so
+   it must be safe to call while this process is blocked in WaitPort() -- that
+   being the whole reason the channel exists.
+
+   payload is NUL-terminated for convenience and its length given separately,
+   because a serialised message may legitimately contain NUL bytes.  It is
+   valid only for the duration of the call. See AMIGA_BROKER_PORT_ATTACH and
+   struct amiga_broker_port_record in broker_protocol.h. */
+typedef void (*native_broker_port_record_handler)(uint32_t operation,
+                                                  uint64_t message_id,
+                                                  uint64_t port_id,
+                                                  const char *payload,
+                                                  size_t payload_length,
+                                                  void *context);
+int native_broker_port_attach(native_broker_port_record_handler handler,
+                              void *context, uint64_t *channel_id);
 /* Public message ports: claim a name, give it up, or resolve one another
    process claimed. See AMIGA_BROKER_PORT_ADD in broker_protocol.h. */
 int native_broker_port_add(const char *name, uint64_t *port_id);

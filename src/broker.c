@@ -37,6 +37,9 @@
 /* Ports are claimed by name and are rarer than tasks: one per application
    that offers a command vocabulary, not one per running command. */
 #define MAX_PORTS 128
+/* Delivery channels are one per process, and a sender needs one as much as a
+   port owner does, so this is sized against processes rather than ports. */
+#define MAX_PORT_CHANNELS 256
 #define DEFAULT_FAIL_LEVEL 10
 #define DEFAULT_PROMPT "%N.%S> "
 #define AMIGA_COMPONENT_LIMIT 107
@@ -135,6 +138,29 @@ struct broker_port {
 
 static struct broker_port ports[MAX_PORTS];
 static uint64_t next_port_id = 1;
+
+/*
+ * Message delivery channels: where to push a message so that a process
+ * blocked in WaitPort() actually receives it.
+ *
+ * Keyed by pid rather than by port, because that is the granularity the
+ * client attaches at: one process, one channel, however many ports it owns
+ * and whether or not it owns any. Routing a delivery is therefore two steps
+ * -- port name to owning pid, pid to channel -- and the second step is what
+ * makes a reply to a sender that owns no port possible at all.
+ *
+ * A channel is dropped when its connection closes, exactly as a port is. The
+ * pid stays the key even so: a process that reconnects gets a new channel
+ * with a new id, and nothing routes to the old one in between.
+ */
+struct broker_port_channel {
+    uint64_t id;
+    int fd;
+    pid_t pid;
+};
+
+static struct broker_port_channel port_channels[MAX_PORT_CHANNELS];
+static uint64_t next_port_channel_id = 1;
 static struct variable_entry global_vars[MAX_VARS];
 static int server_fd = -1;
 static time_t broker_started;
@@ -2157,6 +2183,7 @@ struct broker_connection {
     int fd;
     int anchor;
     uint64_t task_id;
+    uint64_t port_channel_id;
 };
 
 static struct broker_task *find_task_id(uint64_t id)
@@ -2191,6 +2218,72 @@ static void drop_connection_ports(struct broker_connection *connection)
         if (ports[index].id && ports[index].fd == connection->fd)
             memset(&ports[index], 0, sizeof(ports[index]));
     }
+}
+
+static struct broker_port_channel *find_port_channel_pid(pid_t pid)
+{
+    for (size_t index = 0; index < MAX_PORT_CHANNELS; index++)
+        if (port_channels[index].id && port_channels[index].pid == pid)
+            return &port_channels[index];
+    return NULL;
+}
+
+static void drop_connection_port_channels(struct broker_connection *connection)
+{
+    for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
+        if (port_channels[index].id &&
+            port_channels[index].fd == connection->fd)
+            memset(&port_channels[index], 0, sizeof(port_channels[index]));
+    }
+}
+
+/*
+ * Claims this connection as the delivery channel for one process.
+ *
+ * A process gets one. A second attach from the same pid replaces the first
+ * rather than being refused: the ordinary way to reach this is a process that
+ * exec()ed, where the old connection is closed by the kernel but this may be
+ * served before that close is noticed. Refusing would leave the new process
+ * unable to receive anything, which is worse than dropping a channel nothing
+ * can reach any more.
+ */
+static int attach_port_channel(struct broker_connection *connection,
+                               const char *pid_text, char *result,
+                               size_t result_size)
+{
+    char *end;
+    long pid;
+    struct broker_port_channel *existing;
+
+    if (connection->port_channel_id || !pid_text || !pid_text[0]) {
+        errno = EINVAL;
+        return -1;
+    }
+    pid = strtol(pid_text, &end, 10);
+    if (*end || pid <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    existing = find_port_channel_pid((pid_t)pid);
+    if (existing)
+        memset(existing, 0, sizeof(*existing));
+    for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
+        struct broker_port_channel *channel = &port_channels[index];
+
+        if (channel->id)
+            continue;
+        channel->id = next_port_channel_id++;
+        if (!next_port_channel_id)
+            next_port_channel_id = 1;
+        channel->fd = connection->fd;
+        channel->pid = (pid_t)pid;
+        connection->port_channel_id = channel->id;
+        snprintf(result, result_size, "%llu",
+                 (unsigned long long)channel->id);
+        return 0;
+    }
+    errno = ENOSPC;
+    return -1;
 }
 
 static struct broker_port *find_port_name(const char *name)
@@ -2604,6 +2697,12 @@ static int handle_client(struct broker_connection *connection)
             status = errno;
         break;
 
+    case AMIGA_BROKER_PORT_ATTACH:
+        if (attach_port_channel(connection, path, result,
+                                sizeof(result)) != 0)
+            status = errno;
+        break;
+
     case AMIGA_BROKER_PORT_ADD:
         if (add_port(connection, session, path, value, result,
                      sizeof(result)) != 0)
@@ -2757,6 +2856,8 @@ static int handle_client(struct broker_connection *connection)
         size_t used = 0;
         size_t live_sessions = 0;
         size_t live_tasks = 0;
+        size_t live_ports = 0;
+        size_t live_port_channels = 0;
         int written;
 
         length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
@@ -2771,6 +2872,12 @@ static int handle_client(struct broker_connection *connection)
         for (size_t i = 0; i < MAX_TASKS; i++)
             if (tasks[i].id)
                 live_tasks++;
+        for (size_t i = 0; i < MAX_PORTS; i++)
+            if (ports[i].id)
+                live_ports++;
+        for (size_t i = 0; i < MAX_PORT_CHANNELS; i++)
+            if (port_channels[i].id)
+                live_port_channels++;
 
         written = snprintf(result, sizeof(result),
                            "protocol\t0x%08x\n"
@@ -2780,12 +2887,15 @@ static int handle_client(struct broker_connection *connection)
                            "socket\t%s\n"
                            "sys\t%s\n"
                            "sessions\t%zu\n"
-                           "tasks\t%zu\n",
+                           "tasks\t%zu\n"
+                           "ports\t%zu\n"
+                           "port-channels\t%zu\n",
                            (unsigned)AMIGA_BROKER_PROTOCOL_VERSION,
                            executable, (long)getpid(),
                            (long long)(time(NULL) - broker_started),
                            socket_path, system_root,
-                           live_sessions, live_tasks);
+                           live_sessions, live_tasks, live_ports,
+                           live_port_channels);
         if (written < 0 || (size_t)written >= sizeof(result)) {
             status = ENAMETOOLONG;
             break;
@@ -2996,6 +3106,7 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_TASK_FIND ||
                request.operation == AMIGA_BROKER_PORT_ADD ||
                request.operation == AMIGA_BROKER_PORT_FIND ||
+               request.operation == AMIGA_BROKER_PORT_ATTACH ||
                request.operation == AMIGA_BROKER_TASK_LIST ||
                request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)
@@ -3052,6 +3163,7 @@ static void drop_connection(size_t index)
 
     drop_task_connection(connection);
     drop_connection_ports(connection);
+    drop_connection_port_channels(connection);
 
     if (connection->anchor >= 0) {
         struct broker_session *session = &sessions[connection->anchor];
@@ -3081,6 +3193,7 @@ static void accept_connection(void)
     connections[connection_count].fd = fd;
     connections[connection_count].anchor = -1;
     connections[connection_count].task_id = 0;
+    connections[connection_count].port_channel_id = 0;
     connection_count++;
 }
 
