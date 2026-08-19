@@ -130,6 +130,14 @@ and [AROS Rexx history](https://aros.sourceforge.io/news/archive/2002.html).
 
 ## What compiles today
 
+> **Superseded.** This section described the state before CreateNewProc(),
+> rexxsyslib and the broker's port registry existed. All 40 sources of the
+> AROS `rexx` target now compile and link, Regina runs, and `ADDRESS COMMAND`
+> works. See `docs/regina-arexx-plan.md` for the current state, the probe
+> command that proves it, and the plan from here. The account below is kept
+> because the reasoning that got there is still worth reading.
+
+
 With the source checked out, the probe is no longer hypothetical. Compiling
 individual translation units with `-fsyntax-only`, AROS's own headers, and
 the defines `mmakefile.src` uses (`-D__AROS__ -D_GNU_SOURCE
