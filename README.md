@@ -67,6 +67,11 @@ checkout builds them with nothing else to fetch. LhA is fetched instead --
 its upstream ships release tarballs rather than a tree ACE tracks -- so
 `make lha` downloads and checksums one into `build/`.
 
+`make install-regina` puts the interpreter in `SYS:C` under both `rexx` and
+`RX`, the name an Amiga user reaches for. `RX` is an alias for now: on AmigaOS
+it does not run the script itself but sends it to the `REXX` port, which is a
+difference that only shows once ports matter.
+
 Each install target builds first if it needs to, so `make install-regina` on
 its own is enough. Each installs into the same directory as the rest of ACE
 and symlinks the command into `SYS:C`. That shared directory is a

@@ -1471,6 +1471,15 @@ install-regina: regina
 	$(INSTALL) -m 0755 $(BUILD)/rexx $(DESTDIR)$(BINDIR)/rexx
 	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
 	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/rexx
+	# RX is what an Amiga user types, so it is here from the start. It is
+	# an alias for the interpreter rather than the real thing: on AmigaOS
+	# RX does not run the script itself, it sends it to the REXX port for
+	# RexxMast to run, which is why a script sent that way comes back
+	# through the sender's own console. Until RexxMast exists (step 2 of
+	# docs/regina-arexx-plan.md) RX runs the script locally instead. The
+	# difference is invisible for an ordinary script and becomes visible
+	# the moment ports matter.
+	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/RX
 	@if [ -z "$(DESTDIR)" ] && [ ! -x "$(BINDIR)/ace-user-shell" ]; then \
 	    echo; \
 	    echo "warning: installed $(BINDIR)/rexx, but ace-user-shell is not"; \
