@@ -49,8 +49,14 @@ int main(int argc, char **argv)
             return 1;
         return native_broker_setcwd(result) == 0 ? 0 : 1;
     }
-    if (argc == 4 && strcmp(argv[1], "assign") == 0)
-        return native_broker_assign(argv[2], argv[3]) == 0 ? 0 : 1;
+    if (argc == 4 && strcmp(argv[1], "assign") == 0) {
+        if (native_broker_assign_ex(argv[2], argv[3],
+                                    AMIGA_BROKER_PATH_HOST) != 0) {
+            perror("assign");
+            return 1;
+        }
+        return 0;
+    }
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) {
         if (native_broker_resolve_path(argv[2], result, sizeof(result)) != 0)
             return 1;

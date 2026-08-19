@@ -85,12 +85,6 @@ Whatever sets it is somewhere else. `Type` reads `IoErr()` immediately after
 directory case through the same path reports `object is not of required
 type` correctly -- it is specifically the not-found code that arrives raw.
 
-**`ace-brokerctl assign` always fails.** `ace-brokerctl assign WORK: /tmp` --
-the form README documents -- exits 1 and says nothing, on this checkout and at
-62c485d before it, so it is not a regression from the parser work. The `Assign`
-command itself works and is covered by the test suite, so this is the control
-tool's own path into `native_broker_assign()`. Not investigated.
-
 **`Assign FOO: NOSUCH:` exits 0.** Assigning to a target that does not exist
 reports success. Observed from a standalone binary with no `ACE_SESSION` set,
 so this may just be session scoping rather than a real defect -- it has not

@@ -1322,12 +1322,15 @@ test-dir-sort: all
 test-dir-exall-scale: all
 	sh tests/dir_exall_scale_test.sh
 
+test-brokerctl-assign: all
+	sh tests/brokerctl_assign_test.sh
+
 test-tine: all tine
 	sh tests/tine_test.sh
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-tine test-system-assigns test-aros-exec-runtime test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch install-vim vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-brokerctl-assign test-tine test-system-assigns test-aros-exec-runtime test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

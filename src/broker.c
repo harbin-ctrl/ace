@@ -2283,6 +2283,12 @@ static int handle_client(struct broker_connection *connection)
         char assign_name[MAX_NAME];
         size_t assign_length = strlen(path);
         struct assign_entry *assign;
+        /* Assign() callers (assign_compat.c) hand in an AmigaDOS path from
+           NameFromLock(), which must go through resolve_path()'s Amiga
+           parsing.  ace-brokerctl's "assign" is a host-facing debug tool --
+           README.md documents "assign WORK: /tmp" with a raw Linux path --
+           so it opts into host_path instead. */
+        bool host_path = (request.flags & AMIGA_BROKER_PATH_HOST) != 0;
 
         if (assign_length && path[assign_length - 1] == ':')
             assign_length--;
@@ -2304,7 +2310,7 @@ static int handle_client(struct broker_connection *connection)
             char target[PATH_MAX];
 
             if (!assign || resolve_path(session, value, target,
-                                        sizeof(target), false) != 0) {
+                                        sizeof(target), host_path) != 0) {
                 status = errno ? errno : ENOENT;
                 break;
             }
@@ -2328,7 +2334,7 @@ static int handle_client(struct broker_connection *connection)
             char target[PATH_MAX];
 
             if (!assign || assign->target_count >= MAX_ASSIGN_TARGETS ||
-                resolve_path(session, value, target, sizeof(target), false) != 0 ||
+                resolve_path(session, value, target, sizeof(target), host_path) != 0 ||
                 stat(target, &information) != 0 ||
                 !S_ISDIR(information.st_mode)) {
                 status = errno ? errno : ENOSPC;
@@ -2365,7 +2371,7 @@ static int handle_client(struct broker_connection *connection)
                            ASSIGN_NONBINDING : ASSIGN_LATE;
             break;
         }
-        if (resolve_path(session, value, result, sizeof(result), false) != 0 ||
+        if (resolve_path(session, value, result, sizeof(result), host_path) != 0 ||
             stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
             status = errno ? errno : ENOENT;
             break;
