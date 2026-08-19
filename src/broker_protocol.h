@@ -214,6 +214,20 @@ enum amiga_broker_operation {
 
 #define AMIGA_BROKER_MAX_PAYLOAD 16384u
 
+/* Which of a message's streams travel with it, and in which order the
+   descriptors are attached: stdin first when present, then stdout.
+
+   rm_Stdin and rm_Stdout are the *sender's* own streams, and they matter:
+   RexxMast adopts them as the script's input and output when they are not
+   BNULL (RexxMast.c:257-260), which is how a script sent to another process
+   writes on the console of the process that sent it. On AmigaOS this is free,
+   because a BPTR FileHandle is valid in any task. Here it is not, so the
+   descriptors themselves are passed with SCM_RIGHTS and the receiver gets a
+   real handle onto the sender's streams. */
+#define AMIGA_BROKER_PORT_HAS_STDIN   0x0001u
+#define AMIGA_BROKER_PORT_HAS_STDOUT  0x0002u
+#define AMIGA_BROKER_PORT_MAX_FDS     2u
+
 struct amiga_broker_request {
     uint32_t magic;
     uint32_t operation;
@@ -253,6 +267,10 @@ struct amiga_broker_port_record {
     uint64_t message_id;
     uint64_t port_id;
     uint32_t payload_length;
+    /* AMIGA_BROKER_PORT_HAS_*: which descriptors accompany this record as
+       ancillary data. Named rather than counted, because either stream can be
+       absent on its own. */
+    uint32_t flags;
 };
 
 #endif

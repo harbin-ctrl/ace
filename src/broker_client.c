@@ -51,6 +51,114 @@ static int write_all(int fd, const void *buffer, size_t length)
     return 0;
 }
 
+static int read_all(int fd, void *buffer, size_t length);
+
+/*
+ * Sends a buffer with descriptors attached, for the one operation that needs
+ * them: a message carrying the sender's own streams.
+ *
+ * SCM_RIGHTS has to ride along with real data, so the descriptors go with the
+ * first bytes and the rest follows normally. On a stream socket the ancillary
+ * data is delivered with the byte range it was sent with, so a receiver that
+ * reads that first range gets them.
+ */
+static int write_all_with_fds(int fd, const void *buffer, size_t length,
+                              const int *fds, size_t fd_count)
+{
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * AMIGA_BROKER_PORT_MAX_FDS)];
+    } control;
+    struct msghdr message;
+    struct iovec vector;
+    struct cmsghdr *header;
+    ssize_t sent;
+
+    if (!fd_count || fd_count > AMIGA_BROKER_PORT_MAX_FDS)
+        return write_all(fd, buffer, length);
+    memset(&control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    vector.iov_base = (void *)buffer;
+    vector.iov_len = length;
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = CMSG_SPACE(sizeof(int) * fd_count);
+    header = CMSG_FIRSTHDR(&message);
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(int) * fd_count);
+    memcpy(CMSG_DATA(header), fds, sizeof(int) * fd_count);
+    do {
+        sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent <= 0)
+        return -1;
+    /* Whatever the first sendmsg did not take goes without ancillary data:
+       the descriptors have already been handed over. */
+    if ((size_t)sent < length)
+        return write_all(fd, (const char *)buffer + sent, length - sent);
+    return 0;
+}
+
+/*
+ * Reads a fixed-size record and collects any descriptors that came with it.
+ *
+ * Only the first read can carry ancillary data, so it is the only one that
+ * needs recvmsg; the remainder of a short read is ordinary.
+ */
+static int read_all_with_fds(int fd, void *buffer, size_t length,
+                             int *fds, size_t max_fds, size_t *fd_count)
+{
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * AMIGA_BROKER_PORT_MAX_FDS)];
+    } control;
+    struct msghdr message;
+    struct iovec vector;
+    struct cmsghdr *header;
+    ssize_t received;
+
+    *fd_count = 0;
+    memset(&control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    vector.iov_base = buffer;
+    vector.iov_len = length;
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    do {
+        received = recvmsg(fd, &message, 0);
+    } while (received < 0 && errno == EINTR);
+    if (received <= 0)
+        return -1;
+    for (header = CMSG_FIRSTHDR(&message); header;
+         header = CMSG_NXTHDR(&message, header)) {
+        size_t count;
+
+        if (header->cmsg_level != SOL_SOCKET ||
+            header->cmsg_type != SCM_RIGHTS)
+            continue;
+        count = (header->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+        for (size_t index = 0; index < count; index++) {
+            int passed;
+
+            memcpy(&passed, CMSG_DATA(header) + index * sizeof(int),
+                   sizeof(passed));
+            /* More than expected is a protocol error, but the descriptors are
+               already ours and leaking them would be worse. */
+            if (*fd_count < max_fds)
+                fds[(*fd_count)++] = passed;
+            else
+                close(passed);
+        }
+    }
+    if ((size_t)received < length)
+        return read_all(fd, (char *)buffer + received, length - received);
+    return 0;
+}
+
 static int read_all(int fd, void *buffer, size_t length)
 {
     char *bytes = buffer;
@@ -277,24 +385,58 @@ static void *port_record_reader(void *unused)
 {
     struct amiga_broker_port_record record;
     char *payload = NULL;
+    int fds[AMIGA_BROKER_PORT_MAX_FDS];
+    size_t fd_count = 0;
 
     (void)unused;
-    while (read_all(port_fd, &record, sizeof(record)) == 0) {
+    while (read_all_with_fds(port_fd, &record, sizeof(record), fds,
+                             AMIGA_BROKER_PORT_MAX_FDS, &fd_count) == 0) {
+        int stdin_fd = -1;
+        int stdout_fd = -1;
+        size_t next = 0;
+
         if (record.magic != AMIGA_BROKER_MAGIC ||
-            record.payload_length > AMIGA_BROKER_MAX_PAYLOAD)
+            record.payload_length > AMIGA_BROKER_MAX_PAYLOAD) {
+            for (size_t index = 0; index < fd_count; index++)
+                close(fds[index]);
             break;
+        }
+        if ((record.flags & AMIGA_BROKER_PORT_HAS_STDIN) && next < fd_count)
+            stdin_fd = fds[next++];
+        if ((record.flags & AMIGA_BROKER_PORT_HAS_STDOUT) && next < fd_count)
+            stdout_fd = fds[next++];
+        /* Anything the flags did not account for is closed rather than
+           leaked; a descriptor handed over is ours whether we wanted it or
+           not. */
+        for (; next < fd_count; next++)
+            close(fds[next]);
         payload = calloc((size_t)record.payload_length + 1, 1);
-        if (!payload)
+        if (!payload) {
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             break;
+        }
         if (record.payload_length &&
             read_all(port_fd, payload, record.payload_length) != 0) {
             free(payload);
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             break;
         }
         if (port_handler)
             port_handler(record.operation, record.message_id, record.port_id,
-                         payload, (size_t)record.payload_length,
-                         port_handler_context);
+                         payload, (size_t)record.payload_length, stdin_fd,
+                         stdout_fd, port_handler_context);
+        else {
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
+        }
         free(payload);
         payload = NULL;
     }
@@ -368,7 +510,8 @@ void native_broker_reset_after_fork(void)
 static int broker_exchange_bytes_locked(int fd, uint32_t operation,
                                         const void *path, size_t path_length,
                                         const void *value, size_t value_length,
-                                        uint32_t flags, void *result,
+                                        uint32_t flags, const int *fds,
+                                        size_t fd_count, void *result,
                                         size_t result_size,
                                         size_t *result_length);
 
@@ -392,14 +535,16 @@ static pthread_mutex_t broker_lock = PTHREAD_MUTEX_INITIALIZER;
 static int broker_exchange_bytes(int fd, uint32_t operation,
                                  const void *path, size_t path_length,
                                  const void *value, size_t value_length,
-                                 uint32_t flags, void *result,
+                                 uint32_t flags, const int *fds,
+                                 size_t fd_count, void *result,
                                  size_t result_size, size_t *result_length)
 {
     int status;
 
     pthread_mutex_lock(&broker_lock);
     status = broker_exchange_bytes_locked(fd, operation, path, path_length,
-                                          value, value_length, flags, result,
+                                          value, value_length, flags, fds,
+                                          fd_count, result,
                                           result_size, result_length);
     pthread_mutex_unlock(&broker_lock);
     return status;
@@ -411,13 +556,14 @@ static int broker_exchange(int fd, uint32_t operation, const char *path,
 {
     return broker_exchange_bytes(fd, operation, path, path ? strlen(path) : 0,
                                  value, value ? strlen(value) : 0, flags,
-                                 result, result_size, NULL);
+                                 NULL, 0, result, result_size, NULL);
 }
 
 static int broker_exchange_bytes_locked(int fd, uint32_t operation,
                                         const void *path, size_t path_length,
                                         const void *value, size_t value_length,
-                                        uint32_t flags, void *result,
+                                        uint32_t flags, const int *fds,
+                                        size_t fd_count, void *result,
                                         size_t result_size,
                                         size_t *result_length)
 {
@@ -433,7 +579,9 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
     request.value_length = (uint32_t)value_length;
     request.flags = flags;
 
-    if (write_all(fd, &request, sizeof(request)) != 0 ||
+    /* The descriptors ride with the request header, which is the first thing
+       written and always non-empty. */
+    if (write_all_with_fds(fd, &request, sizeof(request), fds, fd_count) != 0 ||
         write_all(fd, session, session_length) != 0 ||
         write_all(fd, path, path_length) != 0 ||
         write_all(fd, value, value_length) != 0 ||
@@ -565,7 +713,8 @@ static int broker_connection(void)
 static int broker_request_bytes(uint32_t operation,
                                 const void *path, size_t path_length,
                                 const void *value, size_t value_length,
-                                uint32_t flags, void *result,
+                                uint32_t flags, const int *fds,
+                                size_t fd_count, void *result,
                                 size_t result_size, size_t *result_length)
 {
     const char *session = broker_session();
@@ -595,8 +744,9 @@ static int broker_request_bytes(uint32_t operation,
         if (fd < 0)
             return -1;
         outcome = broker_exchange_bytes(fd, operation, path, path_length,
-                                        value, value_length, flags, result,
-                                        result_size, result_length);
+                                        value, value_length, flags, fds,
+                                        fd_count, result, result_size,
+                                        result_length);
         if (outcome == 0)
             return 0;
         if (outcome > 0)
@@ -617,7 +767,7 @@ static int broker_request(uint32_t operation, const char *path,
 {
     return broker_request_bytes(operation, path, path ? strlen(path) : 0,
                                 value, value ? strlen(value) : 0, flags,
-                                result, result_size, NULL);
+                                NULL, 0, result, result_size, NULL);
 }
 
 /*
@@ -774,10 +924,14 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
  * which is why even a process owning no port must attach before it can send.
  */
 int native_broker_port_put(const char *name, const void *message,
-                           size_t length, uint64_t *message_id)
+                           size_t length, int stdin_fd, int stdout_fd,
+                           uint64_t *message_id)
 {
     char result[32];
     size_t result_length = 0;
+    int fds[AMIGA_BROKER_PORT_MAX_FDS];
+    size_t fd_count = 0;
+    uint32_t flags = 0;
 
     if (!name || !*name || (length && !message)) {
         errno = EINVAL;
@@ -787,9 +941,19 @@ int native_broker_port_put(const char *name, const void *message,
         errno = ENOTCONN;
         return -1;
     }
+    /* Order is fixed: stdin first when present, then stdout. The flags say
+       which, because either can be absent on its own. */
+    if (stdin_fd >= 0) {
+        flags |= AMIGA_BROKER_PORT_HAS_STDIN;
+        fds[fd_count++] = stdin_fd;
+    }
+    if (stdout_fd >= 0) {
+        flags |= AMIGA_BROKER_PORT_HAS_STDOUT;
+        fds[fd_count++] = stdout_fd;
+    }
     if (broker_request_bytes(AMIGA_BROKER_PORT_PUT, name, strlen(name),
-                             message, length, 0, result, sizeof(result),
-                             &result_length) != 0)
+                             message, length, flags, fds, fd_count, result,
+                             sizeof(result), &result_length) != 0)
         return -1;
     result[result_length] = '\0';
     if (message_id)
@@ -810,7 +974,7 @@ int native_broker_port_reply(uint64_t message_id, const void *reply,
              (unsigned long long)message_id);
     return broker_request_bytes(AMIGA_BROKER_PORT_REPLY, id_text,
                                 strlen(id_text), reply, length, 0, NULL, 0,
-                                NULL);
+                                NULL, 0, NULL);
 }
 
 /*

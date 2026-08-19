@@ -264,6 +264,66 @@ static int read_message(int fd, void *buffer, size_t length)
     return 1;
 }
 
+/*
+ * Reads a record and collects any descriptors that came with it.
+ *
+ * The broker never looks at what a passed descriptor refers to; it hands it
+ * on to the process the message is for. Only the first read can carry
+ * ancillary data, so it is the only one that needs recvmsg.
+ */
+static int read_message_with_fds(int fd, void *buffer, size_t length,
+                                 int *fds, size_t max_fds, size_t *fd_count)
+{
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * AMIGA_BROKER_PORT_MAX_FDS)];
+    } control;
+    struct msghdr message;
+    struct iovec vector;
+    struct cmsghdr *header;
+    ssize_t received;
+
+    *fd_count = 0;
+    memset(&control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    vector.iov_base = buffer;
+    vector.iov_len = length;
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    do {
+        received = recvmsg(fd, &message, 0);
+    } while (received < 0 && errno == EINTR);
+    if (received < 0)
+        return -1;
+    if (!received)
+        return 0;
+    for (header = CMSG_FIRSTHDR(&message); header;
+         header = CMSG_NXTHDR(&message, header)) {
+        size_t count;
+
+        if (header->cmsg_level != SOL_SOCKET ||
+            header->cmsg_type != SCM_RIGHTS)
+            continue;
+        count = (header->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+        for (size_t index = 0; index < count; index++) {
+            int passed;
+
+            memcpy(&passed, CMSG_DATA(header) + index * sizeof(int),
+                   sizeof(passed));
+            if (*fd_count < max_fds)
+                fds[(*fd_count)++] = passed;
+            else
+                close(passed);
+        }
+    }
+    if ((size_t)received < length)
+        return read_message(fd, (char *)buffer + received,
+                            length - received) == 1 ? 1 : -1;
+    return 1;
+}
+
 static uint64_t session_clock;
 
 static struct broker_session *touch_session(struct broker_session *session)
@@ -2393,9 +2453,17 @@ static pid_t connection_peer_pid(int fd)
  */
 static int push_port_record(int channel_fd, uint32_t operation,
                             uint64_t message_id, uint64_t port_id,
-                            const void *payload, size_t length)
+                            const void *payload, size_t length,
+                            uint32_t flags, const int *fds, size_t fd_count)
 {
     struct amiga_broker_port_record record;
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * AMIGA_BROKER_PORT_MAX_FDS)];
+    } control;
+    struct msghdr message;
+    struct iovec vector;
+    ssize_t sent;
 
     if (length > AMIGA_BROKER_MAX_PAYLOAD)
         return -1;
@@ -2404,7 +2472,39 @@ static int push_port_record(int channel_fd, uint32_t operation,
     record.message_id = message_id;
     record.port_id = port_id;
     record.payload_length = (uint32_t)length;
-    if (write_all(channel_fd, &record, sizeof(record)) != 0)
+    record.flags = flags;
+
+    if (!fd_count) {
+        if (write_all(channel_fd, &record, sizeof(record)) != 0)
+            return -1;
+        return length ? write_all(channel_fd, payload, length) : 0;
+    }
+    if (fd_count > AMIGA_BROKER_PORT_MAX_FDS)
+        return -1;
+    memset(&control, 0, sizeof(control));
+    memset(&message, 0, sizeof(message));
+    vector.iov_base = &record;
+    vector.iov_len = sizeof(record);
+    message.msg_iov = &vector;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = CMSG_SPACE(sizeof(int) * fd_count);
+    {
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(int) * fd_count);
+        memcpy(CMSG_DATA(header), fds, sizeof(int) * fd_count);
+    }
+    do {
+        sent = sendmsg(channel_fd, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent <= 0)
+        return -1;
+    if ((size_t)sent < sizeof(record) &&
+        write_all(channel_fd, (const char *)&record + sent,
+                  sizeof(record) - sent) != 0)
         return -1;
     return length ? write_all(channel_fd, payload, length) : 0;
 }
@@ -2453,7 +2553,7 @@ static void abandon_port_message(struct broker_port_message *message,
             (long)message->owner_pid, (long)message->sender_pid);
     (void)push_port_record(message->sender_channel_fd,
                            AMIGA_BROKER_PORT_ABANDONED, message->id,
-                           message->port_id, NULL, 0);
+                           message->port_id, NULL, 0, 0, NULL, 0);
     memset(message, 0, sizeof(*message));
 }
 
@@ -2575,9 +2675,17 @@ static int handle_client(struct broker_connection *connection)
     int status = 0;
     int outcome = -1;
     uint32_t value_limit;
+    /* Descriptors that arrived with this request, if any. They belong to this
+       process from the moment recvmsg() hands them over, so every path out of
+       here has to either pass them on or close them -- hence the single exit
+       below rather than a bare return. */
+    int passed_fds[AMIGA_BROKER_PORT_MAX_FDS];
+    size_t passed_fd_count = 0;
 
-    if (read_message(fd, &request, sizeof(request)) != 1)
-        return -1;
+    if (read_message_with_fds(fd, &request, sizeof(request), passed_fds,
+                              AMIGA_BROKER_PORT_MAX_FDS,
+                              &passed_fd_count) != 1)
+        goto drop;
     if (request.magic != AMIGA_BROKER_MAGIC) {
         char message[160];
 
@@ -2589,7 +2697,7 @@ static int handle_client(struct broker_connection *connection)
                  (unsigned)AMIGA_BROKER_PROTOCOL_VERSION,
                  (unsigned)amiga_broker_version_from_magic(request.magic));
         send_response(fd, EPROTO, message);
-        return -1;
+        goto drop;
     }
     /*
      * A value is normally a path, a variable's contents or a list, so PATH_MAX
@@ -2605,7 +2713,7 @@ static int handle_client(struct broker_connection *connection)
     if (request.session_length > 4096 || request.path_length > PATH_MAX ||
         request.value_length > value_limit) {
         send_response(fd, EPROTO, "invalid request");
-        return -1;
+        goto drop;
     }
 
     session_id = calloc(request.session_length + 1, 1);
@@ -2985,9 +3093,14 @@ static int handle_client(struct broker_connection *connection)
         message->sender_channel_fd = sender_channel->fd;
         message->sender_pid = sender_pid;
         message->owner_pid = port->pid;
+        /* The sender's own streams go with the message. The broker does not
+           look at what they refer to; it hands them to the process the
+           message is for, which is the whole point -- a script sent to
+           another process writes on the console of the one that sent it. */
         if (push_port_record(owner_channel->fd, AMIGA_BROKER_PORT_PUT,
                              message->id, port->id, value,
-                             request.value_length) != 0) {
+                             request.value_length, request.flags, passed_fds,
+                             passed_fd_count) != 0) {
             memset(message, 0, sizeof(*message));
             status = EIO;
             break;
@@ -3024,7 +3137,7 @@ static int handle_client(struct broker_connection *connection)
         if (push_port_record(message->sender_channel_fd,
                              AMIGA_BROKER_PORT_REPLY, message->id,
                              message->port_id, value,
-                             request.value_length) != 0)
+                             request.value_length, 0, NULL, 0) != 0)
             status = EIO;
         /* Cleared either way: a reply that could not be written is not going
            to be written by trying again, and leaving it would leak the slot. */
@@ -3441,6 +3554,16 @@ done:
     free(session_id);
     free(path);
     free(value);
+drop:
+    /*
+     * Always, forwarded or not. sendmsg() with SCM_RIGHTS *duplicates* a
+     * descriptor into the receiver; it does not hand this process's copy
+     * over. Leaving them open on the assumption that forwarding consumed them
+     * leaks two descriptors per message with streams, and the broker is the
+     * one process here that never exits -- it would run out.
+     */
+    for (size_t index = 0; index < passed_fd_count; index++)
+        close(passed_fds[index]);
     return outcome;
 }
 

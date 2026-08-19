@@ -62,9 +62,12 @@ static volatile uint64_t replied_id;
 
 static void receiver_handler(uint32_t operation, uint64_t message_id,
                              uint64_t port_id, const char *payload,
-                             size_t payload_length, void *context)
+                             size_t payload_length, int stdin_fd,
+                             int stdout_fd, void *context)
 {
+    (void)stdin_fd; (void)stdout_fd;
     (void)port_id; (void)context;
+    (void)stdin_fd; (void)stdout_fd;
     if (operation != AMIGA_BROKER_PORT_PUT ||
         payload_length > sizeof(delivered_bytes))
         return;
@@ -76,9 +79,11 @@ static void receiver_handler(uint32_t operation, uint64_t message_id,
 
 static void sender_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
-                           size_t payload_length, void *context)
+                           size_t payload_length, int stdin_fd,
+                           int stdout_fd, void *context)
 {
     (void)port_id; (void)context;
+    (void)stdin_fd; (void)stdout_fd;
     if (operation != AMIGA_BROKER_PORT_REPLY ||
         payload_length > sizeof(replied_bytes))
         return;
@@ -119,7 +124,7 @@ int main(void)
 
     /* Sending before this process can be replied to is refused rather than
        accepted into a wait that could never end. */
-    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH,
+    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH, -1, -1,
                                  &message_id) != 0 && errno == ENOTCONN,
           "sending without a delivery channel is refused");
 
@@ -128,7 +133,7 @@ int main(void)
 
     /* No owner yet: this is the "is RexxMast running" case, and it has to be
        ESRCH so a caller can tell it from a real failure. */
-    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH,
+    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH, -1, -1,
                                  &message_id) != 0 && errno == ESRCH,
           "sending to an unregistered name reports ESRCH");
 
@@ -173,7 +178,7 @@ int main(void)
     }
 
     message_id = 0;
-    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH,
+    check(native_broker_port_put(PORT_NAME, sent_message, SENT_LENGTH, -1, -1,
                                  &message_id) == 0 && message_id != 0,
           "the message is accepted and given an id");
 

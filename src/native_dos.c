@@ -2132,6 +2132,45 @@ static BPTR handle_for_file(FILE *file)
     return (BPTR)file;
 }
 
+/*
+ * The host descriptor behind a DOS handle, or -1.
+ *
+ * For passing a process's own streams to another process with SCM_RIGHTS, so
+ * that a script sent to an ARexx port writes on the console of whoever sent
+ * it -- rm_Stdin and rm_Stdout in a RexxMsg. On AmigaOS this is free, because
+ * a BPTR FileHandle is valid in any task; here the descriptor has to travel.
+ *
+ * A console handle has no single descriptor to give: it is a channel to the
+ * console process, not a file. That case answers -1, and the message travels
+ * without that stream, which is the same as it not having been set. It is
+ * also the uncommon case -- a command's Output() is normally the standard
+ * stream it inherited, whose descriptor is exactly what is wanted.
+ *
+ * The descriptor is not duplicated: SCM_RIGHTS gives the receiver a
+ * descriptor of its own, so the sender keeps using this one unaffected.
+ */
+int ace_dos_handle_descriptor(BPTR handle)
+{
+    FILE *file = NULL;
+
+    if (!handle)
+        return -1;
+    native_init_stdio_handles();
+    if (native_console_pointer(handle))
+        return -1;
+    if (handle == (BPTR)&native_stdin_handle.amiga)
+        file = native_stdin_handle.stream;
+    else if (handle == (BPTR)&native_stdout_handle.amiga)
+        file = native_stdout_handle.stream;
+    else if (handle == (BPTR)&native_stderr_handle.amiga)
+        file = native_stderr_handle.stream;
+    else
+        file = (FILE *)handle;
+    if (!file)
+        return -1;
+    return fileno(file);
+}
+
 BPTR Output(void)
 {
     return handle_for_file(selected_output());

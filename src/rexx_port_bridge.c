@@ -29,17 +29,23 @@
  * into ace-console, which has no broker connection and no use for ARexx; the
  * hooks there are weak so this file is linked only where it is wanted.
  *
- * Not carried yet: rm_Stdin and rm_Stdout. They are the sender's own streams
- * and are what makes a script sent to another process write on the sender's
- * console. Passing them needs SCM_RIGHTS -- step 1.5 -- so for now a delivered
- * message gets BNULL for both, and a receiver that writes to them writes
- * nowhere.
+ * rm_Stdin and rm_Stdout travel with the message as descriptors. They are the
+ * sender's own streams, and they are what makes a script sent to another
+ * process write on the console of the process that sent it -- RexxMast adopts
+ * them as the script's input and output when they are not BNULL. On AmigaOS
+ * that costs nothing because a BPTR FileHandle is valid in any task; here the
+ * descriptors are passed with SCM_RIGHTS and the receiver wraps what it is
+ * given in a FILE of its own.
  */
 
 #include "broker_client.h"
 #include "broker_protocol.h"
 
 #include "aros_exec_runtime.h"
+
+/* native_dos.c: the host descriptor behind a DOS handle, for passing this
+   process's own streams to another one. */
+int ace_dos_handle_descriptor(BPTR handle);
 
 #include <exec/ports.h>
 #include <exec/nodes.h>
@@ -51,6 +57,8 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +103,11 @@ struct ace_rexx_sent {
 struct ace_rexx_received {
     uint64_t message_id;
     struct RexxMsg *message;
+    /* The streams this process was handed, wrapped for DOS. Closed when the
+       message is answered: they are the sender's console, and holding them
+       open would keep it from ever seeing end-of-file. */
+    FILE *stdin_stream;
+    FILE *stdout_stream;
     struct ace_rexx_received *next;
 };
 
@@ -114,7 +127,8 @@ static int channel_ready;
 
 static void bridge_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
-                           size_t payload_length, void *context);
+                           size_t payload_length, int stdin_fd, int stdout_fd,
+                           void *context);
 
 /*
  * Opens the delivery channel if it is not open yet.
@@ -303,9 +317,21 @@ static struct RexxMsg *take_sent(uint64_t message_id)
  */
 static void bridge_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
-                           size_t payload_length, void *context)
+                           size_t payload_length, int stdin_fd, int stdout_fd,
+                           void *context)
 {
     (void)context;
+
+    /* Descriptors only ever accompany a delivery. Anything else that arrives
+       with them is malformed, and they are ours to close either way. */
+    if (operation != AMIGA_BROKER_PORT_PUT) {
+        if (stdin_fd >= 0)
+            close(stdin_fd);
+        if (stdout_fd >= 0)
+            close(stdout_fd);
+        stdin_fd = -1;
+        stdout_fd = -1;
+    }
 
     if (operation == AMIGA_BROKER_PORT_PUT) {
         struct ace_rexx_local_port *entry;
@@ -321,27 +347,60 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
             }
         }
         pthread_mutex_unlock(&bridge_lock);
-        if (!target)
+        if (!target) {
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             return;
+        }
         message = CreateRexxMsg(NULL, NULL, NULL);
-        if (!message)
+        if (!message) {
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             return;
+        }
         if (deserialise(message, payload, payload_length, 1) != 0) {
             DeleteRexxMsg(message);
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             return;
         }
         /* No reply port: this message is not answered by putting it back on a
            port in this process, and ReplyMsg() finds it in the table below
-           before it ever looks at mn_ReplyPort. rm_Stdin and rm_Stdout stay
-           BNULL until 1.5 carries them. */
+           before it ever looks at mn_ReplyPort. */
         message->rm_Node.mn_ReplyPort = NULL;
         record = calloc(1, sizeof(*record));
         if (!record) {
             DeleteRexxMsg(message);
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
             return;
         }
         record->message_id = message_id;
         record->message = message;
+        /* A BPTR is a FILE * here, so wrapping the descriptor is all it takes
+           for Read() and Write() to reach the sender's console. */
+        if (stdin_fd >= 0) {
+            record->stdin_stream = fdopen(stdin_fd, "r");
+            if (record->stdin_stream)
+                message->rm_Stdin = (BPTR)record->stdin_stream;
+            else
+                close(stdin_fd);
+        }
+        if (stdout_fd >= 0) {
+            record->stdout_stream = fdopen(stdout_fd, "w");
+            if (record->stdout_stream)
+                message->rm_Stdout = (BPTR)record->stdout_stream;
+            else
+                close(stdout_fd);
+        }
         pthread_mutex_lock(&bridge_lock);
         record->next = received_messages;
         received_messages = record;
@@ -439,7 +498,10 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
        PORT_PUT wants: the broker finds the owner and delivers in one step, so
        the port cannot go away between the two. */
     if (native_broker_port_put((const char *)port->mp_Node.ln_Name,
-                               payload, length, &message_id) != 0) {
+                               payload, length,
+                               ace_dos_handle_descriptor(rexx->rm_Stdin),
+                               ace_dos_handle_descriptor(rexx->rm_Stdout),
+                               &message_id) != 0) {
         int failed = errno;
 
         free(payload);
@@ -504,6 +566,15 @@ int ace_rexx_port_reply(struct Message *message)
     } else {
         (void)native_broker_port_reply(entry->message_id, NULL, 0);
     }
+    /* The sender's streams go back with the answer: anything written to them
+       has been written, and holding them open would leave the sender's
+       console with a reader or writer it no longer has. */
+    if (entry->stdout_stream)
+        fclose(entry->stdout_stream);
+    if (entry->stdin_stream)
+        fclose(entry->stdin_stream);
+    rexx->rm_Stdin = BNULL;
+    rexx->rm_Stdout = BNULL;
     free(entry);
     /* This message was made here, on delivery, and the receiver is done with
        it. Its argstrings belong to the receiver, which frees them with

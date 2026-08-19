@@ -171,19 +171,22 @@ git status --short third_party # must be empty
   **unmodified**. `sendrexxmsg` now gets past `FindPort("REXX")` and blocks at
   `WaitPort`, because delivery is not implemented.
 * **`PutMsg()` and `ReplyMsg()` cross processes** through the Amiga API, with
-  the reply arriving as the very message that was sent.
+  the reply arriving as the very message that was sent, and the sender's own
+  streams travelling with it -- so a receiver writing to `rm_Stdout` writes on
+  the sender's console, which is how `ADDRESS <port>` output reaches the user.
 * A process has a **message-delivery channel** to the broker
   (`AMIGA_BROKER_PORT_ATTACH`): a second push connection with its own reader
   thread, opened lazily on first port use and released when the process goes.
   `ace-brokerctl status` reports `ports` and `port-channels` alongside `tasks`.
 * **A message crosses processes and the reply comes back**
   (`AMIGA_BROKER_PORT_PUT`, `AMIGA_BROKER_PORT_REPLY`), carrying arbitrary
-  bytes intact. What is not built yet is `PutMsg()` using any of it (1.6), the
-  sender's streams travelling with the message (1.5) -- a delivered message
-  gets `BNULL` for both, so a receiver writing to them writes nowhere. A
-  receiver that dies,
-  deletes the port, or is replaced by an `exec()` no longer strands its sender
-  (1.7); one that stays alive and silent still does, deliberately.
+  bytes intact. A receiver that dies, deletes the port, or is replaced by an
+  `exec()` no longer strands its sender (1.7); one that stays alive and silent
+  still does, deliberately.
+
+Stage 1 is complete. What remains before the 1.8 acceptance run is nothing in
+the mechanism itself -- only building the AROS `sendrexxmsg` and `listen4msg`
+sources and running them unmodified.
 
 ## The two semantics questions, answered from AmigaOS
 
@@ -303,8 +306,31 @@ Note before raising that cap: `broker_exchange_bytes_locked()` declares two
 unwanted replies. 16 KB each is already substantial; 64 KB would not be
 sensible without moving them off the stack first.
 
-1.5 Pass `rm_Stdin`/`rm_Stdout` as descriptors with `SCM_RIGHTS` alongside the
-text payload. The receiver turns them into real handles for the script.
+1.5 **Done.** `rm_Stdin` and `rm_Stdout` travel with the message as
+descriptors. The sender's `Input()`/`Output()` are turned into host
+descriptors by `ace_dos_handle_descriptor()` (native_dos.c) and attached with
+`SCM_RIGHTS`; the broker forwards them to the owner without looking at them;
+the receiver wraps each in a `FILE` with `fdopen()`, which is all a BPTR is
+here, so `Read()` and `Write()` reach the sender's console directly.
+
+* **The broker must close its copies.** `sendmsg()` with `SCM_RIGHTS`
+  *duplicates* a descriptor into the receiver rather than handing the sender's
+  over. Forwarding and then not closing leaks two descriptors per message, in
+  the one process that never exits. The test compares the broker's
+  `/proc/<pid>/fd` count between two exchanges to catch exactly this.
+* **A console handle has no descriptor to give** -- it is a channel to the
+  console process, not a file -- so that case passes nothing and the stream
+  is absent, the same as never having been set. It is also uncommon: a
+  command's `Output()` is normally the standard stream it inherited.
+* **The receiver closes the streams when it replies.** They are the sender's
+  console; holding them open would leave it with a reader or writer that no
+  longer exists.
+* Which streams are present is named in flags rather than counted, because
+  either can be absent on its own.
+
+`make test-rexx-port` now checks that what the receiver writes to
+`rm_Stdout` comes out on the *sender's* stream, by standing a pipe in for its
+own stdout across the exchange.
 
 1.6 **Done.** `src/rexx_port_bridge.c`. `PutMsg()` recognises a stand-in port
 via `ace_aros_runtime_remote_port_id()` and forwards; `ReplyMsg()` on a message
@@ -462,7 +488,7 @@ a commit.
 * **After 1.1.** Done. `make test-broker-port-channel`.
 * **After 1.2 and 1.3.** Done. `make test-broker-port-message`.
 * **After 1.7.** Done. `make test-broker-port-abandon`.
-* **After 1.6.** Done. `make test-rexx-port`.
+* **After 1.6 and 1.5.** Done. `make test-rexx-port`.
 * **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
   one process. Argstrings with embedded NULs and high bytes, all sixteen
   `rm_Args` slots, and one oversized message that must fail cleanly against

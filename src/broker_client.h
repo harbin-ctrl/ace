@@ -68,13 +68,19 @@ int native_broker_task_find(const char *name, uint64_t *task_id);
 
    payload is NUL-terminated for convenience and its length given separately,
    because a serialised message may legitimately contain NUL bytes.  It is
-   valid only for the duration of the call. See AMIGA_BROKER_PORT_ATTACH and
-   struct amiga_broker_port_record in broker_protocol.h. */
+   valid only for the duration of the call.
+
+   stdin_fd and stdout_fd are the sender's own streams when the message
+   carried them, or -1. They are handed to the handler, which owns them from
+   that moment and must close them; a handler that ignores them leaks them.
+   See AMIGA_BROKER_PORT_ATTACH and struct amiga_broker_port_record in
+   broker_protocol.h. */
 typedef void (*native_broker_port_record_handler)(uint32_t operation,
                                                   uint64_t message_id,
                                                   uint64_t port_id,
                                                   const char *payload,
                                                   size_t payload_length,
+                                                  int stdin_fd, int stdout_fd,
                                                   void *context);
 int native_broker_port_attach(native_broker_port_record_handler handler,
                               void *context, uint64_t *channel_id);
@@ -93,7 +99,8 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
    automatically, so "no such port" is the ordinary first experience rather
    than an exceptional one. */
 int native_broker_port_put(const char *name, const void *message,
-                           size_t length, uint64_t *message_id);
+                           size_t length, int stdin_fd, int stdout_fd,
+                           uint64_t *message_id);
 int native_broker_port_reply(uint64_t message_id, const void *reply,
                              size_t length);
 /* Public message ports: claim a name, give it up, or resolve one another

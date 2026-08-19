@@ -35,15 +35,18 @@ static void check(int condition, const char *what)
 
 static void record_sink(uint32_t operation, uint64_t message_id,
                         uint64_t port_id, const char *payload,
-                        size_t payload_length, void *context)
+                        size_t payload_length, int stdin_fd,
+                        int stdout_fd, void *context)
 {
-    (void)operation; (void)message_id; (void)port_id;
+    (void)operation; (void)message_id; (void)stdin_fd; (void)stdout_fd;
+    (void)port_id;
     (void)payload; (void)payload_length; (void)context;
 }
 
 static void other_sink(uint32_t operation, uint64_t message_id,
                        uint64_t port_id, const char *payload,
-                       size_t payload_length, void *context)
+                       size_t payload_length, int stdin_fd,
+                       int stdout_fd, void *context)
 {
     (void)operation; (void)message_id; (void)port_id;
     (void)payload; (void)payload_length; (void)context;

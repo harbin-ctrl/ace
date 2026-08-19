@@ -46,9 +46,12 @@ static volatile int replied;
 
 static void sender_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
-                           size_t payload_length, void *context)
+                           size_t payload_length, int stdin_fd,
+                           int stdout_fd, void *context)
 {
+    (void)stdin_fd; (void)stdout_fd;
     (void)port_id; (void)payload; (void)payload_length; (void)context;
+    (void)stdin_fd; (void)stdout_fd;
     if (operation == AMIGA_BROKER_PORT_ABANDONED) {
         abandoned_id = message_id;
         abandoned = 1;
@@ -62,9 +65,11 @@ static volatile uint64_t delivered_id;
 
 static void receiver_handler(uint32_t operation, uint64_t message_id,
                              uint64_t port_id, const char *payload,
-                             size_t payload_length, void *context)
+                             size_t payload_length, int stdin_fd,
+                             int stdout_fd, void *context)
 {
     (void)port_id; (void)payload; (void)payload_length; (void)context;
+    (void)stdin_fd; (void)stdout_fd;
     if (operation == AMIGA_BROKER_PORT_PUT) {
         delivered_id = message_id;
         delivered = 1;
@@ -161,7 +166,7 @@ int main(void)
 
     abandoned = 0;
     replied = 0;
-    check(native_broker_port_put("broker-port-abandon-test", "x", 1,
+    check(native_broker_port_put("broker-port-abandon-test", "x", 1, -1, -1,
                                  &message_id) == 0 && message_id != 0,
           "the message reaches the receiver");
     if (read(ready[0], &byte, 1) != 1 || byte != 'D') {
@@ -205,7 +210,7 @@ int main(void)
     abandoned = 0;
     abandoned_id = 0;
     message_id = 0;
-    check(native_broker_port_put("broker-port-abandon-test-2", "y", 1,
+    check(native_broker_port_put("broker-port-abandon-test-2", "y", 1, -1, -1,
                                  &message_id) == 0 && message_id != 0,
           "a second message reaches its receiver");
     if (read(ready[0], &byte, 1) != 1 || byte != 'D')
