@@ -736,20 +736,26 @@ static void native_fill_fib_comment(const char *path,
    Examine() (the locked object itself) and ExNext() (its next directory
    child). name overrides the basename ACE would otherwise take from path,
    since a directory child's fib_FileName is the entry's own name, not the
-   parent directory's. */
-static int native_fill_fib(const char *path, const char *name,
+   parent directory's.
+
+   follow says which of the two objects at a symbolic link is being
+   described. A directory scan reports the link itself (follow == 0), so a
+   listing still shows a softlink as a softlink, and shows one whose target
+   has gone away at all. A lock describes what Lock() actually resolved
+   (follow != 0), which followed the link -- so Examine() on it reports the
+   target's type, the way AmigaDOS does. That distinction is what keeps a
+   drawer of symlinked commands from listing as drawers: SYS:C is exactly
+   that, and Dir.c re-Lock()s each softlink to ask what it really is. */
+static int native_fill_fib(const char *path, const char *name, int follow,
                            struct FileInfoBlock *fib)
 {
     struct stat information;
     const char *fib_name = name;
     char mapped_path[PATH_MAX];
 
-    /* A Linux symbolic link maps directly to AmigaDOS's ST_SOFTLINK.  Use
-       lstat(), not stat(): a directory listing must report the link object
-       even when its target has gone away.  Normal Lock()/Open() resolution
-       still follows a link, so operating on a dangling softlink retains the
-       genuine AmigaDOS ERROR_OBJECT_NOT_FOUND behaviour. */
-    if (lstat(path, &information) != 0) {
+    /* A Linux symbolic link maps directly to AmigaDOS's ST_SOFTLINK. */
+    if ((follow ? stat(path, &information) :
+                  lstat(path, &information)) != 0) {
         native_ioerr = errno;
         return -1;
     }
@@ -1881,7 +1887,7 @@ LONG Examine(BPTR handle, struct FileInfoBlock *fib)
     }
     name = strrchr(lock->path, '/');
     name = name ? name + 1 : lock->path;
-    if (native_fill_fib(lock->path, name, fib) != 0)
+    if (native_fill_fib(lock->path, name, 1, fib) != 0)
         return DOSFALSE;
 
     /* A real Examine() on a directory lock (re)starts the scan ExNext()
@@ -1933,7 +1939,7 @@ LONG ExNext(BPTR handle, struct FileInfoBlock *fib)
             native_ioerr = ERROR_LINE_TOO_LONG;
             return DOSFALSE;
         }
-        if (native_fill_fib(child, entry->d_name, fib) != 0) {
+        if (native_fill_fib(child, entry->d_name, 0, fib) != 0) {
             /* A name too long to spell, compressed or not, is not this
              * entry's fault and not this scan's failure: real AmigaDOS
              * never meets one, since a real filesystem enforces its own
