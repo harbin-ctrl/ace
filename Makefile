@@ -1416,6 +1416,17 @@ install: all tine
 	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
 	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
 	$(INSTALL) -m 0644 assets/ace.png $(DESTDIR)$(ICONDIR)/ace.png
+	# Vim, Regina and LhA, after the base install rather than as ordinary
+	# prerequisites of it. Order matters: install-regina checks that
+	# ace-user-shell is already beside the rexx it installs, and as a
+	# prerequisite it could run first and warn about an absence it was
+	# about to stop being true. Make gives no ordering among prerequisites,
+	# so this is a sub-make -- the one place in this file that recurses,
+	# and the reason is sequencing rather than modularity.
+	#
+	# Command-line and environment variables reach the sub-make on their
+	# own, so DESTDIR and PREFIX do not need repeating here.
+	$(MAKE) install-vim install-regina install-lha
 	@if [ -z "$(DESTDIR)" ]; then \
 	    found=`command -v ace-shell 2>/dev/null || true`; \
 	    if [ -n "$$found" ] && [ "$$found" != "$(BINDIR)/ace-shell" ]; then \

@@ -52,9 +52,14 @@ a copy that `PATH` will not select.
 
 ### The optional programs: Vim, Regina and LhA
 
-Three programs ACE can run but does not own are built and installed
-separately from the ordinary set, each with a build, install and clean
-target:
+Three programs ACE can run but does not own -- Vim, Regina and LhA -- are
+built separately from the ordinary set, because two of them are large and one
+arrives over the network. `make install` installs all three along with
+everything else, so a full install is still one command; expect it to build
+Vim, which is the slow part by a wide margin.
+
+Each also has a build, install and clean target of its own, for working on
+one without paying for the others:
 
 ```sh
 make vim         make install-vim         make clean-vim
@@ -73,7 +78,8 @@ it does not run the script itself but sends it to the `REXX` port, which is a
 difference that only shows once ports matter.
 
 Each install target builds first if it needs to, so `make install-regina` on
-its own is enough. Each installs into the same directory as the rest of ACE
+its own is enough, and `make install` runs all three after installing ACE
+itself. Each installs into the same directory as the rest of ACE
 and symlinks the command into `SYS:C`. That shared directory is a
 requirement, not tidiness: `build/rexx` finds `ace-user-shell` beside its own
 executable, and a `rexx` installed anywhere else leaves `ADDRESS COMMAND`
