@@ -84,36 +84,90 @@ thin `proto/dos.h` and `proto/alib.h` win the lookup and hide `StrDup()` and
 `SystemTags()`, which ACE does implement. Do not add a third `proto/` tree; it
 would add a third candidate to the same ambiguous lookup.
 
-## The probe that tells you where you are
+**Make's built-in rules will rewrite the pristine Regina checkout.** `regina/`
+ships a generated `yaccsrc.c` beside its `yaccsrc.y`, and `lexsrc.c` beside
+`lexsrc.l`. Make's implicit `%.c: %.y` rule considers the `.y` newer, runs
+`yacc`, and moves the result *over the checked-in `.c`, in the source
+directory* -- so the tree that has to stay clean quietly stops being clean,
+and the regenerated file does not even compile. The Makefile cancels both
+implicit rules. Do not remove that cancellation, and check
+`git -C ~/stash/aros-contrib status` after any build change.
 
-Compiles every source of the AROS `rexx` target against ACE. All 40 are clean
-as of `c48deae`; anything else is a regression.
+**A rule's prerequisites are expanded where the rule is written, not when it
+runs.** `DOS_RUNTIME_OBJ` is defined two-thirds of the way down the Makefile;
+a link rule written above that point sees it as empty and fails with a wall of
+undefined references from a file that is, in fact, in the link. That is why
+the Regina link rules sit near `ace-user-shell` rather than with the other
+Regina variables.
+
+**`-w` does not silence gcc 14.** Implicit function declarations, implicit
+`int`, and the pointer/integer conversions are *errors* by default now, not
+warnings, and `-w` does not demote an error. Regina is 2009 C and trips all of
+them, so `REGINA_CFLAGS` names each one as an explicit `-Wno-`.
+
+**Test objects only build under their own test targets.** `make all` will not
+catch a test that no longer compiles. After changing any API a test calls, run
+the tests, not just the build.
+
+**`ace-console` links `aros-exec-runtime.o` but deliberately not
+`broker_client.o`** -- it is a GUI process with no DOS session. That is why the
+broker port calls in `aros_exec_runtime.c` are `__attribute__((weak))` and
+checked for NULL before use. Do not "fix" this by adding `broker_client.o` to
+the console link.
+
+**A built `rexx` must sit beside `ace-user-shell`.** `ADDRESS COMMAND` goes
+through `SystemTags()` -> `launch_command()`, which finds the shell next to the
+running executable. Run `rexx` from anywhere else and `ADDRESS COMMAND`
+silently does nothing while returning 0.
+
+**`compat/aros-real/include/proto/exec.h` is hand-written and partly wrong.**
+Three return types disagreed with AROS and with ACE's own definitions --
+`FindTask`, `Signal`, `SetTaskPri` -- each found only when something finally
+included both compat trees at once. Assume more are wrong. Check against
+`$HOME/aros/rom/exec/*.c`, which is the authority.
+
+**Include order for Regina is `compat/aros-real/include` before
+`compat/include`,** plus `-include ace_regina_compat.h` from
+`compat/regina/include`. That header exists because the aros-real tree's own
+thin `proto/dos.h` and `proto/alib.h` win the lookup and hide `StrDup()` and
+`SystemTags()`, which ACE does implement. Do not add a third `proto/` tree; it
+would add a third candidate to the same ambiguous lookup.
+
+## Building it
 
 ```sh
-cd "$HOME/stash/aros-contrib/regina"
-ACE=$HOME/repo/ace
-gcc -fsyntax-only -std=gnu99 -w \
-  -Uunix -U__unix__ -U__unix \
-  -D__AROS__ -D_GNU_SOURCE -DNO_EXTERNAL_QUEUES -DAPIENTRY= \
-  '-DREGINA_VERSION_DATE="31 Dec 2009"' '-DREGINA_VERSION_MAJOR="3"' \
-  '-DREGINA_VERSION_MINOR="5"' '-DREGINA_VERSION_SUPP=""' \
-  -I. -I$ACE/compat/aros-real/include -I$ACE/compat/include \
-  -I$ACE/compat/regina/include -I$ACE/src \
-  -I$HOME/aros/arch/all-pc/include -I$HOME/aros/arch/aarch64-all/include \
-  -I$HOME/aros/compiler/arossupport/include -I$HOME/aros/compiler/include \
-  -include ace_regina_compat.h os_amiga.c
+make regina
 ```
+
+That is the whole thing. It compiles all 40 sources of the AROS `rexx` target
+and links them against ACE, producing `build/rexx` beside `ace-user-shell` --
+which is where it has to be, or `ADDRESS COMMAND` silently does nothing. The
+file list is `regina/mmakefile.src`'s `rexx` target verbatim and the version
+comes from `regina/regina.ver`, so neither can drift from upstream.
+
+`regina` is deliberately not part of `all`: it needs the external checkout,
+and says so plainly when that is missing. `AROS_CONTRIB_ROOT` overrides where
+the checkout lives.
 
 `-Uunix -U__unix__ -U__unix` is not optional. `mt_notmt.c` picks its
 `OS_Dep_funcs` from an `#if/#elif` chain in which the unix branch comes before
 the Amiga one, and gcc on a Linux host predefines all three. Without them
 Regina links against `__regina_OS_Unx` and you have quietly built the wrong
-port. Confirm with `nm mt_notmt.o | grep regina_OS` -- it must say
-`__regina_OS_Amiga`.
+port -- it compiles, links, and runs. The Makefile no longer trusts the flags
+to stay put: the `regina-mt_notmt.o` rule asserts that `__regina_OS_Amiga` is
+referenced and `__regina_OS_Unx` is not, and deletes the object if not.
+
+After touching any of it:
+
+```sh
+make regina && build/rexx -v   # REXX-Regina_3.5 5.00 31 Dec 2009
+git -C ~/stash/aros-contrib status  # must be empty
+```
 
 ## What works today
 
-* All 40 sources of the AROS `rexx` target compile and link against ACE.
+* `make regina` builds it: all 40 sources of the AROS `rexx` target compile
+  and link against ACE, from the Makefile rather than by hand.
 * Regina runs: `rexx -v` reports `REXX-Regina_3.5 5.00 31 Dec 2009`, and
   scripts execute -- arithmetic, strings, stems, `parse`.
 * `ADDRESS COMMAND 'Echo ...'` works end to end: Regina ->
@@ -287,12 +341,15 @@ where the live path detects the failure -- **not** in
 `$HOME/aros/rom/exec/*.c`. Three wrong return types so far, found one at a
 time.
 
-4.3 **Add a Makefile target that builds Regina**, so this stops being a
-hand-run command line. It needs the include order, the `-U` flags, and the
-version defines from `regina.ver`. Note `docs/regina-amiga-port.md`'s open
-question about whether the two compat trees should be merged; the Regina
-header is the current answer, not necessarily the final one.
-
+4.3 **Done.** `make regina`; see "Building it" above. It carries the include
+order, the `-U` flags with an assertion behind them, and the version defines
+read out of `regina.ver`. Two things it does *not* do yet: install `rexx`
+alongside the other binaries (it must land beside `ace-user-shell`, so the
+`install` target needs a decision about a target that is not in `all`), and
+build the `regina` shared-library target -- only the standalone `rexx`.
+`docs/regina-amiga-port.md`'s open question about merging the two compat
+trees is still open; the Regina header remains the current answer, not
+necessarily the final one.
 4.4 `struct ace_gfx_font_choice` is built field by field by its callers, so
 adding a member leaves it uninitialised in any caller that misses one. This
 already broke `graphics_test.c` once. The same hazard applies to any struct

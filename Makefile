@@ -194,6 +194,74 @@ LHA_AROS_CFLAGS := -D_AMIGA -D__AROS__ -DEXPAND_WILDCARDS \
                    -Dutimes=ace_amiga_posix_utimes \
                    -Dsymlink=ace_amiga_posix_symlink \
                    -Dreadlink=ace_amiga_posix_readlink
+# Regina, the Rexx interpreter, built from the AROS contrib tree.
+#
+# The source is deliberately not vendored here: it is a pristine sparse
+# checkout of aros-contrib, kept clean, so that what this Makefile proves is
+# that ACE implements the contract Regina expects rather than that Regina was
+# cut down until it fitted.  docs/regina-amiga-port.md has the clone command;
+# AROS_CONTRIB_ROOT overrides where it lives.
+AROS_CONTRIB_ROOT ?= $(HOME)/stash/aros-contrib
+REGINA_SRC := $(AROS_CONTRIB_ROOT)/regina
+# The file list is regina/mmakefile.src's `rexx` target verbatim: its OFILES,
+# plus the three the target adds.  nosaa and mt_notmt are what make this the
+# standalone interpreter rather than the shared library.
+REGINA_NAMES := funcs builtin error variable interprt debug dbgfuncs \
+                memory parsing files misc unxfuncs cmsfuncs os2funcs \
+                shell rexxext stack tracing interp cmath convert \
+                strings library strmath signals macros envir expr \
+                instore yaccsrc lexsrc wrappers options \
+                rexxbif arxfuncs amifuncs os_amiga \
+                rexx nosaa mt_notmt
+REGINA_OBJS := $(addprefix $(BUILD)/regina-,$(addsuffix .o,$(REGINA_NAMES)))
+# regina.ver is the upstream version file, sourced rather than duplicated so
+# `rexx -v` cannot drift from the source it was built from.
+REGINA_VER_FILE := $(REGINA_SRC)/regina.ver
+regina_ver = $(shell sed -n 's/^$(1)=//p' $(REGINA_VER_FILE) 2>/dev/null | tr -d '"')
+REGINA_VER_DATE := $(call regina_ver,VER_DATE)
+REGINA_VER_MAJOR := $(call regina_ver,VER_MAJOR)
+REGINA_VER_MINOR := $(call regina_ver,VER_MINOR)
+REGINA_VER_SUPP := $(call regina_ver,VER_SUPP)
+# compat/aros-real/include must come before compat/include: amifuncs.c needs
+# the real exec/execbase.h and exec/lists.h, and the older shadowing copies
+# under compat/include/exec/ make it fail.  Reversing the two breaks
+# os_amiga.c instead, which is what compat/regina/include exists to repair --
+# see the long comment in ace_regina_compat.h.  -I$(REGINA_SRC) comes first so
+# Regina's own headers win over anything with the same name.
+REGINA_INCLUDES := -I$(REGINA_SRC) \
+                   -I$(CURDIR)/compat/aros-real/include -I$(COMPAT) \
+                   -I$(CURDIR)/compat/regina/include -Isrc \
+                   -I$(AROS_ROOT)/arch/all-pc/include \
+                   -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+                   -I$(AROS_ROOT)/compiler/arossupport/include \
+                   -I$(AROS_ROOT)/compiler/include
+# -Uunix -U__unix__ -U__unix is a correctness flag, not tidiness.  mt_notmt.c
+# picks its OS_Dep_funcs from an #if/#elif chain whose unix branch comes
+# before its Amiga one, and gcc on a Linux host predefines all three.  Without
+# these, Regina quietly links against __regina_OS_Unx and the build is the
+# wrong port -- it compiles, links, and runs.  The mt_notmt.o rule below
+# asserts the outcome rather than trusting the flags to stay here.
+#
+# -w rather than a list of -Wno-: this is unmodified third-party source and
+# the warnings are not ours to fix.  It also neutralises the -Werror in
+# CFLAGS, which is the point.
+# -w is not enough on its own: gcc 14 promotes implicit declarations, implicit
+# int, and the pointer/int conversions from warnings to errors by default, and
+# -w does not demote an error.  Regina is 2009 C and trips all of them, so each
+# is named.  They are relaxations for third-party source only; nothing in src/
+# is built this way.
+REGINA_CFLAGS := -std=gnu99 -w \
+                 -Wno-implicit-function-declaration -Wno-implicit-int \
+                 -Wno-int-conversion -Wno-incompatible-pointer-types \
+                 -Wno-return-mismatch \
+                 -Uunix -U__unix__ -U__unix \
+                 -D__AROS__ -D_GNU_SOURCE -DNO_EXTERNAL_QUEUES -DAPIENTRY= \
+                 -DREGINA_VERSION_DATE='"$(REGINA_VER_DATE)"' \
+                 -DREGINA_VERSION_MAJOR='"$(REGINA_VER_MAJOR)"' \
+                 -DREGINA_VERSION_MINOR='"$(REGINA_VER_MINOR)"' \
+                 -DREGINA_VERSION_SUPP='"$(REGINA_VER_SUPP)"' \
+                 -include ace_regina_compat.h
+
 AROS_DOSPAT_DIR := $(AROS_ROOT)/rom/dos
 AROS_DOSPAT_NAMES := patternmatching matchpattern parsepattern \
                      matchpatternnocase parsepatternnocase \
@@ -1201,6 +1269,66 @@ $(BUILD)/ace-shell: $(BUILD)/ace-launcher.o
 $(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(AROS_SHELL_OBJS) $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
+# The ACE side of the link: the same DOS runtime every ACE command gets, plus
+# rexxsyslib.o for the ARexx message surface Regina's amifuncs.c calls --
+# CreateRexxMsg, IsRexxMsg, the argstrings.  aros-exec-runtime.o is not listed
+# because dos-runtime.o already contains it; naming it again is a duplicate
+# definition, not a second copy.
+#
+# This block sits here, below DOS_RUNTIME_OBJ, rather than up with the other
+# Regina variables: Make expands a rule's prerequisites as it reads the rule,
+# so $(BUILD)/rexx named from higher up the file would see DOS_RUNTIME_OBJ as
+# empty and fail as a wall of undefined references from a file that is in fact
+# linked.
+REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o \
+                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+                  $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+                  $(BUILD)/native_process.o \
+                  $(BROKER_CLIENT_OBJS) $(AROS_DOSPAT_OBJS)
+
+# Regina is not part of `all`: it needs an external checkout that no target
+# here can create.  `make regina` is the whole build, and says so when the
+# checkout is not there rather than leaving Make to complain about a missing
+# .c file.
+ifeq ($(wildcard $(REGINA_SRC)/os_amiga.c),)
+regina:
+	@echo "regina: no Regina source at $(REGINA_SRC)" >&2
+	@echo "  docs/regina-amiga-port.md has the sparse-checkout command;" >&2
+	@echo "  or pass AROS_CONTRIB_ROOT=/path/to/aros-contrib." >&2
+	@exit 2
+else
+regina: $(BUILD)/rexx
+endif
+
+# Make's built-in rules regenerate yaccsrc.c from yaccsrc.y and lexsrc.c from
+# lexsrc.l -- and they write the result *into the source directory*, replacing
+# the generated files the checkout already ships and dirtying a tree that has
+# to stay pristine.  Cancel both.  ACE has no yacc or lex sources of its own,
+# so nothing else here wants them.
+%.c: %.y
+%.c: %.l
+
+$(BUILD)/regina-%.o: $(REGINA_SRC)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
+
+# The one object worth checking after the fact.  If the -U flags above are
+# ever dropped or reordered away, this file compiles cleanly against the unix
+# branch and nothing else complains -- the interpreter just stops being the
+# Amiga port.  Assert the symbol the Amiga branch defines.
+$(BUILD)/regina-mt_notmt.o: $(REGINA_SRC)/mt_notmt.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
+	@nm $@ | grep -q '__regina_OS_Amiga' && ! nm $@ | grep -q '__regina_OS_Unx' || { \
+	    echo "$@: built the unix port, not the Amiga one" >&2; \
+	    echo "  (REGINA_CFLAGS must keep -Uunix -U__unix__ -U__unix)" >&2; \
+	    rm -f $@; exit 2; }
+
+# ADDRESS COMMAND goes through SystemTags() -> launch_command(), which finds
+# the shell beside the running executable.  A rexx run from anywhere else
+# silently does nothing and returns 0, so the binary belongs in $(BUILD)
+# alongside ace-user-shell, and is installed beside it too.
+$(BUILD)/rexx: $(REGINA_OBJS) $(REGINA_ACE_OBJS) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(filter-out %.h,$^) -o $@
+
 clean:
 	$(RM) -r $(BUILD)
 
@@ -1396,7 +1524,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean install tine lha lha-fetch test-broker-port-channel install-vim vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean install tine lha lha-fetch regina test-broker-port-channel install-vim vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

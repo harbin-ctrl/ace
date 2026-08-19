@@ -58,6 +58,20 @@ make CC='ccache cc' vim VIM_SRC=/path/to/untouched/vim
 make install-vim
 ```
 
+Regina, the Rexx interpreter, is an optional external-source build too. Its
+sources are a pristine sparse checkout of the AROS contrib tree rather than
+part of this repository, so that what the build proves is that ACE implements
+the interfaces Regina expects:
+
+```sh
+make regina
+```
+
+`AROS_CONTRIB_ROOT` says where that checkout lives (default
+`~/stash/aros-contrib`), and `docs/regina-amiga-port.md` has the command that
+creates it. The result is `build/rexx`, which has to stay beside
+`ace-user-shell` for `ADDRESS COMMAND` to reach the shell at all.
+
 Use `./build/ace-shell` when testing an uninstalled checkout; use `ace-shell`
 only after `make install` and `make install-vim` have installed the matching
 set of companions.
