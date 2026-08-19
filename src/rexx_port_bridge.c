@@ -56,6 +56,7 @@ int ace_dos_handle_descriptor(BPTR handle);
 #include <clib/rexxsyslib_protos.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -280,6 +281,41 @@ static int deserialise(struct RexxMsg *message, const char *payload,
     return 0;
 }
 
+/*
+ * Wraps a passed descriptor for DOS, in whichever direction it actually
+ * supports.
+ *
+ * Not simply "r" for stdin and "w" for stdout: listen4msg.c, from the AROS
+ * tree and unmodified, does Write(msg->rm_Stdin, "Hello\n", 6). That is not
+ * a mistake. On AmigaOS rm_Stdin is a handle on the sender's console and a
+ * CON: handle is read/write, so writing to the input stream puts text on the
+ * sender's screen. Opening it "r" here would make that silently fail.
+ *
+ * So the mode comes from what the descriptor can do rather than from which
+ * slot it arrived in, and a console -- a tty opened O_RDWR -- behaves as it
+ * does on the Amiga.
+ */
+static FILE *wrap_descriptor(int descriptor)
+{
+    int flags = fcntl(descriptor, F_GETFL);
+    const char *mode;
+
+    if (flags < 0)
+        return NULL;
+    switch (flags & O_ACCMODE) {
+    case O_RDONLY:
+        mode = "r";
+        break;
+    case O_WRONLY:
+        mode = "w";
+        break;
+    default:
+        mode = "r+";
+        break;
+    }
+    return fdopen(descriptor, mode);
+}
+
 /* Hands a message back to whoever sent it, on the port it is waiting on. */
 static void release_sender(struct RexxMsg *message)
 {
@@ -388,14 +424,14 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
         /* A BPTR is a FILE * here, so wrapping the descriptor is all it takes
            for Read() and Write() to reach the sender's console. */
         if (stdin_fd >= 0) {
-            record->stdin_stream = fdopen(stdin_fd, "r");
+            record->stdin_stream = wrap_descriptor(stdin_fd);
             if (record->stdin_stream)
                 message->rm_Stdin = (BPTR)record->stdin_stream;
             else
                 close(stdin_fd);
         }
         if (stdout_fd >= 0) {
-            record->stdout_stream = fdopen(stdout_fd, "w");
+            record->stdout_stream = wrap_descriptor(stdout_fd);
             if (record->stdout_stream)
                 message->rm_Stdout = (BPTR)record->stdout_stream;
             else

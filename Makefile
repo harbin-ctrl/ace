@@ -1564,6 +1564,49 @@ $(BUILD)/rexx-port-test: tests/rexx_port_test.c $(BUILD)/rexxsyslib.o \
 test-rexx-port: $(BUILD)/rexx-port-test $(BUILD)/ace-broker
 	sh tests/with_private_broker.sh $(BUILD)/rexx-port-test
 
+# sendrexxmsg.c and listen4msg.c from the AROS tree, built unmodified. They
+# are the acceptance test for the whole port mechanism: if ACE implements the
+# contract, these compile, link and run with nothing done to them.
+#
+# Built with Regina's include order for the reason ace_regina_compat.h gives:
+# the aros-real tree's own thin proto/dos.h and proto/alib.h win the lookup
+# and hide Write(), CreatePort() and SystemTags().
+AREXX_DEMO_INCLUDES := -I$(CURDIR)/compat/aros-real/include -I$(COMPAT) \
+                       -I$(CURDIR)/compat/regina/include -Isrc \
+                       -I$(AROS_ROOT)/arch/all-pc/include \
+                       -I$(AROS_ROOT)/arch/$(AROS_CPU_ARCH)/include \
+                       -I$(AROS_ROOT)/compiler/arossupport/include \
+                       -I$(AROS_ROOT)/compiler/include
+AREXX_DEMO_CFLAGS := -w -Wno-implicit-function-declaration \
+                     -Wno-int-conversion -Wno-incompatible-pointer-types \
+                     -include ace_regina_compat.h
+AREXX_DEMO_OBJS = $(BUILD)/rexxsyslib.o $(BUILD)/rexx-port-bridge.o \
+                  $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+                  $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+                  $(BUILD)/native_process.o $(BROKER_CLIENT_OBJS) \
+                  $(AROS_DOSPAT_OBJS)
+
+$(BUILD)/sendrexxmsg: $(REGINA_SRC)/rexxmast/sendrexxmsg.c $(AREXX_DEMO_OBJS) \
+                      | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/listen4msg: $(REGINA_SRC)/rexxmast/listen4msg.c $(AREXX_DEMO_OBJS) \
+                     | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+# The counterpart each demo needs, because the two do not pair with each
+# other: sendrexxmsg sends to REXX, listen4msg serves TEST.
+$(BUILD)/arexx-demo-peer: tests/arexx_demo_peer.c $(AREXX_DEMO_OBJS) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+test-arexx-demos: $(BUILD)/sendrexxmsg $(BUILD)/listen4msg \
+                  $(BUILD)/arexx-demo-peer $(BUILD)/ace-broker \
+                  $(BUILD)/ace-brokerctl
+	sh tests/rexx_port_test.sh
+
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 	ACE_CLIPBOARD_DISABLE_HOST=1 \
 	    ACE_CLIPBOARD_DIR="$$(mktemp -d)" $(BUILD)/aros-exec-runtime-test
@@ -1665,7 +1708,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-arexx-demos install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

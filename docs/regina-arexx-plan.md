@@ -184,9 +184,9 @@ git status --short third_party # must be empty
   `exec()` no longer strands its sender (1.7); one that stays alive and silent
   still does, deliberately.
 
-Stage 1 is complete. What remains before the 1.8 acceptance run is nothing in
-the mechanism itself -- only building the AROS `sendrexxmsg` and `listen4msg`
-sources and running them unmodified.
+**Stage 1 is complete**, acceptance included: the AROS `sendrexxmsg` and
+`listen4msg` sources build and run unmodified against ACE
+(`make test-arexx-demos`).
 
 ## The two semantics questions, answered from AmigaOS
 
@@ -409,10 +409,37 @@ That loop has a second consequence worth remembering: a process waiting on a
 reply port will `ReplyMsg()` anything else that lands there, so ACE must never
 use a sender's reply port for anything but its own replies.
 
-1.8 Acceptance: run `listen4msg` and `sendrexxmsg`, unmodified, as two
-processes. `sendrexxmsg` must print `Result1:`, get its own message back, and
-`listen4msg`'s `Write(msg->rm_Stdin, ...)` must appear on `sendrexxmsg`'s
-console. Add it as `tests/rexx_port_test.sh`.
+1.8 **Done.** `make test-arexx-demos`, which is `tests/rexx_port_test.sh`.
+Both AROS sources build and run **unmodified** from
+`third_party/regina/rexxmast/`.
+
+**This step as written could not be done, and the reason is worth keeping.**
+It assumed the two demos talk to each other. They do not: `sendrexxmsg.c`
+sends to `"REXX"` and `listen4msg.c` serves `"TEST"`, because on a real Amiga
+the thing behind `sendrexxmsg` is RexxMast, not `listen4msg`. Pairing them
+would have meant editing one, which is the one thing this test exists to avoid.
+So each runs against `tests/arexx_demo_peer.c`, a counterpart written for the
+purpose, and both demos stay untouched.
+
+What it checks:
+
+* `listen4msg` recognises the message as a RexxMsg, prints the argument it was
+  sent, and its `Write(msg->rm_Stdin, "Hello\n", 6)` lands on the *sender's*
+  stream.
+* `sendrexxmsg` prints `Result1: 0` and `Result2: hello everybody`, and
+  reaches `All OK` -- which it prints only after checking `reply == msg`
+  itself. The command it sent, `'say hello everybody'`, arrives intact.
+
+**`listen4msg` writes to `rm_Stdin`, not `rm_Stdout`.** That is not a bug in
+the demo: on AmigaOS `rm_Stdin` is a handle on the sender's console and a
+`CON:` handle is read/write, so writing to the input stream puts text on the
+sender's screen. A passed descriptor is therefore wrapped in whichever
+direction it actually supports (`F_GETFL`, then `"r"`, `"w"` or `"r+"`) rather
+than by which slot it arrived in. Opening it `"r"` because it is "stdin" makes
+this silently do nothing.
+
+The test waits for a port to appear in `ace-brokerctl status` rather than
+sleeping, which is why `status` now lists ports by name and owning pid.
 
 ### 2. Port RexxMast
 
@@ -489,6 +516,7 @@ a commit.
 * **After 1.2 and 1.3.** Done. `make test-broker-port-message`.
 * **After 1.7.** Done. `make test-broker-port-abandon`.
 * **After 1.6 and 1.5.** Done. `make test-rexx-port`.
+* **1.8, the acceptance gate.** Done. `make test-arexx-demos`.
 * **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
   one process. Argstrings with embedded NULs and high bytes, all sixteen
   `rm_Args` slots, and one oversized message that must fail cleanly against

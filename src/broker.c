@@ -3322,6 +3322,24 @@ static int handle_client(struct broker_connection *connection)
         }
         used = (size_t)written;
 
+        /* Named, not just counted. "Which process is REXX right now" is the
+           first question anyone debugging ARexx asks, and reading it out of
+           ps is not an answer. */
+        for (size_t i = 0; i < MAX_PORTS; i++) {
+            if (!ports[i].id)
+                continue;
+            written = snprintf(result + used, sizeof(result) - used,
+                               "port\t%s\t%ld\n", ports[i].name,
+                               (long)ports[i].pid);
+            if (written < 0 || (size_t)written >= sizeof(result) - used) {
+                status = ENAMETOOLONG;
+                break;
+            }
+            used += (size_t)written;
+        }
+        if (status)
+            break;
+
         for (size_t i = 0; i < MAX_SESSIONS; i++) {
             if (!sessions[i].in_use)
                 continue;
