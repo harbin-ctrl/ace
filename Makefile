@@ -417,6 +417,7 @@ $(BUILD)/broker-port-abandon-test: tests/broker_port_abandon_test.c $(BROKER_CLI
 test-broker-port-abandon: $(BUILD)/broker-port-abandon-test $(BUILD)/ace-broker
 	sh tests/with_private_broker.sh $(BUILD)/broker-port-abandon-test
 
+
 .PHONY: break-signal-test
 break-signal-test: $(BUILD)/break-probe $(BUILD)/ace-user-shell
 	python3 tests/break_signal_test.py
@@ -483,6 +484,10 @@ $(BUILD)/native_process.o: src/native_process.c | $(BUILD)
 
 $(BUILD)/rexxsyslib.o: src/rexxsyslib.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/rexx-port-bridge.o: src/rexx_port_bridge.c src/broker_protocol.h \
+                             src/aros_exec_runtime.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
@@ -1308,7 +1313,7 @@ $(BUILD)/ace-user-shell: $(BUILD)/ace-user-shell.o $(BUILD)/aros-real-shell.o $(
 # so $(BUILD)/rexx named from higher up the file would see DOS_RUNTIME_OBJ as
 # empty and fail as a wall of undefined references from a file that is in fact
 # linked.
-REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o \
+REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o $(BUILD)/rexx-port-bridge.o \
                   $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
                   $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
                   $(BUILD)/native_process.o \
@@ -1545,6 +1550,20 @@ $(BUILD)/create-new-proc-test: tests/create_new_proc_test.c \
 test-create-new-proc: $(BUILD)/create-new-proc-test
 	$(BUILD)/create-new-proc-test
 
+# The whole path, through the Amiga API rather than the broker's: CreatePort,
+# FindPort, PutMsg, WaitPort, GetMsg, ReplyMsg, across two processes.
+$(BUILD)/rexx-port-test: tests/rexx_port_test.c $(BUILD)/rexxsyslib.o \
+                        $(BUILD)/rexx-port-bridge.o \
+                        $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
+                        $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
+                        $(BUILD)/native_process.o $(BROKER_CLIENT_OBJS) \
+                        $(AROS_DOSPAT_OBJS) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AROS_REAL_INCLUDES) -I$(COMPAT) -Isrc \
+	    -Wno-int-conversion $(filter-out %.h,$^) -o $@
+
+test-rexx-port: $(BUILD)/rexx-port-test $(BUILD)/ace-broker
+	sh tests/with_private_broker.sh $(BUILD)/rexx-port-test
+
 test-aros-exec-runtime: $(BUILD)/aros-exec-runtime-test
 	ACE_CLIPBOARD_DISABLE_HOST=1 \
 	    ACE_CLIPBOARD_DIR="$$(mktemp -d)" $(BUILD)/aros-exec-runtime-test
@@ -1646,7 +1665,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel test-broker-port-message test-broker-port-abandon install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

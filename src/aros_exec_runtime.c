@@ -368,10 +368,27 @@ void DeleteMsgPort(struct MsgPort *port)
     remove_port(port, 1);
 }
 
+/*
+ * The ARexx bridge, weakly declared for the same reason the broker's port
+ * calls above are: this object is linked into ace-console, which has neither
+ * a broker connection nor any use for ARexx. Linked in, these forward a
+ * message to the process that owns the port; absent, a port belonging to
+ * another process simply queues locally and is never read, which is what
+ * happened before any of this existed.
+ */
+extern int ace_rexx_port_forward(struct MsgPort *port,
+                                 struct Message *message) __attribute__((weak));
+extern void ace_rexx_port_published(struct MsgPort *port, uint64_t broker_id)
+    __attribute__((weak));
+extern void ace_rexx_port_unpublished(uint64_t broker_id) __attribute__((weak));
+
 void PutMsg(struct MsgPort *port, struct Message *message)
 {
-    struct ace_port_state *state = ensure_port(port);
+    struct ace_port_state *state;
 
+    if (ace_rexx_port_forward && ace_rexx_port_forward(port, message))
+        return;
+    state = ensure_port(port);
     if (!state || !message)
         return;
     pthread_mutex_lock(&state->lock);
@@ -1175,6 +1192,10 @@ struct MsgPort *CreatePort(CONST_STRPTR name, LONG priority)
     entry->next = named_ports;
     named_ports = entry;
     pthread_mutex_unlock(&ports_lock);
+    /* Now that the name is public, this process has to be reachable: opening
+       the delivery channel is what makes a message sent to it arrive. */
+    if (entry->broker_id && ace_rexx_port_published)
+        ace_rexx_port_published(port, entry->broker_id);
     return port;
 }
 
@@ -1197,6 +1218,8 @@ void DeletePort(struct MsgPort *port)
         port->mp_Node.ln_Name = NULL;
         free(entry);
         pthread_mutex_unlock(&ports_lock);
+        if (broker_id && ace_rexx_port_unpublished)
+            ace_rexx_port_unpublished(broker_id);
         if (broker_id && native_broker_port_remove)
             (void)native_broker_port_remove(broker_id);
         DeleteMsgPort(port);

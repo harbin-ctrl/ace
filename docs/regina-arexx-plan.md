@@ -170,6 +170,8 @@ git status --short third_party # must be empty
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
   **unmodified**. `sendrexxmsg` now gets past `FindPort("REXX")` and blocks at
   `WaitPort`, because delivery is not implemented.
+* **`PutMsg()` and `ReplyMsg()` cross processes** through the Amiga API, with
+  the reply arriving as the very message that was sent.
 * A process has a **message-delivery channel** to the broker
   (`AMIGA_BROKER_PORT_ATTACH`): a second push connection with its own reader
   thread, opened lazily on first port use and released when the process goes.
@@ -177,7 +179,9 @@ git status --short third_party # must be empty
 * **A message crosses processes and the reply comes back**
   (`AMIGA_BROKER_PORT_PUT`, `AMIGA_BROKER_PORT_REPLY`), carrying arbitrary
   bytes intact. What is not built yet is `PutMsg()` using any of it (1.6), the
-  sender's streams travelling with the message (1.5). A receiver that dies,
+  sender's streams travelling with the message (1.5) -- a delivered message
+  gets `BNULL` for both, so a receiver writing to them writes nowhere. A
+  receiver that dies,
   deletes the port, or is replaced by an `exec()` no longer strands its sender
   (1.7); one that stays alive and silent still does, deliberately.
 
@@ -302,14 +306,38 @@ sensible without moving them off the stack first.
 1.5 Pass `rm_Stdin`/`rm_Stdout` as descriptors with `SCM_RIGHTS` alongside the
 text payload. The receiver turns them into real handles for the script.
 
-1.6 On the sending side, `PutMsg()` recognises a stand-in port via
-`ace_aros_runtime_remote_port_id()` and forwards. **The reply must be the same
-`struct RexxMsg` the caller sent** -- `sendrexxmsg.c` asserts
-`reply == msg` -- so the sender keeps its original, the correlation id brings
-the results back, and ACE writes them into that original before putting it on
-the reply port. `rm_Result2` arrives as an argstring the sender will
-`DeleteArgstring()`, so recreate it locally with `CreateArgstring()`; never
-hand back a pointer into broker memory.
+1.6 **Done.** `src/rexx_port_bridge.c`. `PutMsg()` recognises a stand-in port
+via `ace_aros_runtime_remote_port_id()` and forwards; `ReplyMsg()` on a message
+that arrived from elsewhere routes back through the broker instead of onto a
+reply port that does not exist here. The reply *is* the same `struct RexxMsg`
+the caller sent, and every slot is rebuilt with `CreateArgstring()` in the
+receiving process's own memory -- never a pointer into the payload the reader
+thread is about to free.
+
+* **A separate object, hooked in weakly.** `aros_exec_runtime.c` is linked into
+  `ace-console`, which has no broker connection and no use for ARexx, so
+  `PutMsg()`, `ReplyMsg()`, `CreatePort()` and `DeletePort()` call weak hooks.
+  Linked in, a message crosses; absent, everything is local exactly as before.
+  Confirmed with `nm`: `ace-console` leaves `ace_rexx_port_forward` weak and
+  undefined, `rexx` defines it.
+* **The wire form is counted throughout** (`struct ace_rexx_wire`), with a
+  distinct "absent" length so an empty argstring is not confused with a
+  missing one -- different things to a Rexx program.
+* **`CreatePort()` opens the delivery channel**, because publishing a name is
+  the moment this process becomes reachable.
+* **A failed send releases the caller** with `RC_FATAL` rather than leaving it
+  to wait for a message that was never accepted.
+
+Tested by `make test-rexx-port`: two processes, through the Amiga API only --
+`CreatePort`, `FindPort`, `PutMsg`, `WaitPort`, `GetMsg`, `ReplyMsg` -- with
+NULs and high bytes in both the argument and the result. It asserts
+`reply == message`, which is the assertion that matters: `sendrexxmsg.c`
+asserts it too, and `sendandwait()` replies to anything else and resumes
+waiting, so a reply that is a different message hangs the sender as surely as
+no reply at all.
+
+`tests/with_private_broker.sh` now runs under `timeout`, because a regression
+in any of this does not fail -- it hangs.
 
 1.7 **Done.** `AMIGA_BROKER_PORT_ABANDONED` is pushed down a *sender's*
 channel when the process holding its message is gone. This is what makes the
@@ -434,6 +462,7 @@ a commit.
 * **After 1.1.** Done. `make test-broker-port-channel`.
 * **After 1.2 and 1.3.** Done. `make test-broker-port-message`.
 * **After 1.7.** Done. `make test-broker-port-abandon`.
+* **After 1.6.** Done. `make test-rexx-port`.
 * **After 1.4**, before any I/O: serialise a `RexxMsg` and parse it back in
   one process. Argstrings with embedded NULs and high bytes, all sixteen
   `rm_Args` slots, and one oversized message that must fail cleanly against

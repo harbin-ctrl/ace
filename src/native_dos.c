@@ -1263,11 +1263,20 @@ struct Task *FindTask(CONST_STRPTR name)
  * waiting on -- and is marked NT_FREEMSG so its sender can tell it is no
  * longer in flight.
  */
+/* See rexx_port_bridge.c. Weak, because most commands have no ARexx in them
+   and should not drag it in; when it is absent every message is local, which
+   is what it was before. */
+extern int ace_rexx_port_reply(struct Message *message) __attribute__((weak));
+
 void ReplyMsg(struct Message *message)
 {
     struct MsgPort *port;
 
     if (!message)
+        return;
+    /* A message that arrived from another process is answered through the
+       broker, not by putting it on a reply port that does not exist here. */
+    if (ace_rexx_port_reply && ace_rexx_port_reply(message))
         return;
     port = message->mn_ReplyPort;
     if (!port) {

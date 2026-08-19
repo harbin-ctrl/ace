@@ -1,0 +1,554 @@
+#define _POSIX_C_SOURCE 200809L
+
+/*
+ * PutMsg() and ReplyMsg() across processes.
+ *
+ * Inside one process a port is a list and a message is a pointer onto it, so
+ * PutMsg() is a list insert and ReplyMsg() puts the same pointer back. None of
+ * that survives a process boundary, and the two sides need different things
+ * from this file:
+ *
+ *   Sending. PutMsg() to a port another process owns has to serialise the
+ *   message, hand it to the broker, and come back. The caller then waits on
+ *   its reply port exactly as it always did. When the answer arrives -- on the
+ *   delivery channel, on another thread -- the results are written into *the
+ *   caller's own struct RexxMsg* and that message is put on its reply port.
+ *   It must be that same pointer: sendrexxmsg.c asserts reply == msg, and
+ *   Regina's sendandwait() (amifuncs.c:601) replies to anything on its reply
+ *   port that is not the pointer it sent and goes back to waiting. So there is
+ *   no out-of-band way to release a sender; the message it sent is the only
+ *   thing it will accept back.
+ *
+ *   Receiving. A message pushed to this process is rebuilt as a real RexxMsg
+ *   and queued on the local port with the ordinary PutMsg(), so WaitPort() and
+ *   GetMsg() work without knowing anything about this. ReplyMsg() on such a
+ *   message routes back through the broker instead of onto a reply port that
+ *   does not exist here.
+ *
+ * Deliberately a separate object from aros_exec_runtime.c. That one is linked
+ * into ace-console, which has no broker connection and no use for ARexx; the
+ * hooks there are weak so this file is linked only where it is wanted.
+ *
+ * Not carried yet: rm_Stdin and rm_Stdout. They are the sender's own streams
+ * and are what makes a script sent to another process write on the sender's
+ * console. Passing them needs SCM_RIGHTS -- step 1.5 -- so for now a delivered
+ * message gets BNULL for both, and a receiver that writes to them writes
+ * nowhere.
+ */
+
+#include "broker_client.h"
+#include "broker_protocol.h"
+
+#include "aros_exec_runtime.h"
+
+#include <exec/ports.h>
+#include <exec/nodes.h>
+#include <proto/exec.h>
+#include <proto/alib.h>
+#include <rexx/storage.h>
+#include <rexx/errors.h>
+#include <clib/rexxsyslib_protos.h>
+
+#include <errno.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*
+ * The wire form of a RexxMsg.
+ *
+ * Counted throughout, because an argstring is counted bytes that may contain
+ * anything -- that is why the broker stopped measuring payloads with strlen().
+ * A length of ACE_REXX_ABSENT distinguishes "this slot is empty" from "this
+ * slot holds a zero-length string", which are different things to a Rexx
+ * program.
+ *
+ * Same-host only, and only ever exchanged between two builds of ACE that
+ * agree on the broker protocol version, so the fixed-width fields are written
+ * in native order rather than byte-swapped.
+ */
+#define ACE_REXX_WIRE_MAGIC 0x52584d31u     /* "RXM1" */
+#define ACE_REXX_ABSENT     0xffffffffu
+/* rm_Args[0..15], then rm_Result2, rm_CommAddr, rm_FileExt. */
+#define ACE_REXX_SLOTS      19
+#define ACE_REXX_SLOT_RESULT2  16
+#define ACE_REXX_SLOT_COMMADDR 17
+#define ACE_REXX_SLOT_FILEEXT  18
+
+struct ace_rexx_wire {
+    uint32_t magic;
+    uint32_t action;
+    int32_t result1;
+    uint32_t slots;
+    uint32_t length[ACE_REXX_SLOTS];
+};
+
+/* A message this process sent and is waiting on. */
+struct ace_rexx_sent {
+    uint64_t message_id;
+    struct RexxMsg *message;
+    struct ace_rexx_sent *next;
+};
+
+/* A message this process was given and has not yet answered. */
+struct ace_rexx_received {
+    uint64_t message_id;
+    struct RexxMsg *message;
+    struct ace_rexx_received *next;
+};
+
+/* A local port whose name the broker published, so a delivery naming its id
+   can be queued on the right one. */
+struct ace_rexx_local_port {
+    uint64_t broker_id;
+    struct MsgPort *port;
+    struct ace_rexx_local_port *next;
+};
+
+static pthread_mutex_t bridge_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct ace_rexx_sent *sent_messages;
+static struct ace_rexx_received *received_messages;
+static struct ace_rexx_local_port *local_ports;
+static int channel_ready;
+
+static void bridge_handler(uint32_t operation, uint64_t message_id,
+                           uint64_t port_id, const char *payload,
+                           size_t payload_length, void *context);
+
+/*
+ * Opens the delivery channel if it is not open yet.
+ *
+ * Both directions need it: a receiver to be given messages, a sender to be
+ * given replies. native_broker_port_attach() is idempotent, so whichever of
+ * the two happens first in a process opens it and the other joins.
+ */
+static int ensure_channel(void)
+{
+    uint64_t channel = 0;
+    int ready;
+
+    pthread_mutex_lock(&bridge_lock);
+    ready = channel_ready;
+    pthread_mutex_unlock(&bridge_lock);
+    if (ready)
+        return 0;
+    if (native_broker_port_attach(bridge_handler, NULL, &channel) != 0)
+        return -1;
+    pthread_mutex_lock(&bridge_lock);
+    channel_ready = 1;
+    pthread_mutex_unlock(&bridge_lock);
+    return 0;
+}
+
+static size_t slot_length(const void *pointer, int argstring)
+{
+    if (!pointer)
+        return 0;
+    return argstring ? LengthArgstring((UBYTE *)pointer)
+                     : strlen((const char *)pointer);
+}
+
+/*
+ * Flattens a RexxMsg. Returns the buffer and its length, or NULL.
+ *
+ * rm_PassPort, rm_Stdin and rm_Stdout are not carried: the first is a pointer
+ * into the sender's memory and meaningless here, and the other two need
+ * descriptor passing (1.5).
+ */
+static void *serialise(struct RexxMsg *message, size_t *out_length)
+{
+    struct ace_rexx_wire header;
+    const void *slot_data[ACE_REXX_SLOTS];
+    size_t slot_size[ACE_REXX_SLOTS];
+    size_t total = sizeof(header);
+    char *buffer;
+    char *cursor;
+    int index;
+
+    memset(&header, 0, sizeof(header));
+    header.magic = ACE_REXX_WIRE_MAGIC;
+    header.action = (uint32_t)message->rm_Action;
+    header.result1 = (int32_t)message->rm_Result1;
+    header.slots = ACE_REXX_SLOTS;
+
+    for (index = 0; index < 16; index++) {
+        slot_data[index] = (const void *)message->rm_Args[index];
+        slot_size[index] = slot_length(slot_data[index], 1);
+    }
+    slot_data[ACE_REXX_SLOT_RESULT2] = (const void *)message->rm_Result2;
+    slot_size[ACE_REXX_SLOT_RESULT2] =
+        slot_length(slot_data[ACE_REXX_SLOT_RESULT2], 1);
+    slot_data[ACE_REXX_SLOT_COMMADDR] = message->rm_CommAddr;
+    slot_size[ACE_REXX_SLOT_COMMADDR] =
+        slot_length(slot_data[ACE_REXX_SLOT_COMMADDR], 0);
+    slot_data[ACE_REXX_SLOT_FILEEXT] = message->rm_FileExt;
+    slot_size[ACE_REXX_SLOT_FILEEXT] =
+        slot_length(slot_data[ACE_REXX_SLOT_FILEEXT], 0);
+
+    for (index = 0; index < ACE_REXX_SLOTS; index++) {
+        if (!slot_data[index]) {
+            header.length[index] = ACE_REXX_ABSENT;
+            continue;
+        }
+        header.length[index] = (uint32_t)slot_size[index];
+        total += slot_size[index];
+    }
+    if (total > AMIGA_BROKER_MAX_PAYLOAD)
+        return NULL;
+
+    buffer = malloc(total);
+    if (!buffer)
+        return NULL;
+    memcpy(buffer, &header, sizeof(header));
+    cursor = buffer + sizeof(header);
+    for (index = 0; index < ACE_REXX_SLOTS; index++) {
+        if (!slot_data[index] || !slot_size[index])
+            continue;
+        memcpy(cursor, slot_data[index], slot_size[index]);
+        cursor += slot_size[index];
+    }
+    *out_length = total;
+    return buffer;
+}
+
+/*
+ * Rebuilds the slots of a RexxMsg from a wire payload.
+ *
+ * Every slot is recreated with CreateArgstring() in this process's own memory.
+ * Handing back a pointer into the payload would be a pointer into a buffer the
+ * reader thread frees, and the receiver is entitled to DeleteArgstring() what
+ * it is given.
+ */
+static int deserialise(struct RexxMsg *message, const char *payload,
+                       size_t payload_length, int with_results)
+{
+    struct ace_rexx_wire header;
+    const char *cursor;
+    size_t remaining;
+    int index;
+
+    if (payload_length < sizeof(header))
+        return -1;
+    memcpy(&header, payload, sizeof(header));
+    if (header.magic != ACE_REXX_WIRE_MAGIC ||
+        header.slots != ACE_REXX_SLOTS)
+        return -1;
+    cursor = payload + sizeof(header);
+    remaining = payload_length - sizeof(header);
+
+    if (with_results) {
+        message->rm_Action = (LONG)header.action;
+        message->rm_Result1 = (LONG)header.result1;
+    }
+    for (index = 0; index < ACE_REXX_SLOTS; index++) {
+        uint32_t length = header.length[index];
+        UBYTE *copy = NULL;
+
+        if (length == ACE_REXX_ABSENT)
+            continue;
+        if (length > remaining)
+            return -1;
+        copy = CreateArgstring((UBYTE *)cursor, length);
+        if (!copy)
+            return -1;
+        cursor += length;
+        remaining -= length;
+        if (index < 16)
+            message->rm_Args[index] = (IPTR)copy;
+        else if (index == ACE_REXX_SLOT_RESULT2)
+            message->rm_Result2 = (IPTR)copy;
+        else if (index == ACE_REXX_SLOT_COMMADDR)
+            message->rm_CommAddr = (STRPTR)copy;
+        else
+            message->rm_FileExt = (STRPTR)copy;
+    }
+    return 0;
+}
+
+/* Hands a message back to whoever sent it, on the port it is waiting on. */
+static void release_sender(struct RexxMsg *message)
+{
+    struct MsgPort *reply_port = message->rm_Node.mn_ReplyPort;
+
+    message->rm_Node.mn_Node.ln_Type = NT_REPLYMSG;
+    if (reply_port)
+        PutMsg(reply_port, (struct Message *)message);
+}
+
+static struct RexxMsg *take_sent(uint64_t message_id)
+{
+    struct ace_rexx_sent **cursor;
+    struct RexxMsg *message = NULL;
+
+    pthread_mutex_lock(&bridge_lock);
+    cursor = &sent_messages;
+    while (*cursor && (*cursor)->message_id != message_id)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        struct ace_rexx_sent *entry = *cursor;
+
+        message = entry->message;
+        *cursor = entry->next;
+        free(entry);
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    return message;
+}
+
+/*
+ * Everything the broker pushes at this process, on the channel's reader
+ * thread. Nothing here may block: a sender is waiting on the other side of
+ * every one of these.
+ */
+static void bridge_handler(uint32_t operation, uint64_t message_id,
+                           uint64_t port_id, const char *payload,
+                           size_t payload_length, void *context)
+{
+    (void)context;
+
+    if (operation == AMIGA_BROKER_PORT_PUT) {
+        struct ace_rexx_local_port *entry;
+        struct ace_rexx_received *record;
+        struct MsgPort *target = NULL;
+        struct RexxMsg *message;
+
+        pthread_mutex_lock(&bridge_lock);
+        for (entry = local_ports; entry; entry = entry->next) {
+            if (entry->broker_id == port_id) {
+                target = entry->port;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&bridge_lock);
+        if (!target)
+            return;
+        message = CreateRexxMsg(NULL, NULL, NULL);
+        if (!message)
+            return;
+        if (deserialise(message, payload, payload_length, 1) != 0) {
+            DeleteRexxMsg(message);
+            return;
+        }
+        /* No reply port: this message is not answered by putting it back on a
+           port in this process, and ReplyMsg() finds it in the table below
+           before it ever looks at mn_ReplyPort. rm_Stdin and rm_Stdout stay
+           BNULL until 1.5 carries them. */
+        message->rm_Node.mn_ReplyPort = NULL;
+        record = calloc(1, sizeof(*record));
+        if (!record) {
+            DeleteRexxMsg(message);
+            return;
+        }
+        record->message_id = message_id;
+        record->message = message;
+        pthread_mutex_lock(&bridge_lock);
+        record->next = received_messages;
+        received_messages = record;
+        pthread_mutex_unlock(&bridge_lock);
+        /* The ordinary local path from here: it queues the message and wakes
+           whoever is in WaitPort(). */
+        PutMsg(target, (struct Message *)message);
+        return;
+    }
+
+    if (operation == AMIGA_BROKER_PORT_REPLY) {
+        struct RexxMsg *message = take_sent(message_id);
+
+        if (!message)
+            return;
+        /* Results only. The arguments still belong to the sender, which will
+           free them itself; overwriting them here would leak the originals. */
+        message->rm_Result1 = 0;
+        message->rm_Result2 = 0;
+        if (deserialise(message, payload, payload_length, 0) != 0) {
+            message->rm_Result1 = RC_FATAL;
+            message->rm_Result2 = 0;
+        } else {
+            struct ace_rexx_wire header;
+
+            memcpy(&header, payload, sizeof(header));
+            message->rm_Result1 = (LONG)header.result1;
+        }
+        release_sender(message);
+        return;
+    }
+
+    if (operation == AMIGA_BROKER_PORT_ABANDONED) {
+        struct RexxMsg *message = take_sent(message_id);
+
+        if (!message)
+            return;
+        /*
+         * Nobody answered, and nobody ever will. The broker keeps that
+         * distinct from a reply, but the sender is in WaitPort() and the only
+         * thing that releases it is its own message coming back -- so the
+         * distinction has to be turned into the one vocabulary ARexx has here.
+         * RC_FATAL is what a Rexx program then sees in RC.
+         */
+        message->rm_Result1 = RC_FATAL;
+        message->rm_Result2 = 0;
+        release_sender(message);
+        return;
+    }
+}
+
+/*
+ * PutMsg()'s hook. Returns 1 when the port belongs to another process and the
+ * message has been dealt with, 0 when it is an ordinary local port.
+ */
+int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
+{
+    uint64_t remote_id = ace_aros_runtime_remote_port_id(port);
+    struct RexxMsg *rexx = (struct RexxMsg *)message;
+    struct ace_rexx_sent *record;
+    uint64_t message_id = 0;
+    void *payload;
+    size_t length = 0;
+
+    if (!remote_id || !message)
+        return 0;
+    /* Only a RexxMsg can cross: an ordinary Message is a bare header plus
+       whatever the sender allocated behind it, and this side cannot know its
+       shape. Left to the local path, which queues it on the stand-in port
+       where it will sit unread -- the same as sending to a port nobody is
+       serving. */
+    if (!IsRexxMsg(rexx))
+        return 0;
+    if (ensure_channel() != 0)
+        return 0;
+
+    payload = serialise(rexx, &length);
+    if (!payload)
+        return 0;
+
+    /* Recorded before the send, because the reply can arrive on the reader
+       thread before native_broker_port_put() has returned here. */
+    record = calloc(1, sizeof(*record));
+    if (!record) {
+        free(payload);
+        return 0;
+    }
+    record->message = rexx;
+    pthread_mutex_lock(&bridge_lock);
+    record->next = sent_messages;
+    sent_messages = record;
+    pthread_mutex_unlock(&bridge_lock);
+
+    /* The stand-in port carries the name it stands in for, which is what
+       PORT_PUT wants: the broker finds the owner and delivers in one step, so
+       the port cannot go away between the two. */
+    if (native_broker_port_put((const char *)port->mp_Node.ln_Name,
+                               payload, length, &message_id) != 0) {
+        int failed = errno;
+
+        free(payload);
+        pthread_mutex_lock(&bridge_lock);
+        {
+            struct ace_rexx_sent **cursor = &sent_messages;
+
+            while (*cursor && *cursor != record)
+                cursor = &(*cursor)->next;
+            if (*cursor)
+                *cursor = record->next;
+        }
+        pthread_mutex_unlock(&bridge_lock);
+        free(record);
+        (void)failed;
+        /* The send failed, so nothing will ever reply. Release the caller
+           now rather than letting it wait for a message already lost --
+           ESRCH here is the ordinary "no such port", since nothing starts
+           RexxMast on demand. */
+        rexx->rm_Result1 = RC_FATAL;
+        rexx->rm_Result2 = 0;
+        release_sender(rexx);
+        return 1;
+    }
+    pthread_mutex_lock(&bridge_lock);
+    record->message_id = message_id;
+    pthread_mutex_unlock(&bridge_lock);
+    free(payload);
+    return 1;
+}
+
+/*
+ * ReplyMsg()'s hook. Returns 1 when the message came from another process and
+ * the answer has been routed back to it.
+ */
+int ace_rexx_port_reply(struct Message *message)
+{
+    struct ace_rexx_received **cursor;
+    struct ace_rexx_received *entry = NULL;
+    struct RexxMsg *rexx = (struct RexxMsg *)message;
+    void *payload;
+    size_t length = 0;
+
+    if (!message)
+        return 0;
+    pthread_mutex_lock(&bridge_lock);
+    cursor = &received_messages;
+    while (*cursor && (*cursor)->message != rexx)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        entry = *cursor;
+        *cursor = entry->next;
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    if (!entry)
+        return 0;
+
+    payload = serialise(rexx, &length);
+    if (payload) {
+        (void)native_broker_port_reply(entry->message_id, payload, length);
+        free(payload);
+    } else {
+        (void)native_broker_port_reply(entry->message_id, NULL, 0);
+    }
+    free(entry);
+    /* This message was made here, on delivery, and the receiver is done with
+       it. Its argstrings belong to the receiver, which frees them with
+       ClearRexxMsg() exactly as it would a message it had built itself. */
+    DeleteRexxMsg(rexx);
+    return 1;
+}
+
+/* Called when CreatePort() has published a name, so a delivery naming the
+   broker's id for it can be queued on the right local port. */
+void ace_rexx_port_published(struct MsgPort *port, uint64_t broker_id)
+{
+    struct ace_rexx_local_port *entry;
+
+    if (!port || !broker_id)
+        return;
+    entry = calloc(1, sizeof(*entry));
+    if (!entry)
+        return;
+    entry->broker_id = broker_id;
+    entry->port = port;
+    pthread_mutex_lock(&bridge_lock);
+    entry->next = local_ports;
+    local_ports = entry;
+    pthread_mutex_unlock(&bridge_lock);
+    /* A published port is a port other processes can send to, so this is the
+       moment the channel has to exist. */
+    (void)ensure_channel();
+}
+
+void ace_rexx_port_unpublished(uint64_t broker_id)
+{
+    struct ace_rexx_local_port **cursor;
+
+    if (!broker_id)
+        return;
+    pthread_mutex_lock(&bridge_lock);
+    cursor = &local_ports;
+    while (*cursor && (*cursor)->broker_id != broker_id)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        struct ace_rexx_local_port *entry = *cursor;
+
+        *cursor = entry->next;
+        free(entry);
+    }
+    pthread_mutex_unlock(&bridge_lock);
+}

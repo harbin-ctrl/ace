@@ -31,4 +31,14 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-ACE_BROKER_SOCKET="$socket_path" "$@"
+# Under timeout, because the thing these tests exercise is a wait with no
+# timeout in it: a sender blocks in WaitPort() until its reply arrives, by
+# design, so a regression here does not fail, it hangs. Better a clear
+# non-zero exit than a run that never ends.
+ACE_BROKER_TEST_TIMEOUT=${ACE_BROKER_TEST_TIMEOUT:-60}
+timeout "$ACE_BROKER_TEST_TIMEOUT" env ACE_BROKER_SOCKET="$socket_path" "$@"
+status=$?
+if [ "$status" -eq 124 ]; then
+    echo "$(basename "$1"): timed out after ${ACE_BROKER_TEST_TIMEOUT}s" >&2
+fi
+exit "$status"
