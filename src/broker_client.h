@@ -84,6 +84,11 @@ typedef void (*native_broker_port_record_handler)(uint32_t operation,
                                                   void *context);
 int native_broker_port_attach(native_broker_port_record_handler handler,
                               void *context, uint64_t *channel_id);
+/* Add a second consumer to the process's delivery channel. This is used by
+   private protocol users such as the GUI requestor alongside the ARexx port
+   bridge. The handler remains installed for the life of the process. */
+int native_broker_port_add_handler(native_broker_port_record_handler handler,
+                                   void *context);
 /* Send a message to a named port, and answer one that arrived on this
    process's channel. The payload is counted bytes, never inspected in
    transit, and may contain anything including NULs -- it is an ARexx message,

@@ -3,6 +3,11 @@
 
 #include <intuition/intuitionbase.h>
 
+struct Window;
+struct EasyStruct;
+LONG EasyRequest(struct Window *window, struct EasyStruct *easyStruct,
+                 ULONG *IDCMP_ptr, ...);
+
 #if defined(ACE_BOOPSI_INTERN_H) || defined(ACE_GRAPHICS_INTERN_H)
 
 #include <intuition/classes.h>

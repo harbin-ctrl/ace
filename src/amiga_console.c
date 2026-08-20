@@ -20,6 +20,7 @@
 
 #include "aros_graphics_runtime.h"
 #include "ace_appmenu_wayland.h"
+#include "ace_requestor_gui.h"
 #include "console_channel.h"
 #include "console_device_bridge.h"
 #include "console_spec.h"
@@ -1895,6 +1896,7 @@ static void console_destroy(GtkWidget *widget, gpointer data)
     int status;
 
     (void)widget;
+    ace_requestor_gui_stop();
     if (console->menu_probe_source != 0) {
         g_source_remove(console->menu_probe_source);
         console->menu_probe_source = 0;
@@ -1977,6 +1979,7 @@ int main(int argc, char **argv)
         return 20;
     }
     session = argv[2];
+    setenv("ACE_SESSION", session, 1);
     for (i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--fd") == 0 && i + 1 < argc) {
             char *end;
@@ -2138,6 +2141,7 @@ int main(int argc, char **argv)
     if (window_spec.has_position)
         gtk_window_move(GTK_WINDOW(window), window_spec.x, window_spec.y);
     gtk_widget_grab_focus(console.drawing_area);
+    (void)ace_requestor_gui_start(session, window);
     console.menu_probe_source = g_timeout_add(250, update_menu_visibility,
                                               &console);
 

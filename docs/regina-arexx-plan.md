@@ -533,13 +533,17 @@ starts with the Regina library target, not with RexxMast itself.
 **That target now links and runs.** `make test-regina-library` calls
 `RexxStart()` on an instore program through exactly the object set RexxMast
 will link, and gets its result back. What is left of the list above is
-`SelectErrorOutput()`, `updatestdio()` and `EasyRequest()`.
+`SelectErrorOutput()` and `updatestdio()`.
 
-`EasyRequest()` is **decided: a stub that writes to stderr**, because
-RexxMast uses it to report errors to a user and ACE has no Intuition. That is
-a placeholder for a real Intuition layer, not a statement that requesters are
-unwanted -- when one exists, this is one of its first callers, and the stub
-should be replaced rather than kept beside it.
+`EasyRequest()` is now implemented as a supported ACE call without attempting
+to recreate all of Intuition. The caller formats `es_TextFormat` and
+`es_GadgetFormat` with its ordinary varargs, sends the resulting title, body,
+and gadget labels over the session's broker port, and blocks for the reply.
+`ace-console` owns that port and displays a modal GTK dialog; button results
+retain the Amiga convention that the leftmost gadget is 1 and the rightmost is
+0. A process without a GUI falls back to a formatted stderr report and returns
+0. This keeps existing RexxMast call sites unchanged while leaving the broader
+Intuition API out of scope.
 
 
 `third_party/regina/rexxmast/RexxMast.c`. Only useful once 1 is

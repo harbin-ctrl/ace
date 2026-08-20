@@ -359,6 +359,16 @@ static native_broker_port_record_handler port_handler;
 static void *port_handler_context;
 static uint64_t port_channel_id;
 
+#define NATIVE_BROKER_EXTRA_HANDLER_LIMIT 8
+struct native_broker_extra_handler {
+    native_broker_port_record_handler handler;
+    void *context;
+};
+static struct native_broker_extra_handler
+    port_extra_handlers[NATIVE_BROKER_EXTRA_HANDLER_LIMIT];
+static size_t port_extra_handler_count;
+static pthread_mutex_t port_handler_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void *task_signal_reader(void *unused)
 {
     struct amiga_broker_task_signal signal;
@@ -391,6 +401,11 @@ static void *port_record_reader(void *unused)
     (void)unused;
     while (read_all_with_fds(port_fd, &record, sizeof(record), fds,
                              AMIGA_BROKER_PORT_MAX_FDS, &fd_count) == 0) {
+        native_broker_port_record_handler primary_handler;
+        void *primary_context;
+        struct native_broker_extra_handler extra_handlers[
+            NATIVE_BROKER_EXTRA_HANDLER_LIMIT];
+        size_t extra_handler_count;
         int stdin_fd = -1;
         int stdout_fd = -1;
         size_t next = 0;
@@ -427,11 +442,24 @@ static void *port_record_reader(void *unused)
                 close(stdout_fd);
             break;
         }
-        if (port_handler)
-            port_handler(record.operation, record.message_id, record.port_id,
-                         payload, (size_t)record.payload_length, stdin_fd,
-                         stdout_fd, port_handler_context);
-        else {
+        pthread_mutex_lock(&port_handler_lock);
+        primary_handler = port_handler;
+        primary_context = port_handler_context;
+        extra_handler_count = port_extra_handler_count;
+        memcpy(extra_handlers, port_extra_handlers,
+               extra_handler_count * sizeof(extra_handlers[0]));
+        pthread_mutex_unlock(&port_handler_lock);
+        if (primary_handler)
+            primary_handler(record.operation, record.message_id,
+                            record.port_id, payload,
+                            (size_t)record.payload_length, stdin_fd, stdout_fd,
+                            primary_context);
+        for (size_t index = 0; index < extra_handler_count; index++)
+            extra_handlers[index].handler(
+                record.operation, record.message_id, record.port_id, payload,
+                (size_t)record.payload_length, -1, -1,
+                extra_handlers[index].context);
+        if (!primary_handler && extra_handler_count == 0) {
             if (stdin_fd >= 0)
                 close(stdin_fd);
             if (stdout_fd >= 0)
@@ -480,6 +508,7 @@ void native_broker_reset_after_fork(void)
     port_fd = -1;
     port_handler = NULL;
     port_handler_context = NULL;
+    port_extra_handler_count = 0;
 }
 
 /*
@@ -908,6 +937,35 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
     (void)pthread_detach(port_thread);
     if (channel_id)
         *channel_id = id;
+    return 0;
+}
+
+int native_broker_port_add_handler(native_broker_port_record_handler handler,
+                                   void *context)
+{
+    if (!handler) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (port_fd < 0)
+        return native_broker_port_attach(handler, context, NULL);
+    pthread_mutex_lock(&port_handler_lock);
+    if (port_handler == handler && port_handler_context == context)
+        goto already_registered;
+    for (size_t index = 0; index < port_extra_handler_count; index++)
+        if (port_extra_handlers[index].handler == handler &&
+            port_extra_handlers[index].context == context)
+            goto already_registered;
+    if (port_extra_handler_count >= NATIVE_BROKER_EXTRA_HANDLER_LIMIT) {
+        pthread_mutex_unlock(&port_handler_lock);
+        errno = EBUSY;
+        return -1;
+    }
+    port_extra_handlers[port_extra_handler_count].handler = handler;
+    port_extra_handlers[port_extra_handler_count].context = context;
+    port_extra_handler_count++;
+already_registered:
+    pthread_mutex_unlock(&port_handler_lock);
     return 0;
 }
 

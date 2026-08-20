@@ -7,10 +7,11 @@
    ACE exercises -- ACE always starts a command from a CLI, never from a
    Workbench icon double-click -- and the one call gated behind it,
    SetWindowTitles(). Real Intuition is out of scope here on purpose: it
-   belongs to the BOOPSI/graphics seam in compat/aros-real, which cannot
-   coexist in a translation unit with glibc headers this one also needs. */
+   belongs to the BOOPSI/graphics seam in compat/aros-real. ACE implements
+   the EasyRequest ABI through its host-side requestor bridge. */
 
 #include <exec/types.h>
+#include <intuition/intuition.h>
 
 struct Window;
 struct Screen;
@@ -18,5 +19,7 @@ struct Screen;
 void SetWindowTitles(struct Window *window, CONST_STRPTR title,
                      CONST_STRPTR screen_title);
 void DisplayBeep(struct Screen *screen);
+LONG EasyRequest(struct Window *window, struct EasyStruct *easy_struct,
+                 ULONG *idcmp, ...);
 
 #endif

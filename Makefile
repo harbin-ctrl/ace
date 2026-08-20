@@ -418,6 +418,16 @@ $(BUILD)/broker-port-abandon-test: tests/broker_port_abandon_test.c $(BROKER_CLI
 test-broker-port-abandon: $(BUILD)/broker-port-abandon-test $(BUILD)/ace-broker
 	sh tests/with_private_broker.sh $(BUILD)/broker-port-abandon-test
 
+$(BUILD)/easy-request-test: tests/easy_request_test.c $(BUILD)/ace-requestor.o \
+                            $(BROKER_CLIENT_OBJS) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc \
+	    $(filter-out %.h,$^) -o $@
+
+test-easy-request: $(BUILD)/easy-request-test $(BUILD)/ace-broker
+	sh tests/with_private_broker.sh $(BUILD)/easy-request-test 2>&1 | \
+	    grep -F -e 'EasyRequest: EasyRequest test' \
+           -e 'Body one two' -e '[Retry|Cancel]'
+
 
 .PHONY: break-signal-test
 break-signal-test: $(BUILD)/break-probe $(BUILD)/ace-user-shell
@@ -489,6 +499,17 @@ $(BUILD)/rexxsyslib.o: src/rexxsyslib.c | $(BUILD)
 $(BUILD)/rexx-port-bridge.o: src/rexx_port_bridge.c src/broker_protocol.h \
                              src/aros_exec_runtime.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/ace-requestor.o: src/ace_requestor.c src/ace_requestor_protocol.h \
+                          src/assign_compat.h src/broker_client.h \
+                          src/broker_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/ace-requestor-gui.o: src/ace_requestor_gui.c \
+                              src/ace_requestor_gui.h \
+                              src/ace_requestor_protocol.h \
+                              src/broker_client.h src/broker_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
@@ -1225,7 +1246,7 @@ $(BUILD)/ace-brokerctl: $(BUILD)/brokerctl.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
 
-$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/console_channel.o $(BUILD)/console_spec.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/iffparse-clipboard.o $(BUILD)/ace-vim-runtime.o \
+$(BUILD)/ace-console: $(BUILD)/amiga_console.o $(BUILD)/ace-requestor-gui.o $(BROKER_CLIENT_OBJS) $(BUILD)/console_channel.o $(BUILD)/console_spec.o $(BUILD)/ace-appmenu-wayland.o $(BUILD)/console_device_bridge.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-console-editor-stubs.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/clipboard-device.o $(BUILD)/clipboard-bridge.o $(BUILD)/iffparse-clipboard.o $(BUILD)/ace-vim-runtime.o \
                       $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS) \
                       $(BUILD)/aros-graphics-runtime.o $(AROS_GRAPHICS_OBJS) $(AROS_ARSUPPORT_OBJS)
 	$(CC) $(CFLAGS) -pthread $(filter-out %.h,$^) $(GTK_LIBS) $(GFX_LIBS) $(WAYLAND_LIBS) -o $@
@@ -1334,6 +1355,7 @@ REGINA_LIB_CFLAGS := $(REGINA_CFLAGS) -DRXLIB -DINCL_REXXSAA -Dlint \
 # empty and fail as a wall of undefined references from a file that is in fact
 # linked.
 REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o $(BUILD)/rexx-port-bridge.o \
+                  $(BUILD)/ace-requestor.o \
                   $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
                   $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
                   $(BUILD)/native_process.o \
