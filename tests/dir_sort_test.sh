@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Confirms patches/aros-dir-sort.patch: Dir must sort subdirectories the same
+# Confirms src/dir.c: Dir must sort subdirectories the same
 # way it already sorts files, and ALL must recurse into a subdirectory tree
 # even when FILES restricts what gets printed. Both were checked against a
 # real Amiga 1200 under emulation before being fixed; see HANDOFF.md.

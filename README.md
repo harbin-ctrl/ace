@@ -214,8 +214,8 @@ read direction. `Protect`'s other flags follow the same rule: the bits ACE can
 express are the ones it maps, and the archive/pure/script trio is left
 alone rather than guessed at.
 
-`Dir` is now built from the original AROS `workbench/c/Dir.c` together with
-the real AROS DOS pattern-matching and `ExAll()` sources. It exercises the
+`Dir` is now built from ACE's forked `src/dir.c` together with the real AROS
+DOS pattern-matching and `ExAll()` sources. It exercises the
 host filesystem seam through `Lock()`, `Examine()`, `ExNext()`, `DupLock()`,
 and `CurrentDir()`, including recursive `ALL` listings and the `DIRS` and
 `FILES` filters:
@@ -679,7 +679,7 @@ takes a second or two, which turned checking a clone against the real program
 from a typing exercise into something that could be done a hundred times.
 Most of what `Edit` gets right, it gets right because that loop found it
 wrong first -- and the same loop, pointed at `Dir`, found a real defect in
-`Dir` too: see `patches/aros-dir-sort.patch` and `make test-dir-sort`.
+`Dir` too: see `src/dir.c` and `make test-dir-sort`.
 
 ## The standard assigns, and who makes them
 

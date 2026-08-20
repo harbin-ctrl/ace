@@ -9,8 +9,8 @@ set -eu
 #    could not spell (component_needs_mapping() giving up on a too-long or
 #    illegal name), and AROS's real rom/dos/exall.c treats any ExNext()
 #    failure other than ERROR_NO_MORE_ENTRIES as a hard error, discarding
-#    everything already collected; workbench/c/Dir.c's ALL recursion then
-#    propagates that failure up through every parent directory. One
+#    everything already collected; src/dir.c's ALL recursion then propagates
+#    that failure up through every parent directory. One
 #    unrepresentable name anywhere in a tree used to blank out the whole
 #    listing. Fixed by skipping just that one entry instead of aborting the
 #    scan (see the comment on the ERROR_INVALID_COMPONENT_NAME /

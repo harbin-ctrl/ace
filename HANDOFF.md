@@ -169,9 +169,10 @@ beyond creating a directory, and every command in the tree now parses its
 arguments with AROS's own `ReadArgs()`; both are described in their own
 sections below.
 
-The first read-only filesystem-facing command is now real AROS `Dir.c`, built
-with the original DOS `patternmatching`, `MatchFirst`/`MatchNext`/`MatchEnd`,
-and `ExAll` implementations. `src/native_dos.c` supplies the host-backed
+The first read-only filesystem-facing command is now ACE's forked `src/dir.c`,
+built with the original DOS `patternmatching`, `MatchFirst`/`MatchNext`/
+`MatchEnd`, and `ExAll` implementations. `src/native_dos.c` supplies the
+host-backed
 `Lock`/`Examine`/`ExNext`/`DupLock`/`CurrentDir` seam, Unix metadata conversion,
 and the RawDoFmt-compatible `VPrintf` path that `Dir` uses for its formatted
 columns. The command has been exercised against regular and nested host
@@ -265,9 +266,9 @@ name is the device, the label is the volume.
 One test had `sda2:` written into it, which is this host's root device; it now
 takes the expected spelling from the broker.
 
-## Dir's directory sort, found by comparison against a real Amiga
+## Dir's directory behavior, found by comparison against a real Amiga
 
-`workbench/c/Dir.c` sorts the files in a listing (`qsort(files->entries, ...)`)
+The forked `src/dir.c` sorts the files in a listing (`qsort(files->entries, ...)`)
 but not the directories -- the equivalent call for `dirs->entries` is present
 in the source and commented out. `Dir` on ACE therefore listed subdirectories
 in raw host filesystem order rather than alphabetically, which was visible
@@ -276,18 +277,16 @@ next to the correctly-sorted files in the same listing.
 This was found by running `Dir` on the same directory through both ACE and a
 real Amiga 1200 under emulation, comparing byte for byte: see "Driving a real
 Amiga" below. The real machine sorts directories case-insensitively, the same
-as files, so `patches/aros-dir-sort.patch` uncomments the call. A second,
+as files, so the fork carries that fix. A second,
 related defect came from the same comparison: `Dir ALL FILES` did not recurse
 into subdirectories on ACE, because the traversal loop in `doDir()` is gated
 on `doDirs` -- whether directory *names* are printed -- rather than on `all`
 -- whether the tree is *walked*. `FILES` alone sets `doDirs` false, silently
-disabling recursion regardless of `ALL`. The same patch changes the gate to
+disabling recursion regardless of `ALL`. The fork changes the gate to
 `doDirs || all`, which does not change what is printed, only what is walked.
 
-Both are AROS's own divergence from AmigaOS, not something ACE introduced;
-they are inherited by building unmodified AROS source, and this is the first
-place a difference between AROS's reimplementation and the original machine's
-actual behavior turned up.
+These are kept in ACE's fork because `Dir` is a small, central command and its
+behavior must not depend on a manually patched external AROS checkout.
 
 ## Driving a real Amiga
 
@@ -573,7 +572,6 @@ cd "$HOME/aros"
 git checkout 53af6e419b
 cd "$HOME/repo/ace"
 patch -p1 -d "$HOME/aros" < patches/aros-console-seam.patch
-patch -p1 -d "$HOME/aros" < patches/aros-dir-sort.patch
 make -j2 all
 make test-aros-console-editor test-aros-exec-runtime \
      test-console-device test-exec-compat test-boopsi test-graphics
@@ -616,12 +614,11 @@ build/window.  `bison` generates `Eval`'s parser from AROS's
 generated files in `build/` and hide the fact that the tool is missing, until
 something forces them to be regenerated.
 
-Both patches are required, and `patch` reports "previously applied" if
-repeated, so applying them to an existing checkout is safe. It is worth
-checking that they took: a `cp -a` of this tree between hosts copies ACE but
-not `$HOME/aros`, and `git -C "$HOME/aros" status` should show
-`rom/filesys/console_handler/con_handler.c`, `.../support.c`, and
-`workbench/c/Dir.c` modified and nothing else.
+The console patch is required, and `patch` reports "previously applied" if
+repeated, so applying it to an existing checkout is safe. It is worth checking
+that it took: a `cp -a` of this tree between hosts copies ACE but not
+`$HOME/aros`, and `git -C "$HOME/aros" status` should show only
+`rom/filesys/console_handler/con_handler.c` and `.../support.c` modified.
 
 The Regina port has a third external checkout, `$HOME/stash/aros-contrib`,
 which is not needed for `make all`. See `docs/regina-amiga-port.md` for what

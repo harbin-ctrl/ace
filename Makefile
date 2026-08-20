@@ -140,7 +140,7 @@ AROS_TYPE_SRC := $(AROS_ROOT)/workbench/c/Type.c
 AROS_RENAME_SRC := $(AROS_ROOT)/workbench/c/Rename.c
 AROS_STACK_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Stack.c
 AROS_DOSPATH_DIR := $(AROS_ROOT)/rom/dos
-AROS_DIR_SRC := $(AROS_ROOT)/workbench/c/Dir.c
+DIR_SRC := src/dir.c
 AROS_DELETE_SRC := $(AROS_ROOT)/workbench/c/Delete.c
 AROS_PROTECT_SRC := $(AROS_ROOT)/workbench/c/Protect.c
 AROS_FILENOTE_SRC := $(AROS_ROOT)/workbench/c/Filenote.c
@@ -978,7 +978,7 @@ $(BUILD)/run_entry.o: src/run_entry.c src/native_host.h | $(BUILD)
 $(BUILD)/aros-dos-%.o: $(AROS_DOSPAT_DIR)/%.c compat/include/ace_dos_intern.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) -c $< -o $@
 
-$(BUILD)/Dir.o: $(AROS_DIR_SRC) compat/include/ace_dos_intern.h | $(BUILD)
+$(BUILD)/Dir.o: $(DIR_SRC) compat/include/ace_dos_intern.h | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_DOSPAT_CFLAGS) -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
 
 $(BUILD)/Fault.o: $(AROS_FAULT_SRC) | $(BUILD)
