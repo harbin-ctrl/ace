@@ -28,7 +28,45 @@
 #include <exec/types.h>
 #include <exec/nodes.h>
 #include <exec/ports.h>
+#include <exec/libraries.h>
+#include <rexx/rxslib.h>
 #include <rexx/storage.h>
+
+/*
+ * The base OpenLibrary("rexxsyslib.library") hands back.
+ *
+ * ACE implements this library's functions as plain C, so nothing here or in
+ * Regina dereferences the base -- on AROS it is the implicit argument of a
+ * library call, and there are no library calls to make. It still has to
+ * exist, because a caller checks it:
+ *
+ *     atsd->rexxsysbase = (struct RxsLib *)OpenLibrary("rexxsyslib.library", 44);
+ *     if ( atsd->rexxsysbase == NULL )
+ *        return 0;                            -- amifuncs.c:397
+ *
+ * That is Regina's init_amigaf(), and returning 0 there means Regina's whole
+ * ARexx side -- its reply port, its "Regina Helper" task, its message
+ * handling -- is never set up. In the standalone interpreter the failure was
+ * invisible, because mt_notmt.c accumulates the init results with |= rather
+ * than &= and so records success no matter what this returns; the library
+ * build (mt_amigalib.c) uses &= and fails outright. Both were the same
+ * missing name here.
+ *
+ * isreginamsg.c opens it too, and returns FALSE when it cannot -- so
+ * IsReginaMsg() answered "not mine" for every message until this existed,
+ * which is what RexxMast asks about each message it receives.
+ */
+static struct RxsLib ace_rexxsyslib_base;
+
+/*
+ * Reached through a weak declaration in src/native_dos.c, because this object
+ * is not in every command's link and OpenLibrary() is. Linked in, the name
+ * resolves; absent, OpenLibrary() answers NULL for it exactly as before.
+ */
+struct Library *ace_rexxsyslib_library_base(void)
+{
+    return &ace_rexxsyslib_base.rl_Node;
+}
 
 /*
  * What marks a Message as a RexxMsg. AROS compares ln_Name against one

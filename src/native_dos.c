@@ -1199,6 +1199,8 @@ static FILE *as_file(BPTR handle)
     return (FILE *)handle;
 }
 
+extern struct Library *ace_rexxsyslib_library_base(void) __attribute__((weak));
+
 struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 {
     (void)version;
@@ -1211,6 +1213,15 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
         return (struct Library *)&native_utility_base;
     if (name && strcasecmp(name, "iffparse.library") == 0)
         return &native_iffparse_base;
+    /*
+     * Weak, because src/rexxsyslib.c is linked into the ARexx programs and
+     * not into every command, while this function is in all of them. Where it
+     * is linked the name resolves to a real base; where it is not, this
+     * answers NULL for it as it always did.
+     */
+    if (name && strcasecmp(name, "rexxsyslib.library") == 0 &&
+        ace_rexxsyslib_library_base)
+        return ace_rexxsyslib_library_base();
     return NULL;
 }
 
