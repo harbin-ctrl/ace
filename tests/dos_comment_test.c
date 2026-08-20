@@ -9,8 +9,12 @@
  * itself, and ExNext() over a directory's children.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
+#include <signal.h>
 #include <string.h>
+#include <time.h>
 
 #include <dos/dos.h>
 #include <dos/dosextens.h>
@@ -87,18 +91,53 @@ static int read_link_target(const char *directory, const char *name)
     return 0;
 }
 
+static int break_exnext(const char *name)
+{
+    struct FileInfoBlock fib;
+    struct timespec wait = { 0, 100000000L };
+    BPTR lock = Lock((CONST_STRPTR)name, SHARED_LOCK);
+
+    if (!lock || !Examine(lock, &fib)) {
+        fprintf(stderr, "dos-comment-test: cannot open %s (error %ld)\n",
+                name, (long)IoErr());
+        if (lock)
+            UnLock(lock);
+        return 1;
+    }
+
+    /* Use the same host signal path as the console.  The short wait lets the
+       runtime's signal handler publish the pending Ctrl-C before ExNext(). */
+    if (raise(SIGUSR1) != 0 || nanosleep(&wait, NULL) != 0) {
+        fprintf(stderr, "dos-comment-test: cannot queue Ctrl-C\n");
+        UnLock(lock);
+        return 1;
+    }
+    if (ExNext(lock, &fib) || IoErr() != ERROR_BREAK) {
+        fprintf(stderr, "dos-comment-test: ExNext did not stop on Ctrl-C (error %ld)\n",
+                (long)IoErr());
+        UnLock(lock);
+        return 1;
+    }
+    UnLock(lock);
+    puts("ExNext Ctrl-C test passed");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if ((argc != 3 && argc != 4) ||
         (strcmp(argv[1], "examine") != 0 && strcmp(argv[1], "exnext") != 0 &&
-         strcmp(argv[1], "exnext-types") != 0 && strcmp(argv[1], "readlink") != 0)) {
-        fprintf(stderr, "usage: dos-comment-test examine|exnext|exnext-types NAME | readlink DIRECTORY NAME\n");
+         strcmp(argv[1], "exnext-types") != 0 && strcmp(argv[1], "readlink") != 0 &&
+         strcmp(argv[1], "break-exnext") != 0)) {
+        fprintf(stderr, "usage: dos-comment-test examine|exnext|exnext-types|break-exnext NAME | readlink DIRECTORY NAME\n");
         return 2;
     }
     if (strcmp(argv[1], "readlink") == 0)
         return argc == 4 ? read_link_target(argv[2], argv[3]) : 2;
     if (argc != 3)
         return 2;
+    if (strcmp(argv[1], "break-exnext") == 0)
+        return break_exnext(argv[2]);
     if (strcmp(argv[1], "examine") == 0)
         return examine_one(argv[2]);
     return examine_children(argv[2], strcmp(argv[1], "exnext-types") == 0);

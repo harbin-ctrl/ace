@@ -1989,6 +1989,18 @@ LONG ExNext(BPTR handle, struct FileInfoBlock *fib)
         return DOSFALSE;
     }
 
+    /* ExAll() calls ExNext() once for every entry.  Dir checks for breaks
+       after ExAll returns, which is too late for a large host directory: the
+       scan also does an lstat() and broker name translation for each entry.
+       Poll here so a pending Ctrl-C stops the scan at the next entry rather
+       than waiting for the whole ExAll batch/tree to finish.  Leave the bit
+       set; Dir's existing SetSignal() path consumes it after ExAll unwinds. */
+    native_activate_task();
+    if (ace_aros_runtime_check_signal(SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) {
+        native_ioerr = ERROR_BREAK;
+        return DOSFALSE;
+    }
+
     /* Replay the entry ExAll() rolled back to via fib_DiskKey (see the
        scan_prev_pos comment on struct native_lock) before scanning on. */
     if (lock->scan_key > 0 && fib->fib_DiskKey == lock->scan_key - 1) {
