@@ -108,6 +108,10 @@ int native_broker_port_put(const char *name, const void *message,
                            uint64_t *message_id);
 int native_broker_port_reply(uint64_t message_id, const void *reply,
                              size_t length);
+/* Push an opaque event to every attached port channel. The broker does not
+   inspect or correlate the payload; recipients decide whether it applies to
+   them. */
+int native_broker_port_broadcast(const void *event, size_t length);
 /* Public message ports: claim a name, give it up, or resolve one another
    process claimed. See AMIGA_BROKER_PORT_ADD in broker_protocol.h. */
 int native_broker_port_add(const char *name, uint64_t *port_id);

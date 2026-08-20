@@ -1035,6 +1035,16 @@ int native_broker_port_reply(uint64_t message_id, const void *reply,
                                 NULL, 0, NULL);
 }
 
+int native_broker_port_broadcast(const void *event, size_t length)
+{
+    if (length && !event) {
+        errno = EINVAL;
+        return -1;
+    }
+    return broker_request_bytes(AMIGA_BROKER_PORT_BROADCAST, NULL, 0,
+                                event, length, 0, NULL, 0, NULL, 0, NULL);
+}
+
 /*
  * Public ports. The broker holds names, not ports: what comes back is an id
  * standing for "the port some process registered under this name", which is

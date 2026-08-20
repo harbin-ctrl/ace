@@ -2708,7 +2708,8 @@ static int handle_client(struct broker_connection *connection)
      * are named explicitly instead.
      */
     value_limit = (request.operation == AMIGA_BROKER_PORT_PUT ||
-                   request.operation == AMIGA_BROKER_PORT_REPLY)
+                   request.operation == AMIGA_BROKER_PORT_REPLY ||
+                   request.operation == AMIGA_BROKER_PORT_BROADCAST)
                   ? AMIGA_BROKER_MAX_PAYLOAD : (uint32_t)PATH_MAX;
     if (request.session_length > 4096 || request.path_length > PATH_MAX ||
         request.value_length > value_limit) {
@@ -3145,6 +3146,29 @@ static int handle_client(struct broker_connection *connection)
         break;
     }
 
+    case AMIGA_BROKER_PORT_BROADCAST: {
+        pid_t sender_pid = connection_peer_pid(fd);
+        int failed = 0;
+
+        if (sender_pid <= 0) {
+            status = EPERM;
+            break;
+        }
+        for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
+            struct broker_port_channel *channel = &port_channels[index];
+
+            if (!channel->id || channel->pid == sender_pid)
+                continue;
+            if (push_port_record(channel->fd, AMIGA_BROKER_PORT_BROADCAST,
+                                 0, 0, value, request.value_length, 0,
+                                 NULL, 0) != 0)
+                failed = 1;
+        }
+        if (failed)
+            status = EIO;
+        break;
+    }
+
     case AMIGA_BROKER_PORT_FIND: {
         struct broker_port *port = find_port_name(path);
 
@@ -3546,6 +3570,7 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_PORT_FIND ||
                request.operation == AMIGA_BROKER_PORT_ATTACH ||
                request.operation == AMIGA_BROKER_PORT_PUT ||
+               request.operation == AMIGA_BROKER_PORT_BROADCAST ||
                request.operation == AMIGA_BROKER_TASK_LIST ||
                request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)

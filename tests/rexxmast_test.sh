@@ -54,6 +54,8 @@ timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-resource-test"
 timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-private-test"
+timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
+    "$build_dir/rexxmast-broadcast-test"
 
 # Regina's own ARexx built-ins must see the resources RexxMast accepted. The
 # bridge mirrors successful ADDLIB and SETCLIP replies into this process's

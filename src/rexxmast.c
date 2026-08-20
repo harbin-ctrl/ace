@@ -45,12 +45,19 @@ static int rexxmast_start_job(struct RexxMsg *message);
    second broker hop back to the originating process. */
 extern int ace_rexxmast_private_message(struct RexxMsg *message);
 extern BOOL IsReginaMsg(struct RexxMsg *message);
+extern void ace_rexx_broadcast_resource_reply(struct RexxMsg *message);
 
 static BOOL ace_rexxmast_is_regina_msg(struct RexxMsg *message)
 {
     if (ace_rexxmast_private_message(message))
         return TRUE;
     return IsReginaMsg(message);
+}
+
+static void ace_rexxmast_reply_msg(struct Message *message)
+{
+    ace_rexx_broadcast_resource_reply((struct RexxMsg *)message);
+    ReplyMsg(message);
 }
 
 /* Regina separates the API result from the script's RETURN value. The
@@ -144,6 +151,7 @@ static LONG ace_rexxmast_system_tags(CONST_STRPTR command, ...)
 #define SystemTags ace_rexxmast_system_tags
 #define RexxStart ace_rexxmast_rexx_start
 #define IsReginaMsg ace_rexxmast_is_regina_msg
+#define ReplyMsg ace_rexxmast_reply_msg
 /* The imported main is not called, but its unused Amiga stack-size probe
    still has to compile. ACE's Process intentionally has no pr_StackSize; the
    value is ignored by CreateNewProcTags here, so use an existing process
@@ -153,6 +161,7 @@ static LONG ace_rexxmast_system_tags(CONST_STRPTR command, ...)
 #undef pr_StackSize
 #undef RexxStart
 #undef IsReginaMsg
+#undef ReplyMsg
 #undef SystemTags
 #undef main
 

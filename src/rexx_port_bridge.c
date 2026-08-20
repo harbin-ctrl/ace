@@ -785,6 +785,20 @@ static void ace_sync_resource_reply(struct RexxMsg *message)
     }
 }
 
+static int ace_resource_reply_is_accepted(struct RexxMsg *message)
+{
+    LONG action;
+
+    if (!message)
+        return 0;
+    action = rexx_action_code(message->rm_Action);
+    if (action == RXADDLIB || action == RXADDFH || action == RXREMLIB)
+        return message->rm_Result1 == RC_OK || message->rm_Result1 == RC_WARN;
+    if (action == RXADDCON || action == RXREMCON)
+        return message->rm_Result1 == RC_OK;
+    return 0;
+}
+
 /*
  * Flattens a RexxMsg. Returns the buffer and its length, or NULL.
  *
@@ -886,6 +900,24 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
     }
     *out_length = total;
     return buffer;
+}
+
+/* RexxMast calls this before replying to an accepted public resource action.
+   The broker fans the same wire event out to every other attached Regina
+   process; the originating process still receives its ordinary correlated
+   reply and synchronizes through that path. */
+void ace_rexx_broadcast_resource_reply(struct RexxMsg *message)
+{
+    void *payload;
+    size_t length = 0;
+
+    if (!ace_resource_reply_is_accepted(message))
+        return;
+    payload = serialise(message, &length);
+    if (!payload)
+        return;
+    (void)native_broker_port_broadcast(payload, length);
+    free(payload);
 }
 
 /*
@@ -1159,6 +1191,18 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
             close(stdout_fd);
         stdin_fd = -1;
         stdout_fd = -1;
+    }
+
+    if (operation == AMIGA_BROKER_PORT_BROADCAST) {
+        struct RexxMsg *message = CreateRexxMsg(NULL, NULL, NULL);
+
+        if (message) {
+            if (deserialise(message, payload, payload_length, 1) == 0)
+                ace_sync_resource_reply(message);
+            clear_received_message(message);
+            DeleteRexxMsg(message);
+        }
+        return;
     }
 
     if (operation == AMIGA_BROKER_PORT_PUT) {

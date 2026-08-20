@@ -187,7 +187,11 @@ enum amiga_broker_operation {
        WaitPort() is Wait(1 << mp_SigBit) with no timeout and no
        SIGBREAKF_CTRL_C in the mask, so not even a break gets out of it. That
        is the semantics, not a defect, and ACE reproduces it. */
-    AMIGA_BROKER_PORT_ABANDONED = 36
+    AMIGA_BROKER_PORT_ABANDONED = 36,
+    /* Request-side operation: push an opaque event to every attached port
+       channel. It has no message correlation and is used for process-wide
+       state notifications such as ARexx resource updates. */
+    AMIGA_BROKER_PORT_BROADCAST = 37
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
