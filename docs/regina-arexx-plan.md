@@ -206,11 +206,18 @@ git status --short third_party # must be empty
   `FindPort`, `CreateRexxMsg`, `CreateArgstring`, `PutMsg`, `WaitPort`,
   `GetMsg`, `IsRexxMsg`, `ReplyMsg`, and a result argstring back, with the
   reply arriving as the same message that was sent.
+* Phase 1 RexxMast now builds as `make rexxmast`, publishes the public
+  `REXX` port, executes RXCOMM/RXFUNC messages in ACE worker threads, and
+  replies with both the script return code and requested result string.
+  `make test-rexxmast` exercises this through the broker, including the
+  unmodified AROS `sendrexxmsg` client, RXFUNC arguments, failure replies,
+  concurrent requests, shutdown, and a Regina `ADDRESS REXX` command.
 * `FindPort` crosses processes: a port one process registers is found by
   another, through the broker's port registry.
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
-  **unmodified**. `sendrexxmsg` now gets past `FindPort("REXX")` and blocks at
-  `WaitPort`, because delivery is not implemented.
+  **unmodified**. `sendrexxmsg` now completes against the Phase 1 RexxMast
+  service; the separate port bridge test still uses its own peer so it can
+  exercise raw message delivery independently.
 * **`PutMsg()` and `ReplyMsg()` cross processes** through the Amiga API, with
   the reply arriving as the very message that was sent, and the sender's own
   streams travelling with it -- so a receiver writing to `rm_Stdout` writes on
@@ -518,22 +525,24 @@ descriptors, which are per-process kernel resources. That is the same wall
 1.5 hit, and the reason it needed `SCM_RIGHTS` rather than a cleverer pointer.
 The arena is worth considering on its own merits; it is not a way around this.
 
-So `patches/` -- doing what the FIXME above it already asks for: start the
-slave with `CreateNewProcTags(NP_Entry, ...)`, which ACE runs as a host thread
-in the same address space, and hand it the message rather than an address.
-Nothing else changes: same concurrency, same replier, same stream handling.
+So `src/rexxmast.c` does what the FIXME above it already asks for: it starts
+the slave with `CreateNewProcTags(NP_Entry, ...)`, which ACE runs as a host
+thread in the same address space, and hands it the message rather than an
+address. The vendored source remains unmodified; the adapter also translates
+Regina's separate API status and script return value so `rm_Result2` is not
+lost when a script returns a number. Nothing else changes: same concurrency,
+same replier, same stream handling.
 
-**Building RexxMast needs work that does not exist yet.** It links
-`regina_shared` for `RexxStart()` (in `rexxsaa.c`, part of the library build,
-not the standalone `rexx`), plus `IsReginaMsg()` from `isreginamsg.c`. It also
-calls `SelectErrorOutput()`, which ACE does not implement, `EasyRequest()`
-from intuition.library, which ACE does not have, and `updatestdio()`. So 2.2
-starts with the Regina library target, not with RexxMast itself.
+**Phase 1 RexxMast now builds and runs.** `make rexxmast` links the Regina
+library object set, `IsReginaMsg()`, the ACE ARexx port bridge, and the ACE
+requestor implementation. The adapter supplies the small
+`SelectErrorOutput()`/`updatestdio()` compatibility shims needed by the
+upstream source; full DOS error-stream selection remains outside Phase 1.
 
-**That target now links and runs.** `make test-regina-library` calls
+`make test-regina-library` remains the focused library check: it calls
 `RexxStart()` on an instore program through exactly the object set RexxMast
-will link, and gets its result back. What is left of the list above is
-`SelectErrorOutput()` and `updatestdio()`.
+links and gets its result back. `make test-rexxmast` adds the live service
+check and verifies the cross-process result argstring.
 
 `EasyRequest()` is now implemented as a supported ACE call without attempting
 to recreate all of Intuition. The caller formats `es_TextFormat` and
@@ -545,25 +554,31 @@ retain the Amiga convention that the leftmost gadget is 1 and the rightmost is
 0. This keeps existing RexxMast call sites unchanged while leaving the broader
 Intuition API out of scope.
 
+`third_party/regina/rexxmast/RexxMast.c` is included by the ACE adapter and
+kept untouched.
 
-`third_party/regina/rexxmast/RexxMast.c`. Only useful once 1 is
-done.
+2.1 **Done for Phase 1.** The service creates and serves the public `REXX`
+port (`RexxMast.c:93`).
 
-2.1 Create the public `REXX` port and serve it. `RexxMast.c:93` is
-`CreatePort("REXX", 0)`, which already works.
+2.2 **Done for Phase 1.** RXCOMM and RXFUNC messages execute the script or
+command in `rm_Args[0]`, set `rm_Result1`/`rm_Result2`, and reply from the
+worker. `make test-rexxmast` covers RXCOMM with `RXFF_RESULT`, RXFUNC with
+file-backed arguments, missing-file failure, and concurrent requests. Failure
+paths also reply, because senders wait forever by design. The upstream numeric
+error identifier in `rm_Result2` is not yet carried over the ACE wire; Phase 1
+returns the actionable failure code in `rm_Result1` and clears that sentinel
+before replying.
 
-2.2 Handle `RXCOMM` with `RXFF_RESULT`: run the script or command string in
-`rm_Args[0]`, set `rm_Result1`/`rm_Result2`, and `ReplyMsg()`. Reply on every
-path, including failure -- senders wait forever by design.
-
-2.3 Adopt `rm_Stdin`/`rm_Stdout` as the script's streams
+2.3 **Done for Phase 1.** Adopt `rm_Stdin`/`rm_Stdout` as the script's streams
 (`RexxMast.c:257-260`), which is what 1.5 delivers. Mostly already true: a
 message from another process now names a stand-in reply port whose `mp_SigTask`
 reports `NT_TASK`, so `StartFileSlave()` takes the "sender is not a Process"
 path and falls back to `rm_Stdin`/`rm_Stdout` -- which is where the real
 streams are. See the note on `remote_sender_port` in `rexx_port_bridge.c`.
 
-2.4 Then `RXADDLIB`, `RXADDCON`, `RXCLOSE`, and the Regina-private actions.
+2.4 Resource-action work remains: `RXADDLIB`, `RXREMLIB`, `RXADDCON`,
+`RXREMCON`, `RXADDFH`, and the Regina-private actions. `RXCLOSE` is already
+covered by the Phase 1 lifecycle test and cleanly removes the public port.
 
 2.5 Install as `SYS:C/REXXMAST`. **Decided: a user starts it, not the broker.**
 On AmigaOS it is started once and lives in the background, so ACE does the
@@ -572,6 +587,11 @@ process-spawning added to the broker. The one departure from silence: a send
 to a `REXX` port that nothing owns must come back as a distinct error saying
 so, rather than an anonymous `ESRCH`, because "ARexx does nothing and does not
 say why" is the worst failure this design can produce. See 1.2.
+
+The current `RX` install remains an alias for the local interpreter. That is
+intentional for Phase 1: `ADDRESS REXX` is the explicit public-port path, while
+changing the command-line alias to launch or forward through RexxMast is a
+separate compatibility decision.
 
 ### 3. Wire ARexx into Regina and the shell
 

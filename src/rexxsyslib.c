@@ -57,6 +57,13 @@
  * which is what RexxMast asks about each message it receives.
  */
 static struct RxsLib ace_rexxsyslib_base;
+struct RxsLib *RexxSysBase = &ace_rexxsyslib_base;
+
+static void __attribute__((constructor)) ace_rexxsyslib_init(void)
+{
+    NEWLIST(&ace_rexxsyslib_base.rl_LibList);
+    NEWLIST(&ace_rexxsyslib_base.rl_ClipList);
+}
 
 /*
  * Reached through a weak declaration in src/native_dos.c, because this object

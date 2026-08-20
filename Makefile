@@ -1343,7 +1343,8 @@ REGINA_LIB_OBJS := $(addprefix $(BUILD)/regina-lib-,\
 REGINA_LIB_CFLAGS := $(REGINA_CFLAGS) -DRXLIB -DINCL_REXXSAA -Dlint \
                      -include ace_regina_library.h
 
-# The ACE side of the link: the same DOS runtime every ACE command gets, plus
+# The ACE side of the link shared by the Regina interpreter tests and
+# RexxMast: the same DOS runtime every ACE command gets, plus
 # rexxsyslib.o for the ARexx message surface Regina's amifuncs.c calls --
 # CreateRexxMsg, IsRexxMsg, the argstrings.  aros-exec-runtime.o is not listed
 # because dos-runtime.o already contains it; naming it again is a duplicate
@@ -1427,9 +1428,23 @@ $(BUILD)/regina-mt_notmt.o: $(REGINA_SRC)/mt_notmt.c | $(BUILD)
 $(BUILD)/rexx: $(REGINA_OBJS) $(REGINA_ACE_OBJS) | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(filter-out %.h,$^) -o $@
 
-# The library object set's only consumer until RexxMast is ported. It links
-# exactly what RexxMast will link, so a break in that set is a failing test
-# here rather than a surprise there.
+$(BUILD)/rexxmast.o: src/rexxmast.c \
+                      $(REGINA_SRC)/rexxmast/RexxMast.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_CFLAGS) $(REGINA_INCLUDES) -pthread \
+	    -c $< -o $@
+
+# Phase 1 RexxMast uses the library object set rather than the standalone
+# interpreter's main. Its public REXX port is provided by rexx-port-bridge.o.
+$(BUILD)/rexxmast: $(BUILD)/rexxmast.o $(REGINA_LIB_OBJS) \
+                   $(BUILD)/regina-library-init.o \
+                   $(BUILD)/aros-exec-memory.o $(REGINA_ACE_OBJS) | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(filter-out %.h,$^) -o $@
+
+rexxmast: $(BUILD)/rexxmast
+
+# The library object set is also exercised independently. It links exactly
+# what RexxMast links, so a break in that set is a failing test here rather
+# than a surprise there.
 $(BUILD)/regina-library-test: tests/regina_library_test.c $(REGINA_LIB_OBJS) \
                              $(BUILD)/regina-library-init.o \
                              $(BUILD)/aros-exec-memory.o $(REGINA_ACE_OBJS) \
@@ -1466,7 +1481,11 @@ clean-vim:
 
 clean-regina:
 	@echo "cleaning regina"
-	@$(RM) -r $(BUILD)/rexx $(REGINA_OBJS) $(addsuffix .d,$(REGINA_OBJS))
+	@$(RM) -r $(BUILD)/rexx $(BUILD)/rexxmast $(BUILD)/rexxmast.o \
+	          $(BUILD)/rexxmast.o.d $(BUILD)/rexxmast-result-test \
+	          $(BUILD)/rexxmast-func-test $(BUILD)/rexxmast-failure-test \
+	          $(BUILD)/rexxmast-close-test $(REGINA_OBJS) \
+	          $(addsuffix .d,$(REGINA_OBJS))
 
 # This one also throws away the fetched tarball and the tree unpacked from it,
 # so the next `make lha` downloads and re-checksums rather than trusting what
@@ -1570,19 +1589,17 @@ install-vim: vim
 # SystemTags() -> launch_command(), which looks for ace-user-shell beside the
 # running executable. A rexx that resolved to somewhere else would run, and
 # report success, while silently doing nothing.
-install-regina: regina
+install-regina: regina rexxmast
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(BUILD)/rexx $(DESTDIR)$(BINDIR)/rexx
+	$(INSTALL) -m 0755 $(BUILD)/rexxmast $(DESTDIR)$(BINDIR)/rexxmast
 	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
 	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/rexx
+	ln -sf $(BINDIR)/rexxmast $(DESTDIR)$(SYSDIR)/C/rexxmast
 	# RX is what an Amiga user types, so it is here from the start. It is
-	# an alias for the interpreter rather than the real thing: on AmigaOS
-	# RX does not run the script itself, it sends it to the REXX port for
-	# RexxMast to run, which is why a script sent that way comes back
-	# through the sender's own console. Until RexxMast exists (step 2 of
-	# docs/regina-arexx-plan.md) RX runs the script locally instead. The
-	# difference is invisible for an ordinary script and becomes visible
-	# the moment ports matter.
+	# an alias for the interpreter. RexxMast is now available as a separate
+	# user-started service; RX still invokes the local interpreter here, while
+	# ADDRESS REXX explicitly exercises the public RexxMast port.
 	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/RX
 	@if [ -z "$(DESTDIR)" ] && [ ! -x "$(BINDIR)/ace-user-shell" ]; then \
 	    echo; \
@@ -1638,6 +1655,12 @@ $(BUILD)/rexx-port-test: tests/rexx_port_test.c $(BUILD)/rexxsyslib.o \
 test-rexx-port: $(BUILD)/rexx-port-test $(BUILD)/ace-broker
 	sh tests/with_private_broker.sh $(BUILD)/rexx-port-test
 
+test-rexxmast: $(BUILD)/rexxmast $(BUILD)/rexx $(BUILD)/sendrexxmsg \
+               $(BUILD)/rexxmast-result-test $(BUILD)/rexxmast-func-test \
+               $(BUILD)/rexxmast-failure-test $(BUILD)/rexxmast-close-test \
+               $(BUILD)/ace-broker
+	sh tests/with_private_broker.sh sh tests/rexxmast_test.sh
+
 # sendrexxmsg.c and listen4msg.c from the AROS tree, built unmodified. They
 # are the acceptance test for the whole port mechanism: if ACE implements the
 # contract, these compile, link and run with nothing done to them.
@@ -1662,6 +1685,26 @@ AREXX_DEMO_OBJS = $(BUILD)/rexxsyslib.o $(BUILD)/rexx-port-bridge.o \
 
 $(BUILD)/sendrexxmsg: $(REGINA_SRC)/rexxmast/sendrexxmsg.c $(AREXX_DEMO_OBJS) \
                       | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/rexxmast-result-test: tests/rexxmast_result_test.c $(AREXX_DEMO_OBJS) \
+                              | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/rexxmast-func-test: tests/rexxmast_func_test.c $(AREXX_DEMO_OBJS) \
+                             | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/rexxmast-failure-test: tests/rexxmast_failure_test.c $(AREXX_DEMO_OBJS) \
+                                | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/rexxmast-close-test: tests/rexxmast_close_test.c $(AREXX_DEMO_OBJS) \
+                              | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
 	    $(filter-out %.h,$^) -o $@
 
@@ -1791,7 +1834,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-arexx-demos install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
