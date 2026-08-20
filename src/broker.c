@@ -43,6 +43,7 @@
 /* Delivery channels are one per process, and a sender needs one as much as a
    port owner does, so this is sized against processes rather than ports. */
 #define MAX_PORT_CHANNELS 256
+#define MAX_BROADCAST_EVENTS 256
 /* Messages sent but not yet replied to. A sender blocks in WaitPort() until
    its reply arrives, so this counts conversations in flight rather than
    messages ever sent. */
@@ -168,6 +169,20 @@ struct broker_port_channel {
 
 static struct broker_port_channel port_channels[MAX_PORT_CHANNELS];
 static uint64_t next_port_channel_id = 1;
+
+/* Resource registration is a process-wide ARexx state change. Existing
+ * Regina processes receive it live; a Regina process started afterwards must
+ * receive the accepted history when it attaches its delivery channel. The
+ * broker does not inspect these bytes -- it retains opaque broadcast events
+ * in order and replays them to the newcomer. RXADDLIB followed by RXREMLIB
+ * therefore reconstructs the same final state as live delivery. */
+struct broker_broadcast_event {
+    void *payload;
+    size_t length;
+};
+
+static struct broker_broadcast_event broadcast_events[MAX_BROADCAST_EVENTS];
+static size_t broadcast_event_count;
 
 /*
  * A message that has been delivered and not yet replied to.
@@ -2366,6 +2381,48 @@ static void drop_connection_port_channels(struct broker_connection *connection)
     }
 }
 
+static int push_port_record(int channel_fd, uint32_t operation,
+                            uint64_t message_id, uint64_t port_id,
+                            const void *payload, size_t length,
+                            uint32_t flags, const int *fds, size_t fd_count);
+
+static void remember_broadcast_event(const void *payload, size_t length)
+{
+    struct broker_broadcast_event *event;
+
+    if (length > AMIGA_BROKER_MAX_PAYLOAD || (length && !payload))
+        return;
+    if (broadcast_event_count == MAX_BROADCAST_EVENTS) {
+        free(broadcast_events[0].payload);
+        memmove(broadcast_events, broadcast_events + 1,
+                (MAX_BROADCAST_EVENTS - 1) * sizeof(broadcast_events[0]));
+        broadcast_event_count--;
+    }
+    event = &broadcast_events[broadcast_event_count++];
+    event->payload = NULL;
+    event->length = length;
+    if (length) {
+        event->payload = malloc(length);
+        if (!event->payload) {
+            event->length = 0;
+            return;
+        }
+        memcpy(event->payload, payload, length);
+    }
+}
+
+static int replay_broadcast_events(int channel_fd)
+{
+    for (size_t index = 0; index < broadcast_event_count; index++) {
+        struct broker_broadcast_event *event = &broadcast_events[index];
+
+        if (push_port_record(channel_fd, AMIGA_BROKER_PORT_BROADCAST, 0, 0,
+                             event->payload, event->length, 0, NULL, 0) != 0)
+            return -1;
+    }
+    return 0;
+}
+
 /*
  * Claims this connection as the delivery channel for one process.
  *
@@ -3154,6 +3211,7 @@ static int handle_client(struct broker_connection *connection)
             status = EPERM;
             break;
         }
+        remember_broadcast_event(value, request.value_length);
         for (size_t index = 0; index < MAX_PORT_CHANNELS; index++) {
             struct broker_port_channel *channel = &port_channels[index];
 
@@ -3579,6 +3637,13 @@ static int handle_client(struct broker_connection *connection)
         if (send_response(fd, 0, NULL) != 0)
             outcome = -1;
     }
+    /* PORT_ATTACH's ordinary response must be the first record the client
+       reads. Only after it has accepted that response can the delivery
+       reader consume replayed opaque broadcast records. */
+    if (outcome == 0 && status == 0 &&
+        request.operation == AMIGA_BROKER_PORT_ATTACH &&
+        replay_broadcast_events(fd) != 0)
+        outcome = -1;
     if (outcome == 0 && request.operation == AMIGA_BROKER_TASK_ATTACH &&
         session->foreground_task == connection->task_id &&
         session->pending_foreground_signals) {

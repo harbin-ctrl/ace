@@ -59,10 +59,17 @@
 static struct RxsLib ace_rexxsyslib_base;
 struct RxsLib *RexxSysBase = &ace_rexxsyslib_base;
 
+/* The bridge is optional: commands that only use rexxsyslib do not link it.
+ * When present, start it after the RexxSysBase lists are valid so replayed
+ * ARexx resource events cannot race a later list initialization. */
+extern void ace_rexx_bridge_start(void) __attribute__((weak));
+
 static void __attribute__((constructor)) ace_rexxsyslib_init(void)
 {
     NEWLIST(&ace_rexxsyslib_base.rl_LibList);
     NEWLIST(&ace_rexxsyslib_base.rl_ClipList);
+    if (ace_rexx_bridge_start)
+        ace_rexx_bridge_start();
 }
 
 /*

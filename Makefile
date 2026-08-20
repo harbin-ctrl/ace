@@ -268,6 +268,7 @@ REGINA_CFLAGS := -std=gnu99 -w \
                  -Wno-int-conversion -Wno-incompatible-pointer-types \
                  -Wno-return-mismatch \
                  -Uunix -U__unix__ -U__unix \
+                 -D__regina_arexx_import=ace_regina_arexx_import \
                  -D__AROS__ -D_GNU_SOURCE -DNO_EXTERNAL_QUEUES -DAPIENTRY= \
                  -DREGINA_VERSION_DATE='"$(REGINA_VER_DATE)"' \
                  -DREGINA_VERSION_MAJOR='"$(REGINA_VER_MAJOR)"' \
@@ -495,6 +496,9 @@ $(BUILD)/native_process.o: src/native_process.c | $(BUILD)
 
 $(BUILD)/rexxsyslib.o: src/rexxsyslib.c | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
+
+$(BUILD)/rexxsupport.o: src/rexxsupport.c | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I$(COMPAT) -Isrc -c $< -o $@
 
 $(BUILD)/rexx-port-bridge.o: src/rexx_port_bridge.c src/broker_protocol.h \
                              src/aros_exec_runtime.h | $(BUILD)
@@ -1355,7 +1359,9 @@ REGINA_LIB_CFLAGS := $(REGINA_CFLAGS) -DRXLIB -DINCL_REXXSAA -Dlint \
 # so $(BUILD)/rexx named from higher up the file would see DOS_RUNTIME_OBJ as
 # empty and fail as a wall of undefined references from a file that is in fact
 # linked.
-REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o $(BUILD)/rexx-port-bridge.o \
+REGINA_ACE_OBJS := $(BUILD)/rexxsyslib.o $(BUILD)/rexxsupport.o \
+                  $(BUILD)/regina-arexx-import.o \
+                  $(BUILD)/rexx-port-bridge.o \
                   $(BUILD)/ace-requestor.o \
                   $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o \
                   $(BUILD)/native_command.o $(BUILD)/native_shcommand.o \
@@ -1420,6 +1426,22 @@ $(BUILD)/regina-mt_notmt.o: $(REGINA_SRC)/mt_notmt.c | $(BUILD)
 	    echo "$@: built the unix port, not the Amiga one" >&2; \
 	    echo "  (REGINA_CFLAGS must keep -Uunix -U__unix__ -U__unix)" >&2; \
 	    rm -f $@; exit 2; }
+
+# Regina's pointer-valued ARexx strings are inline binary values. Keep the
+# upstream IMPORT object available for the other Amiga BIFs, but route the
+# public IMPORT table entry to ACE's ABI-correct, allocation-aware shim.
+$(BUILD)/regina-arxfuncs.o: $(REGINA_SRC)/arxfuncs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_CFLAGS) \
+	    -D__regina_arexx_import=ace_regina_arexx_import_legacy \
+	    $(REGINA_INCLUDES) -c $< -o $@
+
+$(BUILD)/regina-lib-arxfuncs.o: $(REGINA_SRC)/arxfuncs.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_LIB_CFLAGS) \
+	    -D__regina_arexx_import=ace_regina_arexx_import_legacy \
+	    $(REGINA_INCLUDES) -c $< -o $@
+
+$(BUILD)/regina-arexx-import.o: src/regina_arexx_import.c | $(BUILD)
+	$(CC) $(CFLAGS) $(REGINA_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
 
 # ADDRESS COMMAND goes through SystemTags() -> launch_command(), which finds
 # the shell beside the running executable.  A rexx run from anywhere else
@@ -1857,12 +1879,15 @@ test-shell-return-code: all
 test-regina-library: $(BUILD)/regina-library-test
 	$(BUILD)/regina-library-test
 
+test-regina-arexx: $(BUILD)/rexx $(BUILD)/rexxmast $(BUILD)/ace-broker
+	sh tests/with_private_broker.sh sh tests/regina_arexx_test.sh
+
 test-tine: all tine
 	sh tests/tine_test.sh
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos test-regina-arexx install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

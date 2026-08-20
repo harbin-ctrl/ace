@@ -1,6 +1,14 @@
 #ifndef ACE_REGINA_COMPAT_H
 #define ACE_REGINA_COMPAT_H
 
+#include <stddef.h>
+
+/* The ARexx pointer-valued strings returned by ACE are process-local binary
+ * values. Regina's IMPORT uses these values, and the host implementation can
+ * validate pointers produced by rexxsupport.library before copying them. */
+int ace_rexxsupport_memory_status(const void *address, size_t length);
+int ace_rexxsupport_memory_cstring_length(const void *address, size_t *length);
+
 /*
  * The Regina-only corner of ACE's compatibility headers.
  *

@@ -206,6 +206,7 @@ static struct ace_rexx_private_proxy *private_proxies;
 static uint64_t next_private_token = 1;
 static uint64_t next_private_port_name;
 static int channel_ready;
+static int atfork_registered;
 
 static void bridge_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
@@ -236,6 +237,30 @@ static int ensure_channel(void)
     channel_ready = 1;
     pthread_mutex_unlock(&bridge_lock);
     return 0;
+}
+
+/* The Regina broadcast regression forks after the bridge has attached. The
+ * broker connection and its reader thread cannot be shared across fork(), so
+ * the child must drop both inherited connections and attach its own channel
+ * on the first ARexx operation. */
+static void ace_rexx_bridge_after_fork_child(void)
+{
+    native_broker_reset_after_fork();
+    channel_ready = 0;
+}
+
+/* Called by rexxsyslib after it has initialized RexxSysBase's lists. A
+ * standalone `rexx script.rexx` may need resource state before it makes any
+ * public-port call, so attach eagerly enough for RexxMast's replay to rebuild
+ * the local library list. A broker that is not running yet is fine: the
+ * normal first port operation calls ensure_channel() again later. */
+void ace_rexx_bridge_start(void)
+{
+    if (!atfork_registered) {
+        (void)pthread_atfork(NULL, NULL, ace_rexx_bridge_after_fork_child);
+        atfork_registered = 1;
+    }
+    (void)ensure_channel();
 }
 
 static int is_private_action(LONG action)
@@ -1433,6 +1458,19 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
     remote_id = ace_aros_runtime_remote_port_id(port);
     if (!remote_id)
         return 0;
+
+    /* Regina evaluates a successful no-result function statement as an
+       empty ADDRESS COMMAND string. AmigaDOS treats that as a no-op; sending
+       it through RexxMast would unnecessarily start a command worker and
+       make the host shell report an empty-command failure. */
+    if (rexx_action_code(rexx->rm_Action) == RXCOMM &&
+        (!rexx->rm_Args[0] ||
+         LengthArgstring((UBYTE *)rexx->rm_Args[0]) == 0)) {
+        rexx->rm_Result1 = RC_OK;
+        rexx->rm_Result2 = 0;
+        release_sender(rexx);
+        return 1;
+    }
     if (ensure_channel() != 0)
         return 0;
 

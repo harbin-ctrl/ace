@@ -644,38 +644,40 @@ mostly a matter of it now working.
 3.2 `ADDRESS COMMAND` already works; check `RC` after it once command-not-found
 is fixed (below).
 
-3.3 **In progress.** Run the acceptance scripts the AROS tree ships:
-`regina/arexx_test/{addsupport,typepkt,forbid1,forbid2,ptrarith,ados}.rexx`.
-`addsupport.rexx` currently passes, proving that Regina can register the
-resource. The remaining scripts cannot yet resolve the functions in
-`rexxsupport.library` (`allocmem`, `forbid`, `null`, and the DOS functions),
-so this is not an acceptance gate yet.
+3.3 **Done in the build tree.** The AROS acceptance scripts
+`regina/arexx_test/{addsupport,typepkt,forbid1,forbid2,ptrarith,ados}.rexx`
+all pass through `make test-regina-arexx`. The target starts one isolated
+RexxMast, registers the library from one Regina process, then runs the
+remaining scripts in fresh processes so resource replay is exercised too.
 
-3.4 **Implement `rexxsupport.library`.** ACE already supplies the
+3.4 **Done in the build tree.** ACE already supplies the
 `rexxsyslib.library` allocation and message surface, but registering a
 library is not implementing it: Regina's `try_func_amiga()` calls
 `OpenLibrary()` and then `RexxCallQueryLibFunc()` for an `RRT_LIB` resource.
-Add the ACE-backed library and begin with the functions required by 3.3:
+`src/rexxsupport.c` supplies the functions required by 3.3:
 
-* memory and pointer functions: `allocmem`, `freemem`, `null`, `offset`,
-  `baddr`, and `import`;
+* memory and pointer functions: `allocmem`, `freemem`, `null`, `offset`, and
+  `baddr`;
 * packet inspection: `typepkt`;
 * nested task state: `forbid` and `permit`;
 * DOS functions: `makedir`, `rename`, and `delete`.
 
-Memory returned by these functions is process-local. Keep an ACE allocation
-registry so `freemem`, `import`, and pointer arithmetic validate ownership and
-bounds rather than trusting a numeric value supplied by Rexx. `forbid` and
-`permit` need the matching nested behavior in the calling thread; they must
-not be used to freeze the broker or other processes.
+Memory returned by these functions is process-local. ACE keeps an allocation
+registry so `freemem`, `IMPORT`, and pointer arithmetic validate ownership and
+bounds rather than trusting a numeric value supplied by Rexx. `IMPORT` is a
+Regina core BIF rather than a `rexxsupport.library` function; the ACE shim in
+`src/regina_arexx_import.c` consumes Regina's raw pointer-valued argstring and
+validates ACE allocations before copying. `forbid` and `permit` have matching
+nested behavior in the calling thread and never freeze the broker or another
+process. A standalone no-result `FREEMEM` expression is treated as the
+AmigaDOS empty-command no-op by ACE's command launcher.
 
-3.5 **Make the acceptance environment reproducible.** Add a dedicated
-`make test-regina-arexx` target that starts an isolated RexxMast, runs all six
-scripts, and checks their output and return codes. Run it once against the
-build tree and once after installation. The installed `SYS:C` commands used
-by `ados.rexx` must be built with the same broker protocol as Regina,
-RexxMast, and the broker; `install-regina` currently installs the Regina
-companions but does not refresh the whole command set.
+3.5 **In progress.** The dedicated `make test-regina-arexx` target now makes
+the build-tree acceptance environment reproducible. The remaining check is
+the installed layout: the `SYS:C` commands used by `ados.rexx` must be built
+with the same broker protocol as Regina, RexxMast, and the broker;
+`install-regina` currently installs the Regina companions but does not refresh
+the whole command set.
 
 ### 4. Loose ends worth closing
 
@@ -694,8 +696,8 @@ broker-control companions; see "Building it" above. The build carries the
 include order, the `-U` flags with an assertion behind them, and the version
 defines read out of `regina.ver`. This does not yet mean the installed
 acceptance environment is complete: the full `SYS:C` command set must be
-refreshed as one protocol-matched set, and the `rexxsupport.library` work in
-3.4 remains. The one thing it does not do is build the `regina` shared-library
+refreshed as one protocol-matched set. The one thing it does not do is build
+the `regina` shared-library
 target -- only the standalone `rexx`. `docs/regina-amiga-port.md`'s open
 question about merging the two compat trees is still open; the Regina header
 remains the current answer, not necessarily the final one.

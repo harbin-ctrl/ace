@@ -1201,6 +1201,7 @@ static FILE *as_file(BPTR handle)
 }
 
 extern struct Library *ace_rexxsyslib_library_base(void) __attribute__((weak));
+extern struct Library *ace_rexxsupport_library_base(void) __attribute__((weak));
 
 struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
 {
@@ -1223,6 +1224,9 @@ struct Library *OpenLibrary(CONST_STRPTR name, ULONG version)
     if (name && strcasecmp(name, "rexxsyslib.library") == 0 &&
         ace_rexxsyslib_library_base)
         return ace_rexxsyslib_library_base();
+    if (name && strcasecmp(name, "rexxsupport.library") == 0 &&
+        ace_rexxsupport_library_base)
+        return ace_rexxsupport_library_base();
     return NULL;
 }
 

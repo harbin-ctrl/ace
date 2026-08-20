@@ -133,6 +133,12 @@ static LONG launch_command(CONST_STRPTR command, BPTR input, BPTR output,
     int script_fd = -1;
     pid_t child;
 
+    /* A successful Rexx function used as a standalone command can produce
+       an empty command string. AmigaDOS treats that as a no-op; do not start
+       an ACE shell merely to discover that it has no command to run. */
+    if (!command || !*command)
+        return 0;
+
     if (executable_directory(directory, sizeof(directory)) != 0 ||
         snprintf(shell_path, sizeof(shell_path), "%s/ace-user-shell", directory) >= (int)sizeof(shell_path) ||
         native_broker_ensure() != 0) {

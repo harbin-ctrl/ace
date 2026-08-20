@@ -182,6 +182,17 @@ static void rexxmast_startfile_entry(void)
     free(job);
     if (!message)
         return;
+    /* Regina turns a successful no-result library call into an empty
+       ADDRESS COMMAND message. AmigaDOS treats that as a no-op; do the
+       same before StartFileSlave() can hand it to the host shell. */
+    if ((message->rm_Action & RXCODEMASK) == RXCOMM &&
+        (!message->rm_Args[0] ||
+         LengthArgstring((UBYTE *)message->rm_Args[0]) == 0)) {
+        message->rm_Result1 = RC_OK;
+        message->rm_Result2 = 0;
+        ReplyMsg((struct Message *)message);
+        return;
+    }
     rexxmast_api_result = 0;
     rexxmast_script_return_code = 0;
     rexxmast_started = 0;

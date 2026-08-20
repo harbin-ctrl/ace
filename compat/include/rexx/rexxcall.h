@@ -2,10 +2,21 @@
 #define REXX_REXXCALL_H
 
 #include <exec/types.h>
+#include <exec/libraries.h>
+
+struct RexxMsg;
+
+/* ACE has no Amiga vector table.  Regina still needs the AROS query-call
+ * contract, so route it through the host-side library dispatcher instead of
+ * pretending that a numeric vector offset is callable machine code. */
+ULONG ace_rexx_call_query_lib_func(struct RexxMsg *rexxmsg,
+                                   struct Library *libbase,
+                                   SIPTR offset,
+                                   UBYTE **retargstringptr);
 
 /* AROS uses vector calls for resource callbacks.  ACE's host ABI has no
- * Amiga vector table; retain the source-level contract and make the callback
- * a harmless no-op until Rexx resources are backed by host callables. */
+ * Amiga vector table.  Resource cleanup remains a separate follow-up seam;
+ * the query call used by ordinary Rexx functions is fully host-dispatched. */
 #ifndef AROS_LCA
 #define AROS_LCA(type, name, reg) type name
 #endif
@@ -17,7 +28,8 @@
 #endif
 
 #define RexxCallQueryLibFunc(rexxmsg, libbase, offset, retargstringptr) \
-    ((void)(rexxmsg), (void)(libbase), (void)(offset), (void)(retargstringptr), 0UL)
+    ace_rexx_call_query_lib_func((rexxmsg), (libbase), (offset), \
+                                  (retargstringptr))
 
 #define AROS_AREXXLIBQUERYFUNC(f,m,lt,l,o,p) \
     AROS_LH2(ULONG, f, AROS_LHA(struct RexxMsg *, m, A0), \
