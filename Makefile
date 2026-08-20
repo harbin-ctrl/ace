@@ -1405,6 +1405,16 @@ $(BUILD)/regina-mt_notmt.o: $(REGINA_SRC)/mt_notmt.c | $(BUILD)
 $(BUILD)/rexx: $(REGINA_OBJS) $(REGINA_ACE_OBJS) | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(filter-out %.h,$^) -o $@
 
+# The library object set's only consumer until RexxMast is ported. It links
+# exactly what RexxMast will link, so a break in that set is a failing test
+# here rather than a surprise there.
+$(BUILD)/regina-library-test: tests/regina_library_test.c $(REGINA_LIB_OBJS) \
+                             $(BUILD)/regina-library-init.o \
+                             $(BUILD)/aros-exec-memory.o $(REGINA_ACE_OBJS) \
+                             | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -D__AROS__ $(REGINA_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
 clean:
 	$(RM) -r $(BUILD)
 
@@ -1747,6 +1757,9 @@ test-assign-missing-target: all
 
 test-prompt-newline: all
 	sh tests/prompt_newline_test.sh
+
+test-regina-library: $(BUILD)/regina-library-test
+	$(BUILD)/regina-library-test
 
 test-tine: all tine
 	sh tests/tine_test.sh
