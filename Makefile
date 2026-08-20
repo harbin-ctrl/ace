@@ -1591,10 +1591,19 @@ install-vim: vim
 # SystemTags() -> launch_command(), which looks for ace-user-shell beside the
 # running executable. A rexx that resolved to somewhere else would run, and
 # report success, while silently doing nothing.
-install-regina: regina rexxmast
+install-regina: regina rexxmast $(BUILD)/ace-user-shell \
+                $(BUILD)/ace-broker $(BUILD)/ace-brokerctl
 	$(INSTALL) -d $(DESTDIR)$(BINDIR)
 	$(INSTALL) -m 0755 $(BUILD)/rexx $(DESTDIR)$(BINDIR)/rexx
 	$(INSTALL) -m 0755 $(BUILD)/rexxmast $(DESTDIR)$(BINDIR)/rexxmast
+	# Regina's ADDRESS COMMAND and ARexx support routines launch this shell
+	# beside rexx, so the standalone Regina install needs the matching build.
+	$(INSTALL) -m 0755 $(BUILD)/ace-user-shell $(DESTDIR)$(BINDIR)/ace-user-shell
+	# RexxMast discovers the broker beside its own executable. Install the
+	# matching protocol build here so install-regina works independently of a
+	# previously installed ACE base set.
+	$(INSTALL) -m 0755 $(BUILD)/ace-broker $(DESTDIR)$(BINDIR)/ace-broker
+	$(INSTALL) -m 0755 $(BUILD)/ace-brokerctl $(DESTDIR)$(BINDIR)/ace-brokerctl
 	$(INSTALL) -d $(DESTDIR)$(SYSDIR)/C
 	ln -sf $(BINDIR)/rexx $(DESTDIR)$(SYSDIR)/C/rexx
 	ln -sf $(BINDIR)/rexxmast $(DESTDIR)$(SYSDIR)/C/rexxmast

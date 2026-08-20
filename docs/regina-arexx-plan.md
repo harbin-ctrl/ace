@@ -166,10 +166,12 @@ comes from `regina/regina.ver`, so neither can drift from upstream.
 `regina` is deliberately not part of `all`. It builds from `third_party/regina`
 by default; `REGINA_SRC=/path/to/aros-contrib/regina` builds against a working
 checkout instead, which is how the vendored tree gets refreshed.
-`make install-regina` installs `rexx` beside `ace-user-shell` and symlinks it
-into `SYS:C`, building first if it needs to. `make clean-regina` removes the
-Regina objects and `rexx` and nothing else -- not the vendored source, and not
-the ACE objects `rexx` links against.
+`make install-regina` installs `rexx`, `rexxmast`, and the matching
+`ace-user-shell` beside one another, along with the matching broker and broker
+control binary, and symlinks the two Rexx programs into `SYS:C`, building first
+if it needs to. `make clean-regina` removes the Regina objects and Rexx
+binaries and nothing else --
+not the vendored source, and not the ACE objects they link against.
 
 `-Uunix -U__unix__ -U__unix` is not optional. `mt_notmt.c` picks its
 `OS_Dep_funcs` from an `#if/#elif` chain in which the unix branch comes before
