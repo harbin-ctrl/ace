@@ -23,6 +23,7 @@
 void native_cli_set_script_input(FILE *file);
 FILE *native_cli_script_input(void);
 void native_set_interactive(int interactive);
+void native_publish_shell_result(void);
 int native_execute_script(const char *name);
 int native_quit_script(void);
 

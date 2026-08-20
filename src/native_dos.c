@@ -106,6 +106,7 @@ static struct CommandLineInterface native_cli;
 static char native_cli_prompt[PATH_MAX];
 static char native_cli_set_name[PATH_MAX];
 static int native_cli_loaded;
+static int native_shell_result_published;
 static int native_endcli_requested;
 static int native_task_registered;
 static int native_task_broker_registered;
@@ -3132,6 +3133,10 @@ struct CommandLineInterface *Cli(void)
     char *fail_level;
     char *prompt;
 
+    /* Shell.c writes CLI-level failures after its last broker refresh. If it
+       asks for Cli() again before leaving the shell, publish that state before
+       the broker payload replaces the local fields. */
+    native_publish_shell_result();
     if (native_broker_ensure() != 0)
         return cli_without_broker();
 
@@ -3153,6 +3158,14 @@ struct CommandLineInterface *Cli(void)
      * a newline of their own.
      */
     prompt = save;
+
+    /* A previously promoted CLI error remains in native_cli until the next
+       broker refresh. Once a command has published a clean result, discard
+       that old local Result2 so it cannot be promoted again. */
+    if (native_shell_result_published &&
+        strtol(return_code, NULL, 10) == RETURN_OK &&
+        strtol(result2, NULL, 10) == 0)
+        native_shell_result_published = 0;
 
     native_cli.cli_ReturnCode = (LONG)strtol(return_code, NULL, 10);
     native_cli.cli_Result2 = (LONG)strtol(result2, NULL, 10);
@@ -3452,6 +3465,22 @@ void native_publish_result(int result_code)
     (void)native_broker_setresult((int32_t)result_code, (int32_t)native_ioerr);
     if (native_cli_loaded && native_cli.cli_Background)
         _exit(NATIVE_ENDCLI_STATUS);
+}
+
+/* Shell.c records a command-not-found (and other CLI-level failures) in its
+ * local CLI, but no command process runs to publish that state to the broker.
+ * Promote that error once the shell returns, without replacing a result that
+ * a command already published. */
+void native_publish_shell_result(void)
+{
+    if (!native_cli_loaded || native_shell_result_published ||
+        native_cli.cli_ReturnCode != RETURN_OK ||
+        native_cli.cli_Result2 == 0)
+        return;
+    native_shell_result_published = 1;
+    native_cli.cli_ReturnCode = RETURN_ERROR;
+    (void)native_broker_setresult(RETURN_ERROR,
+                                   (int32_t)native_cli.cli_Result2);
 }
 
 /*

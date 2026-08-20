@@ -181,6 +181,7 @@ int main(int argc, char **argv)
     }
     run_startup_scripts();
     status = ace_aros_shell_main(argc, argv);
+    native_publish_shell_result();
     /* A non-zero here is the Shell itself failing, and is not a command's
        return code to be second-guessed. */
     if (status != 0)

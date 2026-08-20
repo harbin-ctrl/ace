@@ -583,12 +583,10 @@ is fixed (below).
 
 ### 4. Loose ends worth closing
 
-4.1 **`RC` is 0 for a command that was not found.** A command that runs
-publishes its own result and `RC` is right; one that is not found prints
-"object not found", records nothing, and reports success. The Shell's local
-write to `cli` does not survive the next `Cli()` refill from the broker. Fix it
-where the live path detects the failure -- **not** in
-`src/aros_shell_runtime.c`, which is dead.
+4.1 **Done.** A command that runs publishes its own result and `RC` is right;
+for a command that is not found, the live shell's local `cli_Result2` is now
+promoted to `RETURN_ERROR` at the ACE-owned shell boundary. The regression
+coverage is `make test-shell-return-code`.
 
 4.2 **Audit `compat/aros-real/include/proto/exec.h`** against
 `$HOME/aros/rom/exec/*.c`. Three wrong return types so far, found one at a
