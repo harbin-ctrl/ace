@@ -747,9 +747,6 @@ $(BUILD)/broker-identity.o: src/broker_identity.c src/broker_protocol.h | $(BUIL
 $(BUILD)/brokerctl.o: src/brokerctl.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/amiga_shell.o: src/amiga_shell.c src/broker_protocol.h | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
-
 $(BUILD)/amiga_console.o: src/amiga_console.c src/console_channel.h src/console_device_bridge.h src/ace_appmenu_wayland.h compat/include/libraries/iffparse.h compat/include/proto/iffparse.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(GTK_CFLAGS) $(GFX_CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
