@@ -50,6 +50,8 @@ timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-func-test"
 timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-failure-test"
+timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
+    "$build_dir/rexxmast-resource-test"
 
 # ADDRESS REXX sends RXCOMM through the same public port. The quoted command
 # is the Amiga convention that tells RexxMast to execute an instore program.

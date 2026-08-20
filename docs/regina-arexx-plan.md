@@ -212,6 +212,11 @@ git status --short third_party # must be empty
   `make test-rexxmast` exercises this through the broker, including the
   unmodified AROS `sendrexxmsg` client, RXFUNC arguments, failure replies,
   concurrent requests, shutdown, and a Regina `ADDRESS REXX` command.
+* RexxMast's direct resource actions work through the same public port:
+  `RXADDLIB`, `RXADDFH`, `RXREMLIB`, `RXADDCON`, and `RXREMCON`. Clipboard
+  values remain counted bytes across the process boundary, so embedded NULs
+  survive. Regina-private resource messages are intentionally not listed as
+  supported yet; their private pointers need a separate routing mechanism.
 * `FindPort` crosses processes: a port one process registers is found by
   another, through the broker's port registry.
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
@@ -576,9 +581,22 @@ reports `NT_TASK`, so `StartFileSlave()` takes the "sender is not a Process"
 path and falls back to `rm_Stdin`/`rm_Stdout` -- which is where the real
 streams are. See the note on `remote_sender_port` in `rexx_port_bridge.c`.
 
-2.4 Resource-action work remains: `RXADDLIB`, `RXREMLIB`, `RXADDCON`,
-`RXREMCON`, `RXADDFH`, and the Regina-private actions. `RXCLOSE` is already
-covered by the Phase 1 lifecycle test and cleanly removes the public port.
+2.4 **Direct resource actions are done.** `RXADDLIB`, `RXREMLIB`, `RXADDCON`,
+`RXREMCON`, and `RXADDFH` now run through the public `REXX` port. The bridge
+preserves their actual ABI: library/host arguments are argstrings, while
+`RXADDCON` carries a C-string name, counted clipboard bytes, and a numeric
+length. `make test-rexxmast` checks registration, duplicate detection,
+removal, clipboard replacement, embedded NUL bytes, and removal of a missing
+clipboard entry. `RXCLOSE` is already covered by the Phase 1 lifecycle test
+and cleanly removes the public port.
+
+The Regina-private actions remain separate work. Their `rm_Private1` and
+`rm_Private2` fields point at a Regina process's private helper port and TSD;
+those pointers cannot be copied through the process bridge. The current
+public-port path rejects such a message with `RC_ERROR` before serialization,
+rather than dereferencing a foreign pointer or leaving the sender waiting.
+They need an explicit private-message routing design before they can be called
+supported.
 
 2.5 Install as `SYS:C/REXXMAST`. **Decided: a user starts it, not the broker.**
 On AmigaOS it is started once and lives in the background, so ACE does the

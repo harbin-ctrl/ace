@@ -202,6 +202,11 @@ static size_t slot_length(const void *pointer, int argstring)
                      : strlen((const char *)pointer);
 }
 
+static LONG rexx_action_code(LONG action)
+{
+    return action & RXCODEMASK;
+}
+
 /*
  * Flattens a RexxMsg. Returns the buffer and its length, or NULL.
  *
@@ -217,6 +222,8 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
     size_t total = sizeof(header);
     char *buffer;
     char *cursor;
+    char numeric_length[32];
+    LONG action = rexx_action_code(message->rm_Action);
     int index;
 
     memset(&header, 0, sizeof(header));
@@ -227,7 +234,32 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
 
     for (index = 0; index < 16; index++) {
         slot_data[index] = (const void *)message->rm_Args[index];
-        slot_size[index] = slot_length(slot_data[index], 1);
+        if ((action == RXADDCON && index <= 2) ||
+            (action == RXREMCON && index == 0))
+            slot_size[index] = 0;
+        else
+            slot_size[index] = slot_length(slot_data[index], 1);
+    }
+
+    /* SETCLIP is the one public resource action whose wire arguments are not
+       all argstrings. Regina sends the name as a C string, the clipboard as
+       counted bytes, and the byte count as an IPTR. Keep that contract here;
+       treating rm_Args[2] as an argstring would dereference the integer as a
+       pointer, while strlen() would truncate clipboard data at NUL. */
+    if (action == RXADDCON) {
+        slot_data[0] = (const void *)message->rm_Args[0];
+        slot_size[0] = slot_length(slot_data[0], 0);
+        slot_data[1] = (const void *)message->rm_Args[1];
+        slot_size[1] = message->rm_Args[1]
+                           ? (size_t)message->rm_Args[2]
+                           : 0;
+        snprintf(numeric_length, sizeof(numeric_length), "%llu",
+                 (unsigned long long)message->rm_Args[2]);
+        slot_data[2] = numeric_length;
+        slot_size[2] = strlen(numeric_length);
+    } else if (action == RXREMCON) {
+        slot_data[0] = (const void *)message->rm_Args[0];
+        slot_size[0] = slot_length(slot_data[0], 0);
     }
     slot_data[ACE_REXX_SLOT_RESULT2] = (const void *)message->rm_Result2;
     slot_size[ACE_REXX_SLOT_RESULT2] =
@@ -268,7 +300,7 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
 /*
  * Rebuilds the slots of a RexxMsg from a wire payload.
  *
- * Every slot is recreated with CreateArgstring() in this process's own memory.
+ * Every string slot is recreated with CreateArgstring() in this process's own memory.
  * Handing back a pointer into the payload would be a pointer into a buffer the
  * reader thread frees, and the receiver is entitled to DeleteArgstring() what
  * it is given.
@@ -279,6 +311,7 @@ static int deserialise(struct RexxMsg *message, const char *payload,
     struct ace_rexx_wire header;
     const char *cursor;
     size_t remaining;
+    LONG action;
     int index;
 
     if (payload_length < sizeof(header))
@@ -294,6 +327,8 @@ static int deserialise(struct RexxMsg *message, const char *payload,
         message->rm_Action = (LONG)header.action;
         message->rm_Result1 = (LONG)header.result1;
     }
+    action = rexx_action_code(with_results ? (LONG)header.action
+                                           : message->rm_Action);
     for (index = 0; index < ACE_REXX_SLOTS; index++) {
         uint32_t length = header.length[index];
         UBYTE *copy = NULL;
@@ -302,6 +337,30 @@ static int deserialise(struct RexxMsg *message, const char *payload,
             continue;
         if (length > remaining)
             return -1;
+        if (!with_results && index != ACE_REXX_SLOT_RESULT2) {
+            cursor += length;
+            remaining -= length;
+            continue;
+        }
+        if (index == 2 && action == RXADDCON) {
+            char number[32];
+            char *end;
+            unsigned long long value;
+
+            if (length == 0 || length >= sizeof(number))
+                return -1;
+            memcpy(number, cursor, length);
+            number[length] = '\0';
+            errno = 0;
+            value = strtoull(number, &end, 10);
+            if (errno != 0 || end == number || *end != '\0' ||
+                value > (unsigned long long)(IPTR)-1)
+                return -1;
+            cursor += length;
+            remaining -= length;
+            message->rm_Args[index] = (IPTR)value;
+            continue;
+        }
         copy = CreateArgstring((UBYTE *)cursor, length);
         if (!copy)
             return -1;
@@ -317,6 +376,30 @@ static int deserialise(struct RexxMsg *message, const char *payload,
             message->rm_FileExt = (STRPTR)copy;
     }
     return 0;
+}
+
+static void clear_received_message(struct RexxMsg *message)
+{
+    if (!message)
+        return;
+    /* RXADDCON carries its byte count in rm_Args[2], not in an argstring.
+       ClearRexxMsg() quite correctly assumes ordinary argstrings, so remove
+       this action-specific scalar before handing the remaining slots to it. */
+    if (rexx_action_code(message->rm_Action) == RXADDCON)
+        message->rm_Args[2] = 0;
+    ClearRexxMsg(message, 16);
+    if (message->rm_Result2) {
+        DeleteArgstring((UBYTE *)message->rm_Result2);
+        message->rm_Result2 = 0;
+    }
+    if (message->rm_CommAddr) {
+        DeleteArgstring((UBYTE *)message->rm_CommAddr);
+        message->rm_CommAddr = NULL;
+    }
+    if (message->rm_FileExt) {
+        DeleteArgstring((UBYTE *)message->rm_FileExt);
+        message->rm_FileExt = NULL;
+    }
 }
 
 /*
@@ -437,6 +520,7 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
             return;
         }
         if (deserialise(message, payload, payload_length, 1) != 0) {
+            clear_received_message(message);
             DeleteRexxMsg(message);
             if (stdin_fd >= 0)
                 close(stdin_fd);
@@ -450,6 +534,7 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
         message->rm_Node.mn_ReplyPort = &remote_sender_port;
         record = calloc(1, sizeof(*record));
         if (!record) {
+            clear_received_message(message);
             DeleteRexxMsg(message);
             if (stdin_fd >= 0)
                 close(stdin_fd);
@@ -551,6 +636,18 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
     if (ensure_channel() != 0)
         return 0;
 
+    /* Regina-private actions contain rm_Private1/rm_Private2 pointers to a
+       helper port and TSD in the sender process. They have no meaningful wire
+       representation yet. Reject them here, before ordinary serialization
+       mistakes can interpret a private pointer as an argstring and before a
+       message is left waiting on a remote stand-in port. */
+    if ((uint32_t)rexx_action_code(rexx->rm_Action) >= (uint32_t)RXADDRSRC) {
+        rexx->rm_Result1 = RC_ERROR;
+        rexx->rm_Result2 = 0;
+        release_sender(rexx);
+        return 1;
+    }
+
     payload = serialise(rexx, &length);
     if (!payload)
         return 0;
@@ -651,8 +748,9 @@ int ace_rexx_port_reply(struct Message *message)
     rexx->rm_Stdout = BNULL;
     free(entry);
     /* This message was made here, on delivery, and the receiver is done with
-       it. Its argstrings belong to the receiver, which frees them with
-       ClearRexxMsg() exactly as it would a message it had built itself. */
+       it. Its argstrings belong to the receiver, so release every rebuilt
+       slot before freeing the message itself. */
+    clear_received_message(rexx);
     DeleteRexxMsg(rexx);
     return 1;
 }

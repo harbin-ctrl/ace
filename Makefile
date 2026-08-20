@@ -1484,7 +1484,8 @@ clean-regina:
 	@$(RM) -r $(BUILD)/rexx $(BUILD)/rexxmast $(BUILD)/rexxmast.o \
 	          $(BUILD)/rexxmast.o.d $(BUILD)/rexxmast-result-test \
 	          $(BUILD)/rexxmast-func-test $(BUILD)/rexxmast-failure-test \
-	          $(BUILD)/rexxmast-close-test $(REGINA_OBJS) \
+	          $(BUILD)/rexxmast-close-test $(BUILD)/rexxmast-resource-test \
+	          $(REGINA_OBJS) \
 	          $(addsuffix .d,$(REGINA_OBJS))
 
 # This one also throws away the fetched tarball and the tree unpacked from it,
@@ -1657,7 +1658,8 @@ test-rexx-port: $(BUILD)/rexx-port-test $(BUILD)/ace-broker
 
 test-rexxmast: $(BUILD)/rexxmast $(BUILD)/rexx $(BUILD)/sendrexxmsg \
                $(BUILD)/rexxmast-result-test $(BUILD)/rexxmast-func-test \
-               $(BUILD)/rexxmast-failure-test $(BUILD)/rexxmast-close-test \
+               $(BUILD)/rexxmast-failure-test $(BUILD)/rexxmast-resource-test \
+               $(BUILD)/rexxmast-close-test \
                $(BUILD)/ace-broker
 	sh tests/with_private_broker.sh sh tests/rexxmast_test.sh
 
@@ -1700,6 +1702,11 @@ $(BUILD)/rexxmast-func-test: tests/rexxmast_func_test.c $(AREXX_DEMO_OBJS) \
 
 $(BUILD)/rexxmast-failure-test: tests/rexxmast_failure_test.c $(AREXX_DEMO_OBJS) \
                                 | $(BUILD)
+	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
+	    $(filter-out %.h,$^) -o $@
+
+$(BUILD)/rexxmast-resource-test: tests/rexxmast_resource_test.c $(AREXX_DEMO_OBJS) \
+                                 | $(BUILD)
 	$(CC) $(CFLAGS) -pthread $(AREXX_DEMO_CFLAGS) $(AREXX_DEMO_INCLUDES) \
 	    $(filter-out %.h,$^) -o $@
 
