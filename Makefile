@@ -1368,9 +1368,15 @@ $(BUILD)/regina-%.o: $(REGINA_SRC)/%.c | $(BUILD)
 $(BUILD)/regina-lib-%.o: $(REGINA_SRC)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) $(REGINA_LIB_CFLAGS) $(REGINA_INCLUDES) -c $< -o $@
 
-# aros-real first, for the pool and list prototypes in its proto/exec.h --
-# the same ordering the rest of the Regina build uses.
 # Pools and semaphores, shared by the BOOPSI runtime and Regina's library.
+#
+# aros-real first, for the pool and list prototypes in its proto/exec.h --
+# the same ordering the rest of the Regina build uses. That puts AROS's own
+# exec headers ahead of ACE's compat ones for this object, which is correct
+# and also load-bearing: it is linked beside the imported BOOPSI and console
+# sources, which are compiled the same way, and a structure they share has to
+# have one layout. compat/include/exec/semaphores.h is what keeps the other
+# side of that bargain -- see the note there before changing either.
 $(BUILD)/aros-exec-memory.o: src/aros_exec_memory.c | $(BUILD)
 	$(CC) $(CFLAGS) $(AROS_REAL_INCLUDES) -I$(COMPAT) -Isrc \
 	    -I$(CURDIR)/compat/regina/include \
