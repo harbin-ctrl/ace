@@ -27,15 +27,27 @@
 struct MinList *__regina_tsdlist;
 extern APTR __regina_semaphorepool;
 
-static void __attribute__((constructor)) ace_regina_library_init(void)
+static void __attribute__((constructor(ACE_REGINA_PRIORITY_LIBRARY)))
+ace_regina_library_init(void)
 {
     __regina_semaphorepool = CreatePool(MEMF_PUBLIC, 1024, 256);
     if (!__regina_semaphorepool)
         return;
     __regina_tsdlist = AllocPooled(__regina_semaphorepool,
                                    sizeof(*__regina_tsdlist));
+    /*
+     * NEWLIST, not NewList(): the list is a MinList, three pointers and no
+     * more, and NewList() initialises a full struct List -- its lh_Type and
+     * l_pad land two bytes past the end of this allocation. Upstream's
+     * regina_init.c does exactly that, casting the MinList and calling
+     * NewList() on it, and gets away with it because AmigaOS pools round an
+     * allocation up. ACE's AllocPooled() hands back exactly what was asked
+     * for, so the same line is a heap overflow here -- ASan catches it on
+     * the first RexxStart(). The type-generic NEWLIST picks the MinList
+     * initialiser and writes only what the object has room for.
+     */
     if (__regina_tsdlist)
-        NewList((struct List *)__regina_tsdlist);
+        NEWLIST(__regina_tsdlist);
 }
 
 /*
@@ -58,7 +70,13 @@ void __aros_setoffsettable(struct Library *base)
     (void)base;
 }
 
-static void __attribute__((destructor)) ace_regina_library_expunge(void)
+/*
+ * Last down: mt_amigalib's CloseLib() walks __regina_tsdlist out of this pool
+ * while tearing a task's state down, so the pool cannot go first. See the
+ * priorities in ace_regina_library.h.
+ */
+static void __attribute__((destructor(ACE_REGINA_PRIORITY_LIBRARY)))
+ace_regina_library_expunge(void)
 {
     if (__regina_semaphorepool)
         DeletePool(__regina_semaphorepool);

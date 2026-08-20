@@ -28,20 +28,47 @@
  * shadowed-declaration repairs that header exists for.
  */
 
+/*
+ * The priority argument is dropped, but the *order between the three kinds*
+ * is not, because on AROS it is not a preference: a library is closed by its
+ * last user before it is expunged, so ExpungeLib runs after every CloseLib
+ * and may free what CloseLib still reads. Flattening all three to plain
+ * constructors and destructors threw that away, and the order then fell out
+ * of link order -- which put ACE's pool teardown first and made
+ * mt_amigalib.c's CloseLib() dereference a NULL __regina_tsdlist at exit.
+ *
+ * Three tiers, outermost first. GCC runs constructors in ascending priority
+ * and destructors in the reverse, so one number per tier gives both halves:
+ * set up outermost first, tear down outermost last.
+ *
+ *   LIBRARY  what regina_init.c owned upstream -- the per-task list and the
+ *            pool it lives in. src/regina_library_init.c stands in for that
+ *            file and uses this tier directly. Everything else needs it.
+ *   MODULE   Regina's own whole-library pair, InitLib and ExpungeLib.
+ *   TASK     per-task state, mt_amigalib.c's CloseLib. Innermost: last up,
+ *            first down.
+ */
+#define ACE_REGINA_PRIORITY_LIBRARY 101
+#define ACE_REGINA_PRIORITY_MODULE  102
+#define ACE_REGINA_PRIORITY_TASK    103
+
 /* Runs before main(). */
 #define ADD2INITLIB(function, priority)                                     \
-    static void __attribute__((constructor))                                \
+    static void                                                             \
+    __attribute__((constructor(ACE_REGINA_PRIORITY_MODULE)))                \
     ace_regina_initlib_##function(void) { (void)function(NULL); }
 
 /* Runs at exit. On AROS this fires when a task closes the library, which
    matters there because the library outlives the task; here the library and
    the process are the same thing, so exit is the moment. */
 #define ADD2CLOSELIB(function, priority)                                    \
-    static void __attribute__((destructor))                                 \
+    static void                                                             \
+    __attribute__((destructor(ACE_REGINA_PRIORITY_TASK)))                   \
     ace_regina_closelib_##function(void) { (void)function(NULL); }
 
 #define ADD2EXPUNGELIB(function, priority)                                  \
-    static void __attribute__((destructor))                                 \
+    static void                                                             \
+    __attribute__((destructor(ACE_REGINA_PRIORITY_MODULE)))                 \
     ace_regina_expungelib_##function(void) { (void)function(NULL); }
 
 #endif /* ACE_REGINA_LIBRARY_H */

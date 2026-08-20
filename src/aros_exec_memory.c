@@ -142,7 +142,10 @@ void InitSemaphore(struct SignalSemaphore *sigSem)
     if (!sigSem)
         return;
     memset(sigSem, 0, sizeof(*sigSem));
-    NEWLIST((struct List *)&sigSem->ss_WaitQueue);
+    /* No cast: ss_WaitQueue is a MinList, and casting it to struct List *
+       picks NEWLIST's full-list initialiser, which writes an lh_Type and a
+       pad byte past the three pointers a MinList has. */
+    NEWLIST(&sigSem->ss_WaitQueue);
     sigSem->ss_NestCount = 0;
     sigSem->ss_Owner = NULL;
 }
