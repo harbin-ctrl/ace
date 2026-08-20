@@ -113,6 +113,44 @@ thin `proto/dos.h` and `proto/alib.h` win the lookup and hide `StrDup()` and
 `SystemTags()`, which ACE does implement. Do not add a third `proto/` tree; it
 would add a third candidate to the same ambiguous lookup.
 
+**A compat structure that AROS also lays out is an ABI.**
+`compat/include/exec/semaphores.h` said "Real, from exec/semaphores.h" and was
+not -- it dropped `ss_MultipleLink` and swapped two fields, so a
+`SignalSemaphore` was 80 bytes there and 104 in AROS's own header. That was
+harmless while ACE was the only author. It stopped being harmless the moment
+Regina arrived, because the imported AROS sources (BOOPSI, console.device)
+compile against AROS's headers, Regina and ACE compile against this one, and
+`src/aros_exec_memory.c`'s `InitSemaphore()` serves both: Regina allocated 80
+and ACE memset 104. Symptom, `malloc(): corrupted top size` on the first
+`RexxStart()`, in a build where neither party had changed. Before adding a
+structure to `compat/include`, diff it against `$HOME/aros/compiler/include`;
+carry the fields ACE never reads and say they are unused.
+
+**Which include order a file gets decides which of those it sees.**
+`AROS_REAL_INCLUDES` puts AROS's tree ahead of `compat/include`;
+`REGINA_INCLUDES` puts `compat/include` second, ahead of AROS's. So the same
+source compiled by two rules can disagree with itself about a structure.
+`aros-exec-memory.o` is the one object linked into both worlds, which is why
+it is the one that found this. Moving it to the other order fixes Regina and
+breaks BOOPSI; the structures agreeing is the fix, not the include order.
+
+**`init_amigaf()` returned 0 for the entire life of the project, and nothing
+said so.** Regina's `mt_notmt.c` accumulates init results with `|=` rather
+than `&=` -- so the standalone interpreter recorded success no matter what
+that function returned, and its failure was invisible. The library build uses
+`mt_amigalib.c`, which uses `&=` and fails outright. If an init-time
+behaviour looks like it has been working, check which of the two files the
+build uses before believing it.
+
+**Do not run valgrind on this machine: it freezes or reboots the host.**
+AddressSanitizer is the tool. `-fsanitize=address` catches the write rather
+than the later `malloc()` that trips over it -- both heap bugs above were
+named in one run, with the allocating and writing stack traces. Note that a
+fully instrumented build can *hide* a corruption that glibc's allocator
+reports, because ASan's allocator lays memory out differently; if ASan is
+clean and the ordinary build is not, the difference is the allocator, and the
+next step is to bisect object by object rather than to trust the clean run.
+
 ## Building it
 
 ```sh
@@ -158,6 +196,9 @@ git status --short third_party # must be empty
   `CreateNewProcTags(NP_Entry)` -> host thread -> `StartCommand` -> signal
   handshake -> `SystemTags` -> fork/exec `ace-user-shell` -> output back
   through inherited handles.
+* The Regina **library** object set links and runs, not just compiles:
+  `RexxStart()` executes an instore program and returns its result, which is
+  what RexxMast needs of it (`make test-regina-library`).
 * `Status` inside a Rexx script lists `rexx` as a registered ACE process.
 * `RC` reports a real command's return code (`Delete` of a missing file gives
   5).
@@ -488,6 +529,17 @@ not the standalone `rexx`), plus `IsReginaMsg()` from `isreginamsg.c`. It also
 calls `SelectErrorOutput()`, which ACE does not implement, `EasyRequest()`
 from intuition.library, which ACE does not have, and `updatestdio()`. So 2.2
 starts with the Regina library target, not with RexxMast itself.
+
+**That target now links and runs.** `make test-regina-library` calls
+`RexxStart()` on an instore program through exactly the object set RexxMast
+will link, and gets its result back. What is left of the list above is
+`SelectErrorOutput()`, `updatestdio()` and `EasyRequest()`.
+
+`EasyRequest()` is **decided: a stub that writes to stderr**, because
+RexxMast uses it to report errors to a user and ACE has no Intuition. That is
+a placeholder for a real Intuition layer, not a statement that requesters are
+unwanted -- when one exists, this is one of its first callers, and the stub
+should be replaced rather than kept beside it.
 
 
 `third_party/regina/rexxmast/RexxMast.c`. Only useful once 1 is
