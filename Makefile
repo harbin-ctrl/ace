@@ -1739,6 +1739,9 @@ test-brokerctl-assign: all
 test-assign-missing-target: all
 	sh tests/assign_missing_target_test.sh
 
+test-prompt-newline: all
+	sh tests/prompt_newline_test.sh
+
 test-tine: all tine
 	sh tests/tine_test.sh
 	python3 tests/tine_console_query_test.py

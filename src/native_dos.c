@@ -3129,9 +3129,19 @@ struct CommandLineInterface *Cli(void)
     return_code = strtok_r(state, "\n", &save);
     result2 = strtok_r(NULL, "\n", &save);
     fail_level = strtok_r(NULL, "\n", &save);
-    prompt = strtok_r(NULL, "\n", &save);
     if (!return_code || !result2 || !fail_level)
         return cli_without_broker();
+    /*
+     * The prompt is what is left, newlines and all, rather than the next
+     * token. A prompt may contain them: "*N" is the AmigaDOS star-escape for
+     * a newline, ReadItem() converts it, and "Prompt \"*N%S> \"" -- a blank
+     * line before each prompt -- is an ordinary thing to ask for. Tokenising
+     * here would cut such a prompt at its first newline and leave the rest
+     * unprintable. GETCLI puts the prompt last precisely so that it can be
+     * taken whole; the three fields before it are numbers and cannot contain
+     * a newline of their own.
+     */
+    prompt = save;
 
     native_cli.cli_ReturnCode = (LONG)strtol(return_code, NULL, 10);
     native_cli.cli_Result2 = (LONG)strtol(result2, NULL, 10);
@@ -3141,12 +3151,8 @@ struct CommandLineInterface *Cli(void)
         native_cli.cli_Interactive = DOSFALSE;
         native_cli.cli_FailLevel = 0;
     }
-    if (prompt) {
-        strncpy(native_cli_prompt, prompt, sizeof(native_cli_prompt) - 1);
-        native_cli_prompt[sizeof(native_cli_prompt) - 1] = '\0';
-    } else {
-        native_cli_prompt[0] = '\0';
-    }
+    strncpy(native_cli_prompt, prompt, sizeof(native_cli_prompt) - 1);
+    native_cli_prompt[sizeof(native_cli_prompt) - 1] = '\0';
     native_cli.cli_Prompt = native_cli_prompt;
     if (native_broker_getcwd(cwd, sizeof(cwd)) == 0 &&
         native_broker_name_from_host(cwd, native_cli_set_name,
