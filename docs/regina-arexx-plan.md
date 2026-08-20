@@ -215,8 +215,13 @@ git status --short third_party # must be empty
 * RexxMast's direct resource actions work through the same public port:
   `RXADDLIB`, `RXADDFH`, `RXREMLIB`, `RXADDCON`, and `RXREMCON`. Clipboard
   values remain counted bytes across the process boundary, so embedded NULs
-  survive. Regina-private resource messages are intentionally not listed as
-  supported yet; their private pointers need a separate routing mechanism.
+  survive. Regina-private messages now use a proxy-port second hop: private
+  pointers travel as process-local tokens and are reconstructed before the
+  Regina helper sees the message.
+* Successful public resource replies are mirrored into the sending Regina
+  process's local `RexxSysBase`. Regina's unmodified `SHOW L`, `SHOW C`, and
+  `GETCLIP` therefore see the resources RexxMast accepted; the live test
+  covers this with the actual `ADDLIB` and `SETCLIP` built-ins.
 * `FindPort` crosses processes: a port one process registers is found by
   another, through the broker's port registry.
 * `sendrexxmsg.c` and `listen4msg.c` from the AROS tree compile and link
@@ -590,13 +595,25 @@ removal, clipboard replacement, embedded NUL bytes, and removal of a missing
 clipboard entry. `RXCLOSE` is already covered by the Phase 1 lifecycle test
 and cleanly removes the public port.
 
-The Regina-private actions remain separate work. Their `rm_Private1` and
-`rm_Private2` fields point at a Regina process's private helper port and TSD;
-those pointers cannot be copied through the process bridge. The current
-public-port path rejects such a message with `RC_ERROR` before serialization,
-rather than dereferencing a foreign pointer or leaving the sender waiting.
-They need an explicit private-message routing design before they can be called
-supported.
+Synchronization is per sending Regina process: the reply path mirrors the
+accepted resource into that process's local `RexxSysBase`, which is the state
+read by Regina's `SHOW`, `GETCLIP`, and function-resource lookup code. A
+separate Regina process that did not perform the action is not broadcast to;
+the broker-wide/private-resource registry needed for that is part of the
+private-message work below.
+
+The Regina-private actions are now supported through the same public `REXX`
+port. On the first hop the bridge replaces the helper port with a local proxy
+port and serializes the helper-port, TSD, and resource pointers as opaque
+tokens. RexxMast can therefore apply its unchanged `PutMsg(proxy, msg)` logic;
+the proxy intercepts that call and sends a second broker message to the
+originating process. There the tokens become the original local pointers again
+before the helper receives the message. The reply follows the reverse route,
+so the original sender still receives the very `RexxMsg` pointer it sent.
+`tests/rexxmast_private_test.c` verifies `RXADDRSRC` and all three restored
+pointers. No foreign numeric pointer is ever dereferenced. Broker-wide
+broadcast of resource state to Regina processes that did not originate an
+action remains separate work.
 
 2.5 Install as `SYS:C/REXXMAST`. **Decided: a user starts it, not the broker.**
 On AmigaOS it is started once and lives in the background, so ACE does the

@@ -49,10 +49,13 @@ int ace_dos_handle_descriptor(BPTR handle);
 
 #include <exec/ports.h>
 #include <exec/nodes.h>
+#include <exec/lists.h>
 #include <dos/dosextens.h>
 #include <proto/exec.h>
 #include <proto/alib.h>
 #include <rexx/storage.h>
+#include <rexx/rxslib.h>
+#include <proto/rexxsyslib.h>
 #include <rexx/errors.h>
 #include <clib/rexxsyslib_protos.h>
 
@@ -78,26 +81,61 @@ int ace_dos_handle_descriptor(BPTR handle);
  * agree on the broker protocol version, so the fixed-width fields are written
  * in native order rather than byte-swapped.
  */
-#define ACE_REXX_WIRE_MAGIC 0x52584d31u     /* "RXM1" */
+#define ACE_REXX_WIRE_MAGIC 0x52584d32u     /* "RXM2" */
 #define ACE_REXX_ABSENT     0xffffffffu
 /* rm_Args[0..15], then rm_Result2, rm_CommAddr, rm_FileExt. */
 #define ACE_REXX_SLOTS      19
 #define ACE_REXX_SLOT_RESULT2  16
 #define ACE_REXX_SLOT_COMMADDR 17
 #define ACE_REXX_SLOT_FILEEXT  18
+#define ACE_REXX_PRIVATE_NAME_SIZE 64
+#define ACE_REXX_PRIVATE_ORIGINAL  0x00000001u
+#define ACE_REXX_PRIVATE_FORWARDED 0x00000002u
+#define ACE_REXX_RESULT2_NUMBER    0x00000004u
 
 struct ace_rexx_wire {
     uint32_t magic;
     uint32_t action;
     int32_t result1;
     uint32_t slots;
+    uint32_t flags;
+    uint64_t result2_number;
+    uint64_t private_port_token;
+    uint64_t private_tsd_token;
+    uint64_t private_arg0_token;
+    uint32_t private_name_length;
+    char private_port_name[ACE_REXX_PRIVATE_NAME_SIZE];
     uint32_t length[ACE_REXX_SLOTS];
+};
+
+enum ace_rexx_private_value_kind {
+    ACE_REXX_PRIVATE_PORT = 1,
+    ACE_REXX_PRIVATE_TSD = 2,
+    ACE_REXX_PRIVATE_RESOURCE = 3
+};
+
+struct ace_rexx_private_value {
+    uint64_t token;
+    enum ace_rexx_private_value_kind kind;
+    const void *value;
+    char name[ACE_REXX_PRIVATE_NAME_SIZE];
+    struct ace_rexx_private_value *next;
+};
+
+struct ace_rexx_private_proxy {
+    struct MsgPort port;
+    uint64_t port_token;
+    uint64_t tsd_token;
+    uint64_t arg0_token;
+    char target_name[ACE_REXX_PRIVATE_NAME_SIZE];
+    struct ace_rexx_private_proxy *next;
 };
 
 /* A message this process sent and is waiting on. */
 struct ace_rexx_sent {
     uint64_t message_id;
     struct RexxMsg *message;
+    uint64_t private_return_id;
     struct ace_rexx_sent *next;
 };
 
@@ -110,6 +148,7 @@ struct ace_rexx_received {
        open would keep it from ever seeing end-of-file. */
     FILE *stdin_stream;
     FILE *stdout_stream;
+    struct ace_rexx_private_proxy *private_proxy;
     struct ace_rexx_received *next;
 };
 
@@ -162,12 +201,17 @@ static pthread_mutex_t bridge_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct ace_rexx_sent *sent_messages;
 static struct ace_rexx_received *received_messages;
 static struct ace_rexx_local_port *local_ports;
+static struct ace_rexx_private_value *private_values;
+static struct ace_rexx_private_proxy *private_proxies;
+static uint64_t next_private_token = 1;
+static uint64_t next_private_port_name;
 static int channel_ready;
 
 static void bridge_handler(uint32_t operation, uint64_t message_id,
                            uint64_t port_id, const char *payload,
                            size_t payload_length, int stdin_fd, int stdout_fd,
                            void *context);
+static LONG rexx_action_code(LONG action);
 
 /*
  * Opens the delivery channel if it is not open yet.
@@ -194,6 +238,269 @@ static int ensure_channel(void)
     return 0;
 }
 
+static int is_private_action(LONG action)
+{
+    return (uint32_t)rexx_action_code(action) >= (uint32_t)RXADDRSRC;
+}
+
+static int is_private_resource_action(LONG action)
+{
+    uint32_t code = (uint32_t)rexx_action_code(action);
+
+    return code == (uint32_t)RXADDRSRC || code == (uint32_t)RXREMRSRC;
+}
+
+static struct ace_rexx_private_value *private_value_find_locked(
+    enum ace_rexx_private_value_kind kind, const void *value)
+{
+    struct ace_rexx_private_value *entry;
+
+    for (entry = private_values; entry; entry = entry->next) {
+        if (entry->kind == kind && entry->value == value)
+            return entry;
+    }
+    return NULL;
+}
+
+static struct ace_rexx_private_value *private_token_find_locked(
+    enum ace_rexx_private_value_kind kind, uint64_t token)
+{
+    struct ace_rexx_private_value *entry;
+
+    for (entry = private_values; entry; entry = entry->next) {
+        if (entry->kind == kind && entry->token == token)
+            return entry;
+    }
+    return NULL;
+}
+
+static void copy_private_name(char *destination, size_t destination_size,
+                              const char *source)
+{
+    size_t length;
+
+    if (!destination || !destination_size)
+        return;
+    length = source ? strlen(source) : 0;
+    if (length >= destination_size)
+        length = destination_size - 1;
+    if (length)
+        memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
+static int register_private_local_port(struct MsgPort *port,
+                                       uint64_t broker_id)
+{
+    struct ace_rexx_local_port *entry;
+
+    if (!port || !broker_id)
+        return -1;
+    entry = calloc(1, sizeof(*entry));
+    if (!entry)
+        return -1;
+    entry->broker_id = broker_id;
+    entry->port = port;
+    pthread_mutex_lock(&bridge_lock);
+    entry->next = local_ports;
+    local_ports = entry;
+    pthread_mutex_unlock(&bridge_lock);
+    if (ensure_channel() != 0)
+        return -1;
+    return 0;
+}
+
+static int private_port_route(struct MsgPort *port, uint64_t *token,
+                              char *name, size_t name_size)
+{
+    struct ace_rexx_private_value *entry;
+    char generated[ACE_REXX_PRIVATE_NAME_SIZE];
+    uint64_t broker_id;
+    uint64_t new_token;
+
+    if (!port || !token || !name || name_size == 0)
+        return -1;
+    pthread_mutex_lock(&bridge_lock);
+    entry = private_value_find_locked(ACE_REXX_PRIVATE_PORT, port);
+    if (entry) {
+        *token = entry->token;
+        copy_private_name(name, name_size, entry->name);
+        pthread_mutex_unlock(&bridge_lock);
+        return 0;
+    }
+    new_token = next_private_token++;
+    if (!next_private_token)
+        next_private_token = 1;
+    snprintf(generated, sizeof(generated), "REXX.PRIVATE.%ld.%llu",
+             (long)getpid(), (unsigned long long)++next_private_port_name);
+    pthread_mutex_unlock(&bridge_lock);
+
+    if (native_broker_port_add(generated, &broker_id) != 0)
+        return -1;
+    entry = calloc(1, sizeof(*entry));
+    if (!entry)
+        return -1;
+    entry->token = new_token;
+    entry->kind = ACE_REXX_PRIVATE_PORT;
+    entry->value = port;
+    copy_private_name(entry->name, sizeof(entry->name), generated);
+    pthread_mutex_lock(&bridge_lock);
+    {
+        struct ace_rexx_private_value *existing =
+            private_value_find_locked(ACE_REXX_PRIVATE_PORT, port);
+
+        if (existing) {
+            *token = existing->token;
+            copy_private_name(name, name_size, existing->name);
+            pthread_mutex_unlock(&bridge_lock);
+            free(entry);
+            (void)native_broker_port_remove(broker_id);
+            return 0;
+        }
+        entry->next = private_values;
+        private_values = entry;
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    if (register_private_local_port(port, broker_id) != 0)
+        return -1;
+    *token = new_token;
+    copy_private_name(name, name_size, generated);
+    return 0;
+}
+
+static int private_value_token(enum ace_rexx_private_value_kind kind,
+                               const void *value, uint64_t *token)
+{
+    struct ace_rexx_private_value *entry;
+
+    if (!value || !token)
+        return -1;
+    pthread_mutex_lock(&bridge_lock);
+    entry = private_value_find_locked(kind, value);
+    if (!entry) {
+        entry = calloc(1, sizeof(*entry));
+        if (entry) {
+            entry->token = next_private_token++;
+            if (!next_private_token)
+                next_private_token = 1;
+            entry->kind = kind;
+            entry->value = value;
+            entry->next = private_values;
+            private_values = entry;
+        }
+    }
+    if (entry)
+        *token = entry->token;
+    pthread_mutex_unlock(&bridge_lock);
+    return entry ? 0 : -1;
+}
+
+static struct ace_rexx_private_proxy *private_proxy_for_port(
+    struct MsgPort *port)
+{
+    struct ace_rexx_private_proxy *proxy;
+
+    pthread_mutex_lock(&bridge_lock);
+    for (proxy = private_proxies; proxy; proxy = proxy->next) {
+        if (&proxy->port == port)
+            break;
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    return proxy;
+}
+
+static void private_proxy_remove(struct ace_rexx_private_proxy *proxy)
+{
+    struct ace_rexx_private_proxy **cursor;
+
+    if (!proxy)
+        return;
+    pthread_mutex_lock(&bridge_lock);
+    cursor = &private_proxies;
+    while (*cursor && *cursor != proxy)
+        cursor = &(*cursor)->next;
+    if (*cursor)
+        *cursor = proxy->next;
+    pthread_mutex_unlock(&bridge_lock);
+    free(proxy);
+}
+
+int ace_rexxmast_private_message(struct RexxMsg *message)
+{
+    return message && private_proxy_for_port(
+        (struct MsgPort *)message->rm_Private1) != NULL;
+}
+
+static int install_private_route(struct RexxMsg *message,
+                                 const struct ace_rexx_wire *header,
+                                 struct ace_rexx_received *record)
+{
+    LONG action;
+
+    if (!header || !message || !header->flags)
+        return 0;
+    action = rexx_action_code(message->rm_Action);
+    if (!is_private_action(action) ||
+        header->private_name_length >= ACE_REXX_PRIVATE_NAME_SIZE ||
+        header->private_name_length != strlen(header->private_port_name))
+        return -1;
+    if (header->flags & ACE_REXX_PRIVATE_FORWARDED) {
+        struct ace_rexx_private_value *port;
+        struct ace_rexx_private_value *tsd;
+
+        pthread_mutex_lock(&bridge_lock);
+        port = private_token_find_locked(ACE_REXX_PRIVATE_PORT,
+                                         header->private_port_token);
+        tsd = private_token_find_locked(ACE_REXX_PRIVATE_TSD,
+                                        header->private_tsd_token);
+        pthread_mutex_unlock(&bridge_lock);
+        if (!port || !tsd)
+            return -1;
+        message->rm_Private1 = (IPTR)port->value;
+        message->rm_Private2 = (IPTR)tsd->value;
+        if (is_private_resource_action(action) &&
+            header->private_arg0_token) {
+            struct ace_rexx_private_value *resource;
+
+            pthread_mutex_lock(&bridge_lock);
+            resource = private_token_find_locked(
+                ACE_REXX_PRIVATE_RESOURCE, header->private_arg0_token);
+            pthread_mutex_unlock(&bridge_lock);
+            if (!resource)
+                return -1;
+            message->rm_Args[0] = (IPTR)resource->value;
+        }
+        return 0;
+    }
+    if (header->flags & ACE_REXX_PRIVATE_ORIGINAL) {
+        struct ace_rexx_private_proxy *proxy = calloc(1, sizeof(*proxy));
+
+        if (!proxy || !header->private_name_length) {
+            free(proxy);
+            return -1;
+        }
+        proxy->port.mp_Node.ln_Type = NT_MSGPORT;
+        proxy->port.mp_Node.ln_Name = (char *)"ARexx private proxy";
+        copy_private_name(proxy->target_name, sizeof(proxy->target_name),
+                          header->private_port_name);
+        proxy->port_token = header->private_port_token;
+        proxy->tsd_token = header->private_tsd_token;
+        proxy->arg0_token = header->private_arg0_token;
+        pthread_mutex_lock(&bridge_lock);
+        proxy->next = private_proxies;
+        private_proxies = proxy;
+        pthread_mutex_unlock(&bridge_lock);
+        message->rm_Private1 = (IPTR)&proxy->port;
+        message->rm_Private2 = (IPTR)1;
+        if (is_private_resource_action(action))
+            message->rm_Args[0] = 0;
+        if (record)
+            record->private_proxy = proxy;
+        return 0;
+    }
+    return -1;
+}
+
 static size_t slot_length(const void *pointer, int argstring)
 {
     if (!pointer)
@@ -205,6 +512,277 @@ static size_t slot_length(const void *pointer, int argstring)
 static LONG rexx_action_code(LONG action)
 {
     return action & RXCODEMASK;
+}
+
+static int fill_private_header(struct RexxMsg *message,
+                               struct ace_rexx_wire *header)
+{
+    LONG action = rexx_action_code(message->rm_Action);
+    struct ace_rexx_private_proxy *proxy;
+
+    if (!is_private_action(action))
+        return 0;
+    proxy = private_proxy_for_port((struct MsgPort *)message->rm_Private1);
+    if (proxy) {
+        header->flags = ACE_REXX_PRIVATE_FORWARDED;
+        header->private_port_token = proxy->port_token;
+        header->private_tsd_token = proxy->tsd_token;
+        header->private_arg0_token = proxy->arg0_token;
+        copy_private_name(header->private_port_name,
+                          sizeof(header->private_port_name),
+                          proxy->target_name);
+    } else {
+        uint64_t token;
+
+        header->flags = ACE_REXX_PRIVATE_ORIGINAL;
+        if (private_port_route((struct MsgPort *)message->rm_Private1,
+                               &header->private_port_token,
+                               header->private_port_name,
+                               sizeof(header->private_port_name)) != 0 ||
+            private_value_token(ACE_REXX_PRIVATE_TSD,
+                                (const void *)message->rm_Private2,
+                                &header->private_tsd_token) != 0)
+            return -1;
+        if (is_private_resource_action(action) &&
+            private_value_token(ACE_REXX_PRIVATE_RESOURCE,
+                                (const void *)message->rm_Args[0],
+                                &token) != 0)
+            return -1;
+        header->private_arg0_token =
+            is_private_resource_action(action) ? token : 0;
+    }
+    header->private_name_length = strlen(header->private_port_name);
+    return header->private_name_length > 0 &&
+                   header->private_name_length < ACE_REXX_PRIVATE_NAME_SIZE
+               ? 0
+               : -1;
+}
+
+static struct RexxRsrc *ace_resource_find(struct List *list, const char *name)
+{
+    struct Node *node;
+
+    if (!list || !name)
+        return NULL;
+    for (node = list->lh_Head; node && node->ln_Succ; node = node->ln_Succ) {
+        if (node->ln_Name && strcmp(node->ln_Name, name) == 0)
+            return (struct RexxRsrc *)node;
+    }
+    return NULL;
+}
+
+static void ace_resource_remove(struct RexxRsrc *resource)
+{
+    if (!resource || !resource->rr_Node.ln_Pred ||
+        !resource->rr_Node.ln_Succ)
+        return;
+    resource->rr_Node.ln_Pred->ln_Succ = resource->rr_Node.ln_Succ;
+    resource->rr_Node.ln_Succ->ln_Pred = resource->rr_Node.ln_Pred;
+    resource->rr_Node.ln_Pred = NULL;
+    resource->rr_Node.ln_Succ = NULL;
+}
+
+static void ace_resource_free(struct RexxRsrc *resource)
+{
+    if (!resource)
+        return;
+    if (resource->rr_Node.ln_Name)
+        DeleteArgstring((UBYTE *)resource->rr_Node.ln_Name);
+    if (resource->rr_Node.ln_Type == RRT_CLIP && resource->rr_Arg1)
+        DeleteArgstring((UBYTE *)resource->rr_Arg1);
+    free(resource);
+}
+
+/* Exec's Enqueue() keeps higher priorities first. The local Regina lists
+   need the same order as RexxMast's list so function-host selection remains
+   deterministic after a resource action has been mirrored. */
+static void ace_resource_enqueue(struct List *list, struct RexxRsrc *resource)
+{
+    struct Node *cursor;
+    struct Node *predecessor = NULL;
+
+    for (cursor = list->lh_Head; cursor && cursor->ln_Succ;
+         cursor = cursor->ln_Succ) {
+        if (resource->rr_Node.ln_Pri > cursor->ln_Pri)
+            break;
+        predecessor = cursor;
+    }
+    if (!predecessor) {
+        resource->rr_Node.ln_Succ = list->lh_Head;
+        resource->rr_Node.ln_Pred = (struct Node *)list;
+        list->lh_Head->ln_Pred = (struct Node *)resource;
+        list->lh_Head = (struct Node *)resource;
+    } else {
+        resource->rr_Node.ln_Succ = predecessor->ln_Succ;
+        resource->rr_Node.ln_Pred = predecessor;
+        predecessor->ln_Succ->ln_Pred = (struct Node *)resource;
+        predecessor->ln_Succ = (struct Node *)resource;
+    }
+}
+
+static struct RexxRsrc *ace_resource_new(const char *name, LONG priority,
+                                         UBYTE type)
+{
+    struct RexxRsrc *resource;
+
+    resource = calloc(1, sizeof(*resource));
+    if (!resource)
+        return NULL;
+    resource->rr_Size = sizeof(*resource);
+    resource->rr_Node.ln_Pri = (BYTE)priority;
+    resource->rr_Node.ln_Type = type;
+    resource->rr_Node.ln_Name =
+        (char *)CreateArgstring((UBYTE *)name, strlen(name));
+    if (!resource->rr_Node.ln_Name) {
+        free(resource);
+        return NULL;
+    }
+    return resource;
+}
+
+static int ace_resource_number(const IPTR argument, LONG *value)
+{
+    char *end;
+    long parsed;
+
+    if (!argument || !value)
+        return -1;
+    errno = 0;
+    parsed = strtol((const char *)argument, &end, 10);
+    if (errno != 0 || end == (char *)argument || *end != '\0')
+        return -1;
+    *value = (LONG)parsed;
+    return 0;
+}
+
+static void ace_sync_library(struct RexxMsg *message, LONG action)
+{
+    const char *name = (const char *)message->rm_Args[0];
+    LONG priority;
+    LONG offset = 0;
+    LONG version = 0;
+    UBYTE type = action == RXADDFH ? RRT_HOST : RRT_LIB;
+    struct RexxRsrc *resource;
+    struct RexxRsrc *existing;
+
+    if (!name || ace_resource_number(message->rm_Args[1], &priority) != 0)
+        return;
+    if (type == RRT_LIB &&
+        (ace_resource_number(message->rm_Args[2], &offset) != 0 ||
+         (message->rm_Args[3] &&
+          ace_resource_number(message->rm_Args[3], &version) != 0)))
+        return;
+
+    resource = ace_resource_new(name, priority, type);
+    if (!resource)
+        return;
+    if (type == RRT_LIB) {
+        resource->rr_Arg1 = offset;
+        resource->rr_Arg2 = version;
+    }
+
+    LockRexxBase(0);
+    existing = ace_resource_find(&RexxSysBase->rl_LibList, name);
+    if (existing) {
+        ace_resource_remove(existing);
+        ace_resource_free(existing);
+        ace_resource_enqueue(&RexxSysBase->rl_LibList, resource);
+    } else {
+        ace_resource_enqueue(&RexxSysBase->rl_LibList, resource);
+        RexxSysBase->rl_NumLib++;
+    }
+    UnlockRexxBase(0);
+}
+
+static void ace_sync_remove_library(struct RexxMsg *message)
+{
+    const char *name = (const char *)message->rm_Args[0];
+    struct RexxRsrc *resource;
+
+    if (!name)
+        return;
+    LockRexxBase(0);
+    resource = ace_resource_find(&RexxSysBase->rl_LibList, name);
+    if (resource) {
+        ace_resource_remove(resource);
+        ace_resource_free(resource);
+        if (RexxSysBase->rl_NumLib > 0)
+            RexxSysBase->rl_NumLib--;
+    }
+    UnlockRexxBase(0);
+}
+
+static void ace_sync_clip(struct RexxMsg *message)
+{
+    const char *name = (const char *)message->rm_Args[0];
+    const UBYTE *value = (const UBYTE *)message->rm_Args[1];
+    ULONG length = (ULONG)message->rm_Args[2];
+    struct RexxRsrc *resource;
+    UBYTE *copy;
+
+    if (!name || !value)
+        return;
+    copy = CreateArgstring((UBYTE *)value, length);
+    if (!copy)
+        return;
+
+    LockRexxBase(0);
+    resource = ace_resource_find(&RexxSysBase->rl_ClipList, name);
+    if (resource) {
+        if (resource->rr_Arg1)
+            DeleteArgstring((UBYTE *)resource->rr_Arg1);
+        resource->rr_Arg1 = (IPTR)copy;
+    } else {
+        resource = ace_resource_new(name, 0, RRT_CLIP);
+        if (!resource) {
+            UnlockRexxBase(0);
+            DeleteArgstring(copy);
+            return;
+        }
+        resource->rr_Arg1 = (IPTR)copy;
+        ace_resource_enqueue(&RexxSysBase->rl_ClipList, resource);
+        RexxSysBase->rl_NumClip++;
+    }
+    UnlockRexxBase(0);
+}
+
+static void ace_sync_remove_clip(struct RexxMsg *message)
+{
+    const char *name = (const char *)message->rm_Args[0];
+    struct RexxRsrc *resource;
+
+    if (!name)
+        return;
+    LockRexxBase(0);
+    resource = ace_resource_find(&RexxSysBase->rl_ClipList, name);
+    if (resource) {
+        ace_resource_remove(resource);
+        ace_resource_free(resource);
+        if (RexxSysBase->rl_NumClip > 0)
+            RexxSysBase->rl_NumClip--;
+    }
+    UnlockRexxBase(0);
+}
+
+static void ace_sync_resource_reply(struct RexxMsg *message)
+{
+    LONG action = rexx_action_code(message->rm_Action);
+
+    if (action == RXADDLIB || action == RXADDFH) {
+        /* A duplicate still proves the server owns this named resource. It
+           is useful to mirror it locally when a client started after the
+           resource was registered. */
+        if (message->rm_Result1 == RC_OK || message->rm_Result1 == RC_WARN)
+            ace_sync_library(message, action);
+    } else if (action == RXREMLIB) {
+        /* A missing server resource also means the local copy is stale. */
+        if (message->rm_Result1 == RC_OK || message->rm_Result1 == RC_WARN)
+            ace_sync_remove_library(message);
+    } else if (action == RXADDCON && message->rm_Result1 == RC_OK) {
+        ace_sync_clip(message);
+    } else if (action == RXREMCON && message->rm_Result1 == RC_OK) {
+        ace_sync_remove_clip(message);
+    }
 }
 
 /*
@@ -231,13 +809,18 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
     header.action = (uint32_t)message->rm_Action;
     header.result1 = (int32_t)message->rm_Result1;
     header.slots = ACE_REXX_SLOTS;
+    if (fill_private_header(message, &header) != 0)
+        return NULL;
 
     for (index = 0; index < 16; index++) {
         slot_data[index] = (const void *)message->rm_Args[index];
-        if ((action == RXADDCON && index <= 2) ||
+        if ((is_private_resource_action(action) && index == 0) ||
+            (action == RXADDCON && index <= 2) ||
             (action == RXREMCON && index == 0))
+        {
+            slot_data[index] = NULL;
             slot_size[index] = 0;
-        else
+        } else
             slot_size[index] = slot_length(slot_data[index], 1);
     }
 
@@ -262,8 +845,16 @@ static void *serialise(struct RexxMsg *message, size_t *out_length)
         slot_size[0] = slot_length(slot_data[0], 0);
     }
     slot_data[ACE_REXX_SLOT_RESULT2] = (const void *)message->rm_Result2;
-    slot_size[ACE_REXX_SLOT_RESULT2] =
-        slot_length(slot_data[ACE_REXX_SLOT_RESULT2], 1);
+    if (is_private_action(action) && message->rm_Result2 > 0 &&
+        message->rm_Result2 < 4096) {
+        header.flags |= ACE_REXX_RESULT2_NUMBER;
+        header.result2_number = (uint64_t)message->rm_Result2;
+        slot_data[ACE_REXX_SLOT_RESULT2] = NULL;
+        slot_size[ACE_REXX_SLOT_RESULT2] = 0;
+    } else {
+        slot_size[ACE_REXX_SLOT_RESULT2] =
+            slot_length(slot_data[ACE_REXX_SLOT_RESULT2], 1);
+    }
     slot_data[ACE_REXX_SLOT_COMMADDR] = message->rm_CommAddr;
     slot_size[ACE_REXX_SLOT_COMMADDR] =
         slot_length(slot_data[ACE_REXX_SLOT_COMMADDR], 0);
@@ -327,6 +918,8 @@ static int deserialise(struct RexxMsg *message, const char *payload,
         message->rm_Action = (LONG)header.action;
         message->rm_Result1 = (LONG)header.result1;
     }
+    if (header.flags & ACE_REXX_RESULT2_NUMBER)
+        message->rm_Result2 = (IPTR)header.result2_number;
     action = rexx_action_code(with_results ? (LONG)header.action
                                            : message->rm_Action);
     for (index = 0; index < ACE_REXX_SLOTS; index++) {
@@ -387,6 +980,11 @@ static void clear_received_message(struct RexxMsg *message)
        this action-specific scalar before handing the remaining slots to it. */
     if (rexx_action_code(message->rm_Action) == RXADDCON)
         message->rm_Args[2] = 0;
+    if (is_private_resource_action(message->rm_Action))
+        message->rm_Args[0] = 0;
+    if (is_private_action(message->rm_Action) && message->rm_Result2 > 0 &&
+        message->rm_Result2 < 4096)
+        message->rm_Result2 = 0;
     ClearRexxMsg(message, 16);
     if (message->rm_Result2) {
         DeleteArgstring((UBYTE *)message->rm_Result2);
@@ -447,24 +1045,97 @@ static void release_sender(struct RexxMsg *message)
         PutMsg(reply_port, (struct Message *)message);
 }
 
-static struct RexxMsg *take_sent(uint64_t message_id)
+static struct ace_rexx_sent *take_sent(uint64_t message_id)
 {
     struct ace_rexx_sent **cursor;
-    struct RexxMsg *message = NULL;
+    struct ace_rexx_sent *result = NULL;
 
     pthread_mutex_lock(&bridge_lock);
     cursor = &sent_messages;
     while (*cursor && (*cursor)->message_id != message_id)
         cursor = &(*cursor)->next;
     if (*cursor) {
-        struct ace_rexx_sent *entry = *cursor;
-
-        message = entry->message;
-        *cursor = entry->next;
-        free(entry);
+        result = *cursor;
+        *cursor = result->next;
     }
     pthread_mutex_unlock(&bridge_lock);
-    return message;
+    return result;
+}
+
+static uint64_t received_id_for_message(struct RexxMsg *message)
+{
+    struct ace_rexx_received *entry;
+    uint64_t message_id = 0;
+
+    pthread_mutex_lock(&bridge_lock);
+    for (entry = received_messages; entry; entry = entry->next) {
+        if (entry->message == message) {
+            message_id = entry->message_id;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    return message_id;
+}
+
+static struct ace_rexx_received *take_received(struct RexxMsg *message)
+{
+    struct ace_rexx_received **cursor;
+    struct ace_rexx_received *result = NULL;
+
+    pthread_mutex_lock(&bridge_lock);
+    cursor = &received_messages;
+    while (*cursor && (*cursor)->message != message)
+        cursor = &(*cursor)->next;
+    if (*cursor) {
+        result = *cursor;
+        *cursor = result->next;
+    }
+    pthread_mutex_unlock(&bridge_lock);
+    return result;
+}
+
+static void dispose_received(struct ace_rexx_received *entry)
+{
+    struct RexxMsg *message;
+
+    if (!entry)
+        return;
+    message = entry->message;
+    if (entry->stdout_stream)
+        fclose(entry->stdout_stream);
+    if (entry->stdin_stream)
+        fclose(entry->stdin_stream);
+    if (message) {
+        message->rm_Stdin = BNULL;
+        message->rm_Stdout = BNULL;
+        clear_received_message(message);
+        DeleteRexxMsg(message);
+    }
+    private_proxy_remove(entry->private_proxy);
+    free(entry);
+}
+
+static int route_private_return(struct ace_rexx_sent *sent)
+{
+    struct ace_rexx_received *received;
+    void *payload;
+    size_t length = 0;
+
+    if (!sent || !sent->private_return_id)
+        return 0;
+    payload = serialise(sent->message, &length);
+    if (payload) {
+        (void)native_broker_port_reply(sent->private_return_id, payload,
+                                       length);
+        free(payload);
+    } else {
+        (void)native_broker_port_reply(sent->private_return_id, NULL, 0);
+    }
+    received = take_received(sent->message);
+    dispose_received(received);
+    free(sent);
+    return 1;
 }
 
 /*
@@ -495,6 +1166,7 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
         struct ace_rexx_received *record;
         struct MsgPort *target = NULL;
         struct RexxMsg *message;
+        struct ace_rexx_wire header;
 
         pthread_mutex_lock(&bridge_lock);
         for (entry = local_ports; entry; entry = entry->next) {
@@ -520,6 +1192,7 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
             return;
         }
         if (deserialise(message, payload, payload_length, 1) != 0) {
+            (void)native_broker_port_reply(message_id, NULL, 0);
             clear_received_message(message);
             DeleteRexxMsg(message);
             if (stdin_fd >= 0)
@@ -528,14 +1201,29 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
                 close(stdout_fd);
             return;
         }
+        memcpy(&header, payload, sizeof(header));
         /* A stand-in for the sender's reply port; see remote_sender_port.
            Not NULL, because a receiver is entitled to follow it. */
         (void)pthread_once(&remote_sender_once, remote_sender_init);
         message->rm_Node.mn_ReplyPort = &remote_sender_port;
         record = calloc(1, sizeof(*record));
         if (!record) {
+            (void)native_broker_port_reply(message_id, NULL, 0);
             clear_received_message(message);
             DeleteRexxMsg(message);
+            if (stdin_fd >= 0)
+                close(stdin_fd);
+            if (stdout_fd >= 0)
+                close(stdout_fd);
+            return;
+        }
+        if (install_private_route(message, &header, record) != 0) {
+            message->rm_Result1 = RC_ERROR;
+            message->rm_Result2 = 0;
+            (void)native_broker_port_reply(message_id, NULL, 0);
+            clear_received_message(message);
+            DeleteRexxMsg(message);
+            free(record);
             if (stdin_fd >= 0)
                 close(stdin_fd);
             if (stdout_fd >= 0)
@@ -571,10 +1259,12 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
     }
 
     if (operation == AMIGA_BROKER_PORT_REPLY) {
-        struct RexxMsg *message = take_sent(message_id);
+        struct ace_rexx_sent *sent = take_sent(message_id);
+        struct RexxMsg *message;
 
-        if (!message)
+        if (!sent)
             return;
+        message = sent->message;
         /* Results only. The arguments still belong to the sender, which will
            free them itself; overwriting them here would leak the originals. */
         message->rm_Result1 = 0;
@@ -587,16 +1277,22 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
 
             memcpy(&header, payload, sizeof(header));
             message->rm_Result1 = (LONG)header.result1;
+            ace_sync_resource_reply(message);
         }
+        if (route_private_return(sent))
+            return;
         release_sender(message);
+        free(sent);
         return;
     }
 
     if (operation == AMIGA_BROKER_PORT_ABANDONED) {
-        struct RexxMsg *message = take_sent(message_id);
+        struct ace_rexx_sent *sent = take_sent(message_id);
+        struct RexxMsg *message;
 
-        if (!message)
+        if (!sent)
             return;
+        message = sent->message;
         /*
          * Nobody answered, and nobody ever will. The broker keeps that
          * distinct from a reply, but the sender is in WaitPort() and the only
@@ -606,7 +1302,10 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
          */
         message->rm_Result1 = RC_FATAL;
         message->rm_Result2 = 0;
+        if (route_private_return(sent))
+            return;
         release_sender(message);
+        free(sent);
         return;
     }
 }
@@ -617,14 +1316,15 @@ static void bridge_handler(uint32_t operation, uint64_t message_id,
  */
 int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
 {
-    uint64_t remote_id = ace_aros_runtime_remote_port_id(port);
+    struct ace_rexx_private_proxy *proxy;
+    uint64_t remote_id;
     struct RexxMsg *rexx = (struct RexxMsg *)message;
     struct ace_rexx_sent *record;
     uint64_t message_id = 0;
     void *payload;
     size_t length = 0;
 
-    if (!remote_id || !message)
+    if (!port || !message)
         return 0;
     /* Only a RexxMsg can cross: an ordinary Message is a bare header plus
        whatever the sender allocated behind it, and this side cannot know its
@@ -633,20 +1333,64 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
        serving. */
     if (!IsRexxMsg(rexx))
         return 0;
-    if (ensure_channel() != 0)
-        return 0;
+    proxy = private_proxy_for_port(port);
+    if (proxy) {
+        if (!is_private_action(rexx->rm_Action))
+            return 0;
+        if (ensure_channel() != 0) {
+            rexx->rm_Result1 = RC_FATAL;
+            rexx->rm_Result2 = 0;
+            release_sender(rexx);
+            return 1;
+        }
+        payload = serialise(rexx, &length);
+        if (!payload)
+            goto private_send_failed;
+        record = calloc(1, sizeof(*record));
+        if (!record) {
+            free(payload);
+            goto private_send_failed;
+        }
+        record->message = rexx;
+        record->private_return_id = received_id_for_message(rexx);
+        if (!record->private_return_id) {
+            free(record);
+            free(payload);
+            goto private_send_failed;
+        }
+        pthread_mutex_lock(&bridge_lock);
+        record->next = sent_messages;
+        sent_messages = record;
+        pthread_mutex_unlock(&bridge_lock);
+        if (native_broker_port_put(proxy->target_name, payload, length,
+                                   ace_dos_handle_descriptor(rexx->rm_Stdin),
+                                   ace_dos_handle_descriptor(rexx->rm_Stdout),
+                                   &message_id) != 0) {
+            pthread_mutex_lock(&bridge_lock);
+            {
+                struct ace_rexx_sent **cursor = &sent_messages;
 
-    /* Regina-private actions contain rm_Private1/rm_Private2 pointers to a
-       helper port and TSD in the sender process. They have no meaningful wire
-       representation yet. Reject them here, before ordinary serialization
-       mistakes can interpret a private pointer as an argstring and before a
-       message is left waiting on a remote stand-in port. */
-    if ((uint32_t)rexx_action_code(rexx->rm_Action) >= (uint32_t)RXADDRSRC) {
-        rexx->rm_Result1 = RC_ERROR;
-        rexx->rm_Result2 = 0;
-        release_sender(rexx);
+                while (*cursor && *cursor != record)
+                    cursor = &(*cursor)->next;
+                if (*cursor)
+                    *cursor = record->next;
+            }
+            pthread_mutex_unlock(&bridge_lock);
+            free(record);
+            free(payload);
+            goto private_send_failed;
+        }
+        pthread_mutex_lock(&bridge_lock);
+        record->message_id = message_id;
+        pthread_mutex_unlock(&bridge_lock);
+        free(payload);
         return 1;
     }
+    remote_id = ace_aros_runtime_remote_port_id(port);
+    if (!remote_id)
+        return 0;
+    if (ensure_channel() != 0)
+        return 0;
 
     payload = serialise(rexx, &length);
     if (!payload)
@@ -702,6 +1446,12 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
     pthread_mutex_unlock(&bridge_lock);
     free(payload);
     return 1;
+
+private_send_failed:
+    rexx->rm_Result1 = RC_FATAL;
+    rexx->rm_Result2 = 0;
+    release_sender(rexx);
+    return 1;
 }
 
 /*
@@ -710,23 +1460,14 @@ int ace_rexx_port_forward(struct MsgPort *port, struct Message *message)
  */
 int ace_rexx_port_reply(struct Message *message)
 {
-    struct ace_rexx_received **cursor;
-    struct ace_rexx_received *entry = NULL;
+    struct ace_rexx_received *entry;
     struct RexxMsg *rexx = (struct RexxMsg *)message;
     void *payload;
     size_t length = 0;
 
     if (!message)
         return 0;
-    pthread_mutex_lock(&bridge_lock);
-    cursor = &received_messages;
-    while (*cursor && (*cursor)->message != rexx)
-        cursor = &(*cursor)->next;
-    if (*cursor) {
-        entry = *cursor;
-        *cursor = entry->next;
-    }
-    pthread_mutex_unlock(&bridge_lock);
+    entry = take_received(rexx);
     if (!entry)
         return 0;
 
@@ -740,18 +1481,10 @@ int ace_rexx_port_reply(struct Message *message)
     /* The sender's streams go back with the answer: anything written to them
        has been written, and holding them open would leave the sender's
        console with a reader or writer it no longer has. */
-    if (entry->stdout_stream)
-        fclose(entry->stdout_stream);
-    if (entry->stdin_stream)
-        fclose(entry->stdin_stream);
-    rexx->rm_Stdin = BNULL;
-    rexx->rm_Stdout = BNULL;
-    free(entry);
     /* This message was made here, on delivery, and the receiver is done with
        it. Its argstrings belong to the receiver, so release every rebuilt
        slot before freeing the message itself. */
-    clear_received_message(rexx);
-    DeleteRexxMsg(rexx);
+    dispose_received(entry);
     return 1;
 }
 

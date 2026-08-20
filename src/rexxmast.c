@@ -39,6 +39,20 @@ static _Thread_local int rexxmast_started;
 static void rexxmast_startfile_entry(void);
 static int rexxmast_start_job(struct RexxMsg *message);
 
+/* A private Regina message arrives in RexxMast with a local proxy port in
+   rm_Private1. It is a valid server message even though Regina's own marker
+   cannot recognize it: the proxy is how ACE turns the later PutMsg() into a
+   second broker hop back to the originating process. */
+extern int ace_rexxmast_private_message(struct RexxMsg *message);
+extern BOOL IsReginaMsg(struct RexxMsg *message);
+
+static BOOL ace_rexxmast_is_regina_msg(struct RexxMsg *message)
+{
+    if (ace_rexxmast_private_message(message))
+        return TRUE;
+    return IsReginaMsg(message);
+}
+
 /* Regina separates the API result from the script's RETURN value. The
    original RexxMast source uses one USHORT for both, which is correct for the
    Amiga Regina interface it was written against but would discard rm_Result2
@@ -129,6 +143,7 @@ static LONG ace_rexxmast_system_tags(CONST_STRPTR command, ...)
 #define main ace_upstream_rexxmast_main
 #define SystemTags ace_rexxmast_system_tags
 #define RexxStart ace_rexxmast_rexx_start
+#define IsReginaMsg ace_rexxmast_is_regina_msg
 /* The imported main is not called, but its unused Amiga stack-size probe
    still has to compile. ACE's Process intentionally has no pr_StackSize; the
    value is ignored by CreateNewProcTags here, so use an existing process
@@ -137,6 +152,7 @@ static LONG ace_rexxmast_system_tags(CONST_STRPTR command, ...)
 #include "../third_party/regina/rexxmast/RexxMast.c"
 #undef pr_StackSize
 #undef RexxStart
+#undef IsReginaMsg
 #undef SystemTags
 #undef main
 

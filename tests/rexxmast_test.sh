@@ -52,6 +52,23 @@ timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-failure-test"
 timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
     "$build_dir/rexxmast-resource-test"
+timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" \
+    "$build_dir/rexxmast-private-test"
+
+# Regina's own ARexx built-ins must see the resources RexxMast accepted. The
+# bridge mirrors successful ADDLIB and SETCLIP replies into this process's
+# local RexxSysBase, which is what SHOW and GETCLIP read.
+resource_sync_output=$(printf '%s\n' \
+    "say addlib('ACE.TEST.SYNC.HOST',5)" \
+    "say show('L','ACE.TEST.SYNC.HOST')" \
+    "say setclip('ACE.TEST.SYNC.CLIP','sync')" \
+    "say getclip('ACE.TEST.SYNC.CLIP')" \
+    "say show('C','ACE.TEST.SYNC.CLIP')" \
+    "say setclip('ACE.TEST.SYNC.CLIP')" \
+    "say show('C','ACE.TEST.SYNC.CLIP')" | \
+    ACE_SESSION=phase1-rexxmast \
+    timeout "${ACE_REXXMAST_TEST_TIMEOUT:-30}s" "$build_dir/rexx")
+test "$resource_sync_output" = "$(printf '%s\n' 1 1 1 sync 1 1 0)"
 
 # ADDRESS REXX sends RXCOMM through the same public port. The quoted command
 # is the Amiga convention that tells RexxMast to execute an instore program.
