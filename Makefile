@@ -768,7 +768,10 @@ $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_c
 $(BUILD)/ace-mediator.o: src/ace_mediator.c src/ace_mediator_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/ace-mediator: $(BUILD)/ace-mediator.o
+$(BUILD)/ace-mediator-volume.o: src/ace_mediator_volume.c src/ace_mediator_volume.h src/ace_mediator_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/ace-mediator: $(BUILD)/ace-mediator.o $(BUILD)/ace-mediator-volume.o
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
 # The broker's end of that channel.  Only the broker links it: the shell and

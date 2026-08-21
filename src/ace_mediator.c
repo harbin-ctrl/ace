@@ -21,6 +21,7 @@
 #define _GNU_SOURCE
 
 #include "ace_mediator_protocol.h"
+#include "ace_mediator_volume.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -224,7 +225,8 @@ static int perform_handshake(struct mediator_state *state,
  * process ever having interpreted a byte of what it carried.
  */
 static int dispatch(struct mediator_state *state,
-                    const struct ace_mediator_request *request)
+                    const struct ace_mediator_request *request,
+                    const void *payload)
 {
     uint32_t class_of = ACE_MEDIATOR_CLASS_OF(request->operation);
 
@@ -280,11 +282,23 @@ static int dispatch(struct mediator_state *state,
         break;
     }
 
-    /* Volume and access operations are contracted but not yet implemented.
-       Refused rather than silently accepted, so a broker built ahead of its
-       mediator finds out by being told. */
-    if (class_of == ACE_MEDIATOR_CLASS_VOLUME ||
-        class_of == ACE_MEDIATOR_CLASS_ACCESS) {
+    if (class_of == ACE_MEDIATOR_CLASS_VOLUME) {
+        char answer[ACE_MEDIATOR_MAX_PAYLOAD];
+        size_t answer_length = 0;
+        int host_errno = 0;
+        int status = ace_mediator_volume_dispatch(request, payload,
+                                                  state->served_uid, answer,
+                                                  sizeof(answer),
+                                                  &answer_length, &host_errno);
+
+        reply(state, request->request_id, status, host_errno, answer,
+              (uint32_t)answer_length);
+        return 0;
+    }
+    /* Access operations are contracted but not yet implemented.  Refused
+       rather than silently accepted, so a broker built ahead of its mediator
+       finds out by being told. */
+    if (class_of == ACE_MEDIATOR_CLASS_ACCESS) {
         reply(state, request->request_id, ACE_MEDIATOR_UNSUPPORTED, ENOSYS,
               NULL, 0);
         return 0;
@@ -341,7 +355,7 @@ static void serve(struct mediator_state *state)
             return;
         if ((size_t)got < sizeof(request))
             return;
-        if (dispatch(state, &request))
+        if (dispatch(state, &request, payload))
             return;
     }
 }
@@ -420,6 +434,10 @@ int main(int argc, char **argv)
     }
 
     serve(&state);
+    /* Whichever way we leave -- SHUTDOWN, dropped privilege, a lapsed
+       authorisation, or a broker that simply stopped existing -- the mounts
+       this process made are its own to take down. */
+    ace_mediator_volume_shutdown();
     close(state.fd);
     return 0;
 }
