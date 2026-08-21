@@ -231,6 +231,11 @@ static void load_assigns(ULONG flags)
             struct AssignList *assign = calloc(1, sizeof(*assign));
             char host_root[PATH_MAX];
 
+            /* GetDeviceProc() treats dol_Task as the online marker.  A
+             * broker-backed directory assign has no packet handler, but it
+             * is still an online DOS path and must be discoverable by the
+             * Shell's final C: command search. */
+            entry->dol_Task = (APTR)entry;
             if (!assign)
                 continue;
             while (*tail)
@@ -253,6 +258,8 @@ static void load_assigns(ULONG flags)
         entry = append_dos_entry(name, type);
         if (!entry)
             continue;
+        if (type == DLT_DIRECTORY)
+            entry->dol_Task = (APTR)entry;
         if (type == DLT_LATE || type == DLT_NONBINDING) {
             dos_entry_assign_names[dos_entry_count - 1] = strdup(root);
             entry->dol_misc.dol_assign.dol_AssignName =

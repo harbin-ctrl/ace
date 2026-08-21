@@ -1664,6 +1664,7 @@ static int native_union_candidate(CONST_STRPTR name, struct DevProc *device,
 static int native_union_existing(CONST_STRPTR name, char *result,
                                  size_t result_size)
 {
+    struct stat direct_information;
     struct DevProc *device = ace_aros_GetDeviceProc(name, NULL);
     /*
      * A NULL on the very first call means no handler claims this name at
@@ -1675,6 +1676,19 @@ static int native_union_existing(CONST_STRPTR name, char *result,
      * turn on.
      */
     int saved_error = device ? ERROR_OBJECT_NOT_FOUND : (int)IoErr();
+
+    /* The broker already knows how to resolve the complete logical assign
+       name.  Use that first for the common single-target case; it avoids
+       asking the device-view resolver to re-resolve a host-backed C: assign
+       beneath a base path, which is a different operation and can be refused
+       in a fresh root session.  If the object is absent, retain the iterator
+       below for true multi-assigns. */
+    if (native_broker_resolve_path(name, result, result_size) == 0 &&
+        ace_privops_stat(result, &direct_information, 1) == 0) {
+        if (device)
+            ace_aros_FreeDeviceProc(device);
+        return 0;
+    }
 
     while (device) {
         struct stat information;
@@ -1860,6 +1874,7 @@ static void free_cli_path_list(BPTR head)
 static void refresh_cli_path_list(void)
 {
     char paths[AMIGA_BROKER_MAX_PAYLOAD];
+    char command_drawer[PATH_MAX];
     char *save = NULL;
     char *path;
     BPTR head = BNULL;
@@ -1891,6 +1906,30 @@ static void refresh_cli_path_list(void)
             head = MKBADDR(entry);
         tail = entry;
         path = strtok_r(NULL, "\n", &save);
+    }
+
+    /* The Shell's source has a separate C: fallback, but that fallback goes
+       through GetDeviceProc().  Keep C: in the local command-dir list too:
+       it is the canonical command drawer, and this also makes a fresh
+       root/device-view session behave like an established session whose
+       mutable Path list already contains it. */
+    if (native_broker_resolve_path("C:", command_drawer,
+                                   sizeof(command_drawer)) == 0) {
+        BPTR *entry = NULL;
+        BPTR lock = native_lock_host_path(command_drawer);
+
+        if (lock)
+            entry = calloc(2, sizeof(*entry));
+        if (entry) {
+            entry[1] = lock;
+            if (tail)
+                tail[0] = MKBADDR(entry);
+            else
+                head = MKBADDR(entry);
+            tail = entry;
+        } else if (lock) {
+            UnLock(lock);
+        }
     }
     free_cli_path_list(native_cli.cli_CommandDir);
     native_cli.cli_CommandDir = head;

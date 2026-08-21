@@ -222,8 +222,10 @@ int native_command_path(const char *name, char *result, size_t result_size)
     char *save = NULL;
     char *path;
     char executable[PATH_MAX];
+    char amiga_command[PATH_MAX];
     char *slash;
     ssize_t length;
+    int written;
 
     if (!name || !*name || !result || result_size == 0)
         return -1;
@@ -247,6 +249,20 @@ int native_command_path(const char *name, char *result, size_t result_size)
         return -1;
     }
     if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0 &&
+        executable_file(resolved) && strlen(resolved) < result_size) {
+        strcpy(result, resolved);
+        return 0;
+    }
+
+    /* C: is the AmigaDOS command drawer, not merely a path that happens to
+       be present in a shell's mutable Path list.  Fresh broker sessions --
+       especially the root/device-view session -- start with no user-added
+       path entries, so keep the standard command drawer as an explicit
+       fallback for an unqualified command. */
+    written = snprintf(amiga_command, sizeof(amiga_command), "C:%s", name);
+    if (written >= 0 && (size_t)written < sizeof(amiga_command) &&
+        native_broker_resolve_path(amiga_command, resolved,
+                                    sizeof(resolved)) == 0 &&
         executable_file(resolved) && strlen(resolved) < result_size) {
         strcpy(result, resolved);
         return 0;

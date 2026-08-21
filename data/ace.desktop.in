@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=ACE Shell
 Comment=AROS Command Environment shell
-Exec=@BINDIR@/ace-shell
+Exec=@BINDIR@/ace-shell --root
 TryExec=@BINDIR@/ace-shell
 Icon=ace
 Terminal=false
