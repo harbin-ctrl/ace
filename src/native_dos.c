@@ -32,6 +32,7 @@
 #include <exec/libraries.h>
 #include <utility/utility.h>
 #include "ace_privops.h"
+#include "ace_modes.h"
 #include "broker_client.h"
 #include "native_host.h"
 #include "broker_protocol.h"
@@ -1604,6 +1605,43 @@ static int native_named_device_path(CONST_STRPTR name)
     return colon && colon != name;
 }
 
+/* Resolve a name that the user's broker-side path walker cannot enter.
+ *
+ * The ordinary resolver intentionally walks as the session user, which is
+ * the right answer for normal names and for deciding whether a typo exists.
+ * Once the shell has deliberately entered a directory such as /root, though,
+ * resolving ".bashrc" fails before ace_privops_fopen() gets to try the
+ * mediator.  The broker already gave us the trusted host spelling of the
+ * current directory; combine that with the relative name and let the access
+ * seam make the permission decision on the complete object.
+ */
+static int native_resolve_path_for_access(CONST_STRPTR name, char *result,
+                                          size_t result_size)
+{
+    char current[PATH_MAX];
+    int failure;
+
+    if (native_broker_resolve_path(name, result, result_size) == 0)
+        return 0;
+    failure = errno;
+    if (!ace_mode_is_root() || (failure != EACCES && failure != EPERM) ||
+        !name || !*name || name[0] == '/' || native_named_device_path(name)) {
+        errno = failure;
+        return -1;
+    }
+    if (native_broker_getcwd(current, sizeof(current)) != 0) {
+        errno = failure;
+        return -1;
+    }
+    if (snprintf(result, result_size, "%s%s%s", current,
+                 current[0] && current[strlen(current) - 1] == '/' ? "" : "/",
+                 name) >= (int)result_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
+}
+
 static int native_device_base(struct DevProc *device, char *result,
                               size_t result_size)
 {
@@ -1721,7 +1759,7 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
 
     if ((native_named_device_path(name) ?
          native_union_existing(name, resolved, sizeof(resolved)) :
-         native_broker_resolve_path(name, resolved, sizeof(resolved))) != 0 ||
+         native_resolve_path_for_access(name, resolved, sizeof(resolved))) != 0 ||
         ace_privops_stat(resolved, &information, 1) != 0) {
         if (native_named_device_path(name) &&
             (errno == ENOENT || errno == ENOTDIR))
@@ -2151,7 +2189,11 @@ LONG NameFromLock(BPTR handle, STRPTR buffer, LONG length)
     struct native_lock *lock = handle;
     char amiga_name[PATH_MAX];
 
-    if (!lock || !buffer || length <= 0) {
+    if (!lock) {
+        native_ioerr = ERROR_INVALID_LOCK;
+        return DOSFALSE;
+    }
+    if (!buffer || length <= 0) {
         native_ioerr = ERROR_LINE_TOO_LONG;
         return DOSFALSE;
     }
@@ -2425,7 +2467,8 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         else
             native_ioerr = open_errno == ENOENT || open_errno == 0 ?
                            ERROR_OBJECT_NOT_FOUND : open_errno;
-    } else if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+    } else if (native_resolve_path_for_access(name, resolved,
+                                              sizeof(resolved)) != 0) {
         native_ioerr = errno == ENOENT || errno == 0 ?
                        ERROR_OBJECT_NOT_FOUND : errno;
         return NULL;
@@ -2493,7 +2536,7 @@ LONG DeleteFile(CONST_STRPTR name)
     char resolved[PATH_MAX];
 
     if (!name ||
-        native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
+        native_resolve_path_for_access(name, resolved, sizeof(resolved)) != 0) {
         set_native_broker_error();
         return DOSFALSE;
     }
