@@ -161,30 +161,24 @@ static void run_startup_scripts(void)
 int main(int argc, char **argv)
 {
     struct ace_mode_options modes;
-    char **original_argv;
-    int original_argc = argc;
     int status;
 
-    original_argv = calloc((size_t)argc + 1, sizeof(*original_argv));
-    if (!original_argv)
-        return 20;
-    memcpy(original_argv, argv, ((size_t)argc + 1) * sizeof(*argv));
     if (ace_mode_parse(&argc, argv, &modes) != 0 || argc != 1) {
         fprintf(stderr, "usage: %s [--root|--user] "
                         "[--deviceview|--mountview]\n", argv[0]);
-        free(original_argv);
         return 20;
     }
-    if (ace_mode_elevate_if_needed(original_argc, original_argv, &modes) != 0) {
-        fprintf(stderr, "ace-user-shell: failed to get root: %s\n",
-                strerror(errno));
-        free(original_argv);
-        return 20;
-    }
-    free(original_argv);
     if (ace_mode_configure(&modes) != 0) {
-        fprintf(stderr, "ace-user-shell: requested mode is unavailable: %s\n",
-                strerror(errno));
+        /* Being root is the one failure worth explaining rather than
+           reporting: the user did something reasonable and needs to know
+           that ACE gets its privilege elsewhere. */
+        if (errno == EPERM)
+            fprintf(stderr,
+                    "ace-user-shell: ACE must be started as a normal user; privileged "
+                    "operations\nare provided by the ACE mediator.\n");
+        else
+            fprintf(stderr, "ace-user-shell: requested mode is unavailable: %s\n",
+                    strerror(errno));
         return 20;
     }
 

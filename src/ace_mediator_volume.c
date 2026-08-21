@@ -165,7 +165,7 @@ static int make_directory_path(const char *path)
         if (*cursor != '/')
             continue;
         *cursor = '\0';
-        if (mkdir(work, 0755) != 0 && errno != EEXIST)
+        if (mkdir(work, 0700) != 0 && errno != EEXIST)
             return -1;
         if (stat(work, &information) != 0 || !S_ISDIR(information.st_mode)) {
             errno = ENOTDIR;
@@ -173,7 +173,7 @@ static int make_directory_path(const char *path)
         }
         *cursor = '/';
     }
-    if (mkdir(work, 0755) != 0 && errno != EEXIST)
+    if (mkdir(work, 0700) != 0 && errno != EEXIST)
         return -1;
     return 0;
 }

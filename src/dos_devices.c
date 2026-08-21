@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "dos_devices.h"
+#include "ace_mediator_client.h"
 #include "ace_modes.h"
 
 #include <blkid/blkid.h>
@@ -50,6 +51,7 @@ struct mount_record {
 
 static struct ace_dos_device devices[MAX_DOS_DEVICES];
 static int device_view;
+static char device_view_root[PATH_MAX];
 
 static int valid_alias(const char *name)
 {
@@ -624,137 +626,68 @@ void ace_dos_devices_discover(void)
     discover_mounts();
 }
 
-static int make_directory_path(const char *path)
+
+
+
+/*
+ * Build the device view by asking, rather than by mounting.
+ *
+ * Everything privileged here now happens in the mediator, in its own mount
+ * namespace, and this function's whole job is to say which devices were found
+ * and to record where they were put.  The broker never learns how to mount
+ * anything and never needed to.
+ *
+ * Note what is not passed: a mountpoint.  The broker names a kernel device
+ * and what it believes the filesystem to be; the mediator derives the device
+ * path, checks that it is really a block device, checks the type against its
+ * own list, and chooses where it goes.  There is no parameter through which a
+ * confused broker could ask for a mount somewhere of its choosing.
+ */
+int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator)
 {
-    char work[PATH_MAX];
-
-    if (!path || strlen(path) >= sizeof(work)) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    strcpy(work, path);
-    for (char *cursor = work + 1; *cursor; cursor++) {
-        struct stat information;
-
-        if (*cursor != '/')
-            continue;
-        *cursor = '\0';
-        if (mkdir(work, 0700) != 0 && errno != EEXIST)
-            return -1;
-        if (stat(work, &information) != 0 ||
-            !S_ISDIR(information.st_mode)) {
-            errno = ENOTDIR;
-            return -1;
-        }
-        *cursor = '/';
-    }
-    if (mkdir(work, 0700) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
-static int exact_mount(const char *path, struct mount_record *result)
-{
-    FILE *stream = fopen("/proc/self/mountinfo", "r");
-    char *line = NULL;
-    size_t line_size = 0;
-    int found = -1;
-
-    if (!stream)
-        return -1;
-    while (getline(&line, &line_size, stream) >= 0) {
-        struct mount_record record;
-
-        if (parse_mount_record(line, &record) == 0 &&
-            strcmp(record.mount_path, path) == 0) {
-            if (result)
-                *result = record;
-            found = 0;
-            break;
-        }
-    }
-    free(line);
-    fclose(stream);
-    return found;
-}
-
-static int device_view_parent(char *result, size_t result_size)
-{
-    const char *configured = getenv("ACE_MOUNT_ROOT");
-    const char *runtime = getenv("XDG_RUNTIME_DIR");
-    int written;
-
-    if (configured && *configured)
-        written = snprintf(result, result_size, "%s/ace/device-roots",
-                           configured);
-    else if (runtime && *runtime)
-        written = snprintf(result, result_size, "%s/ace/device-roots",
-                           runtime);
-    else
-        written = snprintf(result, result_size,
-                           "/tmp/ace-%lu/device-roots",
-                           (unsigned long)ace_mode_owner_uid());
-    if (written < 0 || (size_t)written >= result_size) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    return make_directory_path(result);
-}
-
-int ace_dos_devices_prepare_device_view(void)
-{
-    char parent[PATH_MAX];
-
-    if (!ace_mode_is_root()) {
+    if (!mediator) {
+        /* Without a mediator there is no privilege anywhere in this session,
+           so there is no device view to build.  Reportable, not fatal. */
         errno = EACCES;
         return -1;
     }
-    device_view = 1;
-    if (device_view_parent(parent, sizeof(parent)) != 0)
+    if (ace_mediator_prepare_view(mediator, device_view_root,
+                                  sizeof(device_view_root)) != 0)
         return -1;
+    device_view = 1;
     for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
         struct ace_dos_device *device = &devices[index];
-        struct stat device_info;
-        struct mount_record existing;
-        char target[PATH_MAX];
+        char view_path[PATH_MAX];
 
         if (!device->in_use || !supported_filesystem_type(
-                device->filesystem_type) ||
-            stat(device->device_path, &device_info) != 0 ||
-            !S_ISBLK(device_info.st_mode))
+                device->filesystem_type))
             continue;
-        if (snprintf(target, sizeof(target), "%s/%s", parent,
-                     device->kernel_name) >= (int)sizeof(target)) {
+        if (ace_mediator_mount(mediator, device->kernel_name,
+                               device->filesystem_type, view_path,
+                               sizeof(view_path)) != 0) {
+            /* A filesystem this build will not mount is not a failure of the
+               view -- it is a device that does not appear in it.  Anything
+               else is a real failure and stops here. */
+            if (errno == ENOTSUP)
+                continue;
+            return -1;
+        }
+        if (strlen(view_path) >= sizeof(device->view_path)) {
             errno = ENAMETOOLONG;
             return -1;
         }
-        if (make_directory_path(target) != 0)
-            return -1;
-        if (exact_mount(target, &existing) == 0) {
-            if (existing.device_id != device->device_id ||
-                strcmp(existing.root, "/") != 0) {
-                errno = EBUSY;
-                return -1;
-            }
-        } else if (device->mount_path[0]) {
-            /* A mount whose root is not / is a filesystem-specific subroot
-             * (notably a Btrfs subvolume). ACE does not yet know how to turn
-             * that into the true device root. */
-            if (strcmp(device->mount_root, "/") != 0) {
-                errno = ENOTSUP;
-                return -1;
-            }
-            /* Deliberately not MS_REC: omitting the source's child mounts is
-             * precisely what reveals the directories they obscure. */
-            if (mount(device->mount_path, target, NULL, MS_BIND, NULL) != 0)
-                return -1;
-        } else if (mount(device->device_path, target,
-                         device->filesystem_type, 0, NULL) != 0) {
-            return -1;
-        }
-        strcpy(device->view_path, target);
+        strcpy(device->view_path, view_path);
     }
     return 0;
+}
+
+/* Where the mediator put the device roots, or "" when there is no device
+   view.  The broker needs this to recognise a path that only the access
+   worker can open: such a path fails locally with ENOENT, and ENOENT must
+   never be what triggers a privileged request. */
+const char *ace_dos_devices_view_root(void)
+{
+    return device_view_root;
 }
 
 int ace_dos_devices_lookup(const char *name)
@@ -1034,17 +967,13 @@ int ace_dos_devices_volume_root_for_path(const char *path, char *result,
 
 void ace_dos_devices_shutdown(void)
 {
-    /* Tear down the private roots on an orderly stop, including in shells
-     * that have joined this namespace. If the broker is killed abruptly,
-     * the kernel discards them when the namespace's last process exits. */
-    for (size_t index = MAX_DOS_DEVICES; index-- > 0;) {
-        struct ace_dos_device *device = &devices[index];
-
-        if (!device->view_path[0])
-            continue;
-        (void)umount2(device->view_path, MNT_DETACH);
-        device->view_path[0] = '\0';
-    }
+    /* The device-view mounts are not this process's to take down: they live
+     * in the mediator's namespace and go when it does, whether that is an
+     * orderly shutdown or the kernel discarding the namespace after the last
+     * process in it exits.  Only the mounts this broker made itself, through
+     * the ordinary unprivileged path below, are its own to undo. */
+    for (size_t index = MAX_DOS_DEVICES; index-- > 0;)
+        devices[index].view_path[0] = '\0';
     for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
         struct ace_dos_device *device = &devices[index];
 

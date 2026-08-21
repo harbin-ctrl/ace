@@ -505,20 +505,35 @@ C1 and C2 are done: the volume worker owns the namespace, the mounts, and the
 device view, and the supervisor forks an access worker inside that namespace
 and hands the broker its channel.
 
-C3 remains: move `prepare_device_view()`'s work out of `dos_devices.c` so the
-broker drives the mediator instead of mounting anything itself, route
-device-view paths to the access worker, and only then let the broker become an
-ordinary user process, with a root broker or shell failing by default.
+C3 is done. `prepare_device_view()` asks the mediator instead of mounting;
+`broker.c` no longer unshares anything; `broker_client.c`'s namespace joining
+and its `unshare(CLONE_FS)` workaround are deleted rather than moved, since no
+user process enters a namespace any more; and `--root` no longer re-executes
+anything, so `ace_mode_elevate_if_needed()` is gone. Starting any ACE program
+as root now fails with an explanation.
 
-Clients no longer `setns()` into anything. `broker_client.c`'s namespace
-joining and its `unshare(CLONE_FS)` workaround are deleted rather than moved
--- the workaround existed to let user processes enter the broker's namespace,
-and no user process enters a namespace any more.
+The mediator launcher prefers a noninteractive `sudo` probe over `pkexec`,
+following what `ace_modes.c` already did and for the same reason its comment
+gives. That is also what makes the elevated path testable: an elevated channel
+that only runs when somebody types a password is one that never runs in a test
+suite.
 
-`make test-device-view` is the regression gate for this chunk and must keep
-passing throughout it, not merely at the end.
+`make test-device-view` was named here as the regression gate, and it was the
+wrong choice: it skips on any machine without a nested mount to reveal, which
+includes the machine this was developed on, so it gated nothing.
+`make test-mediator-broker` covers what actually changed -- the broker runs as
+the user, a root mediator holds the privilege, the two are in different mount
+namespaces, the session answers, the mediator dies when the broker does, and a
+root broker is refused. Prefer it, and treat a skipping test as untested
+rather than passing.
 
-### Chunk D: access workers and the privileged-aware DOS seam
+### Chunk D: escalation for protected paths, and the DOS seam
+
+The access worker exists and opens objects, but only beneath the device-view
+root. What remains is the other half: routing ordinary ACE file operations
+through it when the user's own attempt is refused.
+
+
 
 Shared wrappers for `open`, `stat`, directory enumeration, `unlink`, `rename`,
 `mkdir`, and protection changes. Attempt as the user; fall back to the

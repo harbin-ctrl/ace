@@ -30,34 +30,28 @@ static int resolve_executable_path(const char *argv0, char *path,
 int main(int argc, char **argv)
 {
     struct ace_mode_options modes;
-    char **original_argv;
-    int original_argc = argc;
     char executable[PATH_MAX];
     char console_path[PATH_MAX];
     char *slash;
     const char *session = getenv("ACE_SESSION");
     pid_t child;
 
-    original_argv = calloc((size_t)argc + 1, sizeof(*original_argv));
-    if (!original_argv)
-        return RETURN_FAIL;
-    memcpy(original_argv, argv, ((size_t)argc + 1) * sizeof(*argv));
     if (ace_mode_parse(&argc, argv, &modes) != 0) {
         fprintf(stderr, "usage: %s [--root|--user] "
                         "[--deviceview|--mountview]\n", argv[0]);
-        free(original_argv);
         return RETURN_FAIL;
     }
-    if (ace_mode_elevate_if_needed(original_argc, original_argv, &modes) != 0) {
-        fprintf(stderr, "ace-shell: failed to get root: %s\n",
-                strerror(errno));
-        free(original_argv);
-        return RETURN_FAIL;
-    }
-    free(original_argv);
     if (ace_mode_configure(&modes) != 0) {
-        fprintf(stderr, "ace-shell: requested mode is unavailable: %s\n",
-                strerror(errno));
+        /* Being root is the one failure worth explaining rather than
+           reporting: the user did something reasonable and needs to know
+           that ACE gets its privilege elsewhere. */
+        if (errno == EPERM)
+            fprintf(stderr,
+                    "ace-shell: ACE must be started as a normal user; privileged "
+                    "operations\nare provided by the ACE mediator.\n");
+        else
+            fprintf(stderr, "ace-shell: requested mode is unavailable: %s\n",
+                    strerror(errno));
         return RETURN_FAIL;
     }
     if (argc != 1) {

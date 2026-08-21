@@ -117,6 +117,29 @@ int ace_mediator_request(struct ace_mediator *mediator,
  */
 struct ace_mediator *ace_mediator_access_worker(struct ace_mediator *volume);
 
+/*
+ * Create the namespace and the view root, and learn where it is.
+ *
+ * The path is reported rather than agreed in advance: the side that created
+ * it is the side that knows, and a second copy of that rule in the broker
+ * would be a second thing to keep in step.
+ */
+int ace_mediator_prepare_view(struct ace_mediator *mediator, char *root,
+                              size_t root_size);
+
+/*
+ * Mount one discovered device, and learn where the mediator put it.
+ *
+ * The broker says which kernel device it found and what it believes the
+ * filesystem to be.  It does not say where the mount should go, and there is
+ * no parameter through which it could: the mediator derives /dev/<name>,
+ * checks the device, checks the type against its own list, and chooses the
+ * mountpoint itself.
+ */
+int ace_mediator_mount(struct ace_mediator *mediator, const char *kernel_name,
+                       const char *filesystem_type, char *view_path,
+                       size_t view_path_size);
+
 /* Orderly shutdown where possible, then release the handle.  Safe on NULL. */
 void ace_mediator_close(struct ace_mediator *mediator);
 

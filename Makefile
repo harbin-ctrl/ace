@@ -794,10 +794,10 @@ $(BUILD)/mediator-channel-probe: tests/mediator_channel_probe.c $(BUILD)/ace-med
 # its environment and falls back to its own directory, which for a build tree
 # is where the commands are -- which is exactly what gives a build tree a
 # different SYS:, and therefore a different broker, from an installed copy.
-$(BUILD)/broker.o: src/broker.c src/broker_dictionary.h src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h src/ace_modes.h | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_dictionary.h src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h src/ace_modes.h src/ace_mediator_client.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) $(ZLIB_CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h src/ace_modes.h | $(BUILD)
+$(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h src/ace_modes.h src/ace_mediator_client.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/broker-identity.o: src/broker_identity.c src/broker_protocol.h src/ace_modes.h | $(BUILD)
@@ -1284,9 +1284,13 @@ $(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/n
 $(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
+# The broker is the only ACE program that links the mediator client.  The
+# shell and the commands do not get a privileged socket of their own: one
+# semantic authority, one privilege ingress.
 $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o \
                      $(BUILD)/broker-identity.o \
                      $(BUILD)/ace-modes.o \
+                     $(BUILD)/ace-mediator-client.o \
                      $(BUILD)/clipboard-bridge.o
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) $(BLKID_LIBS) $(ZLIB_LIBS) -o $@
 
@@ -1926,6 +1930,9 @@ test-modes: all
 
 test-device-view: all
 	sh tests/device_view_test.sh
+
+test-mediator-broker: all
+	sh tests/mediator_broker_test.sh
 
 test-assign-missing-target: all
 	sh tests/assign_missing_target_test.sh

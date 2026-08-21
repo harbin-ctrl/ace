@@ -137,6 +137,68 @@ static int mediator_program(char *result, size_t result_size)
     return 0;
 }
 
+/*
+ * How to become root, and why there is a choice.
+ *
+ * pkexec is the right answer on a desktop: it is polkit's, it explains itself
+ * to the user, and it can be given an ACE-specific action later without any
+ * of this changing.  But a machine configured for noninteractive sudo can
+ * elevate without a human in the loop, and that is what makes the elevated
+ * path testable at all -- an elevated channel that only ever runs when
+ * somebody types a password is an elevated channel that never runs in a test
+ * suite.
+ *
+ * ace_modes.c already prefers a sudo probe that executes true over `sudo -n
+ * -v`, because -v fails under some otherwise working NOPASSWD configurations.
+ * Same probe here, for the same reason.
+ *
+ * Neither is given -E.  The environment does not cross into the mediator, by
+ * both tools' default and by preference: a root process that inherits its
+ * idea of the world from an unprivileged one has a user-supplied idea of its
+ * own purpose.
+ */
+enum elevation { ELEVATE_NONE, ELEVATE_SUDO, ELEVATE_PKEXEC };
+
+static int probe_succeeds(char *const arguments[])
+{
+    pid_t child = fork();
+    int status;
+
+    if (child < 0)
+        return 0;
+    if (child == 0) {
+        int null_fd = open("/dev/null", O_RDWR);
+
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            if (null_fd > STDERR_FILENO)
+                close(null_fd);
+        }
+        execv(arguments[0], arguments);
+        _exit(127);
+    }
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR)
+            return 0;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static enum elevation choose_elevation(void)
+{
+    char *const sudo_probe[] = {
+        (char *)"/usr/bin/sudo", (char *)"-n", (char *)"/usr/bin/true", NULL
+    };
+
+    if (access("/usr/bin/sudo", X_OK) == 0 && probe_succeeds(sudo_probe))
+        return ELEVATE_SUDO;
+    if (access("/usr/bin/pkexec", X_OK) == 0)
+        return ELEVATE_PKEXEC;
+    return ELEVATE_NONE;
+}
+
 static int send_record(int fd, const void *header, size_t header_size,
                        const void *payload, size_t payload_length)
 {
@@ -321,7 +383,19 @@ struct ace_mediator *ace_mediator_start_as(uint32_t wanted_capabilities,
     char nonce_text[ACE_MEDIATOR_NONCE_LENGTH * 2 + 1];
     int listener = -1;
     int channel = -1;
+    enum elevation method = ELEVATE_NONE;
     pid_t child;
+
+    if (elevate) {
+        method = choose_elevation();
+        if (method == ELEVATE_NONE) {
+            /* Nothing here can make this session privileged, which is a
+               reportable outcome and not a crash: what the user gets is the
+               unprivileged session they would have had without --root. */
+            errno = EACCES;
+            return NULL;
+        }
+    }
 
     if (fill_random(nonce, sizeof(nonce)) != 0)
         return NULL;
@@ -366,10 +440,17 @@ struct ace_mediator *ace_mediator_start_as(uint32_t wanted_capabilities,
            CANCEL message, not to be delivered as a signal to a root process
            in the middle of an unmount. */
         setsid();
-        if (elevate)
+        switch (method) {
+        case ELEVATE_SUDO:
+            execl("/usr/bin/sudo", "sudo", "-n", program, path, (char *)NULL);
+            break;
+        case ELEVATE_PKEXEC:
             execl("/usr/bin/pkexec", "pkexec", program, path, (char *)NULL);
-        else
+            break;
+        case ELEVATE_NONE:
             execl(program, program, path, (char *)NULL);
+            break;
+        }
         _exit(127);
     }
     mediator->launched_pid = child;
@@ -549,6 +630,80 @@ struct ace_mediator *ace_mediator_access_worker(struct ace_mediator *volume)
     worker->peer_pid = response.payload_length == sizeof(worker_pid)
                            ? (pid_t)worker_pid : -1;
     return worker;
+}
+
+int ace_mediator_prepare_view(struct ace_mediator *mediator, char *root,
+                              size_t root_size)
+{
+    struct ace_mediator_request request;
+    struct ace_mediator_response response;
+
+    if (!mediator || !root || root_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(&request, 0, sizeof(request));
+    request.operation = ACE_MEDIATOR_VOLUME_PREPARE_VIEW;
+    if (ace_mediator_request(mediator, &request, NULL, &response, root,
+                             root_size, NULL) != 0)
+        return -1;
+    if (response.status != ACE_MEDIATOR_OK) {
+        errno = response.host_errno ? response.host_errno : EPERM;
+        return -1;
+    }
+    if (response.payload_length == 0 ||
+        response.payload_length > root_size ||
+        root[response.payload_length - 1] != '\0') {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+int ace_mediator_mount(struct ace_mediator *mediator, const char *kernel_name,
+                       const char *filesystem_type, char *view_path,
+                       size_t view_path_size)
+{
+    struct ace_mediator_request request;
+    struct ace_mediator_response response;
+    char payload[ACE_MEDIATOR_MAX_PAYLOAD];
+    size_t name_length;
+    size_t type_length;
+
+    if (!mediator || !kernel_name || !filesystem_type || !view_path) {
+        errno = EINVAL;
+        return -1;
+    }
+    name_length = strlen(kernel_name);
+    type_length = strlen(filesystem_type);
+    if (name_length + type_length + 2 > sizeof(payload)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(payload, kernel_name, name_length + 1);
+    memcpy(payload + name_length + 1, filesystem_type, type_length + 1);
+
+    memset(&request, 0, sizeof(request));
+    request.operation = ACE_MEDIATOR_VOLUME_MOUNT;
+    request.payload_length = (uint32_t)(name_length + type_length + 2);
+    if (ace_mediator_request(mediator, &request, payload, &response, view_path,
+                             view_path_size, NULL) != 0)
+        return -1;
+    if (response.status != ACE_MEDIATOR_OK) {
+        /* Distinguished so the caller can skip what this build will not mount
+           and stop for what it could not. */
+        errno = response.status == ACE_MEDIATOR_UNSUPPORTED
+                    ? ENOTSUP
+                    : (response.host_errno ? response.host_errno : EPERM);
+        return -1;
+    }
+    if (response.payload_length == 0 ||
+        response.payload_length > view_path_size ||
+        view_path[response.payload_length - 1] != '\0') {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
 }
 
 int ace_mediator_ping(struct ace_mediator *mediator)

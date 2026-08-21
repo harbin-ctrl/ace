@@ -7,6 +7,7 @@
 #include "broker_dictionary.h"
 #include "broker_protocol.h"
 #include "clipboard_bridge.h"
+#include "ace_mediator_client.h"
 #include "dos_devices.h"
 #include "ace_modes.h"
 
@@ -384,6 +385,16 @@ static void release_session(struct broker_session *session)
  * the commands are.
  */
 static char system_root[PATH_MAX];
+/*
+ * The session's mediator, or NULL for an ordinary unprivileged session.
+ *
+ * Deliberately not closed from the signal handler.  Closing it politely means
+ * sending a message and waiting, which a handler must not do; letting the
+ * process exit closes the descriptor, and the mediator treats that EOF as the
+ * end of the session.  It is the same path a crashed broker takes, so it is
+ * the path that has to work anyway.
+ */
+static struct ace_mediator *mediator;
 
 static struct assign_entry *allocate_assign(struct broker_session *session,
                                             const char *name);
@@ -3877,41 +3888,37 @@ int main(int argc, char **argv)
 {
     struct sockaddr_un address;
     struct ace_mode_options modes;
-    char **original_argv;
-    int original_argc = argc;
 
-    original_argv = calloc((size_t)argc + 1, sizeof(*original_argv));
-    if (!original_argv)
-        return 1;
-    memcpy(original_argv, argv, ((size_t)argc + 1) * sizeof(*argv));
+    /* argv was copied here once, so that the process could re-execute itself
+       through sudo with the switches it started with.  Nothing re-executes
+       any more: privilege arrives as a separate process, not as a new self. */
     if (ace_mode_parse(&argc, argv, &modes) != 0) {
         fprintf(stderr, "usage: %s [--root|--user] "
                         "[--deviceview|--mountview] "
                         "[socket-path | --print-socket]\n", argv[0]);
-        free(original_argv);
         return 2;
     }
     if (argc == 2 && strcmp(argv[1], "--print-socket") == 0) {
         /* So the start/stop scripts do not have to reimplement the naming
            rule in shell and drift away from it. */
         if (ace_mode_configure_identity(&modes) != 0) {
-            free(original_argv);
             return 2;
         }
         printf("%s\n", amiga_broker_socket_path());
-        free(original_argv);
         return 0;
     }
-    if (ace_mode_elevate_if_needed(original_argc, original_argv, &modes) != 0) {
-        fprintf(stderr, "ace-broker: failed to get root: %s\n",
-                strerror(errno));
-        free(original_argv);
-        return 1;
-    }
-    free(original_argv);
     if (ace_mode_configure(&modes) != 0) {
-        fprintf(stderr, "ace-broker: requested mode is unavailable: %s\n",
-                strerror(errno));
+        /* Being root is the one failure worth explaining rather than
+           reporting: the user did something reasonable and needs to know that
+           ACE gets its privilege from somewhere else entirely. */
+        if (errno == EPERM)
+            fprintf(stderr,
+                    "ace-broker: ACE must be started as a normal user; "
+                    "privileged operations\nare provided by the ACE "
+                    "mediator.\n");
+        else
+            fprintf(stderr, "ace-broker: requested mode is unavailable: %s\n",
+                    strerror(errno));
         return 1;
     }
     if (argc > 2 || (argc == 2 && argv[1][0] == '\0')) {
@@ -3923,14 +3930,6 @@ int main(int argc, char **argv)
     socket_path = amiga_broker_socket_path();
     if (argc == 2)
         socket_path = argv[1];
-
-    if (ace_mode_is_device_view()) {
-        if (unshare(CLONE_NEWNS) != 0 ||
-            mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
-            perror("ace-broker: private mount namespace");
-            return 1;
-        }
-    }
 
     /*
      * One broker per socket, enforced by the kernel rather than by
@@ -3948,10 +3947,29 @@ int main(int argc, char **argv)
 
     broker_started = time(NULL);
     ace_dos_devices_discover();
-    if (ace_mode_is_device_view() &&
-        ace_dos_devices_prepare_device_view() != 0) {
-        perror("ace-broker: device view");
-        return 1;
+    if (ace_mode_is_device_view()) {
+        /*
+         * The one place this process asks for privilege, and it asks rather
+         * than takes it: the mediator is a separate root process, and this
+         * broker stays the user's own for its whole life.
+         *
+         * Both capabilities at once because both are wanted for the same
+         * reason and by the same decision.  The user authorised ACE, and
+         * splitting that into two questions would be asking twice about one
+         * answer.
+         */
+        mediator = ace_mediator_start(ACE_MEDIATOR_CAP_VOLUME |
+                                      ACE_MEDIATOR_CAP_ACCESS);
+        if (!mediator) {
+            fprintf(stderr, "ace-broker: could not obtain administrator "
+                            "access for the device view: %s\n",
+                    strerror(errno));
+            return 1;
+        }
+        if (ace_dos_devices_prepare_device_view(mediator) != 0) {
+            perror("ace-broker: device view");
+            return 1;
+        }
     }
     resolve_system_root();
     restore_environment_archive();

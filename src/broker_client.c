@@ -271,77 +271,26 @@ static int broker_wait_until_reachable(void)
     return -1;
 }
 
-static int join_broker_mount_namespace(int fd)
-{
-    char namespace_path[PATH_MAX];
-    struct ucred peer;
-    socklen_t peer_size = sizeof(peer);
-    int target_fd = -1;
-    int self_fd = -1;
-    struct stat target_info;
-    struct stat self_info;
-    int outcome = -1;
-
-    if (!ace_mode_is_device_view())
-        return 0;
-    if (!ace_mode_is_root()) {
-        errno = EACCES;
-        return -1;
-    }
-    /* Ask the connected socket who its peer really is. The lock file is a
-     * lifecycle aid, not an authentication mechanism, and in root mode it
-     * may live below a directory writable by the originating user. */
-    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) != 0 ||
-        peer_size != sizeof(peer) || peer.pid <= 0 || peer.uid != 0) {
-        errno = EPROTO;
-        return -1;
-    }
-    if (snprintf(namespace_path, sizeof(namespace_path),
-                 "/proc/%ld/ns/mnt", (long)peer.pid) >=
-        (int)sizeof(namespace_path)) {
-        errno = ENAMETOOLONG;
-        return -1;
-    }
-    target_fd = open(namespace_path, O_RDONLY | O_CLOEXEC);
-    self_fd = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
-    if (target_fd < 0 || self_fd < 0 ||
-        fstat(target_fd, &target_info) != 0 ||
-        fstat(self_fd, &self_info) != 0)
-        goto done;
-    if (target_info.st_dev == self_info.st_dev &&
-        target_info.st_ino == self_info.st_ino) {
-        outcome = 0;
-        goto done;
-    }
-    /* Some ACE executables have the Exec host-signal dispatcher running
-     * before main(). Threads share an fs_struct by default, and Linux rejects
-     * a mount-namespace setns() with EINVAL while that sharing remains. Give
-     * this thread its own fs_struct first; the pre-existing dispatcher never
-     * performs pathname I/O, while every subsequently created worker inherits
-     * the device-view namespace entered here. */
-    if (unshare(CLONE_FS) != 0 || setns(target_fd, CLONE_NEWNS) != 0)
-        goto done;
-    outcome = 0;
-done:
-    if (target_fd >= 0)
-        close(target_fd);
-    if (self_fd >= 0)
-        close(self_fd);
-    return outcome;
-}
-
-static int connect_joined_broker(void)
-{
-    int fd = connect_broker();
-
-    if (fd < 0)
-        return -1;
-    if (join_broker_mount_namespace(fd) != 0) {
-        close(fd);
-        return -1;
-    }
-    return fd;
-}
+/*
+ * There used to be a join_broker_mount_namespace() here, and a
+ * connect_broker() that called it before returning a connection.  In
+ * front of the setns() sat an unshare(CLONE_FS), because some ACE executables
+ * have the Exec host-signal dispatcher running before main(), threads share an
+ * fs_struct by default, and Linux refuses a mount-namespace setns() with
+ * EINVAL while that sharing lasts.
+ *
+ * All of it is gone, and not because the problem was solved.  No ACE client
+ * enters a mount namespace any more, because none can: setns() with
+ * CLONE_NEWNS requires CAP_SYS_ADMIN in the user namespace that owns the
+ * target, and every process on this side of the design is now an ordinary
+ * user process.  The device view is reached instead by asking the mediator's
+ * access worker to open an object and passing the descriptor back, which gets
+ * across that boundary without anybody crossing it.
+ *
+ * Recorded rather than removed in silence, because the CLONE_FS discovery was
+ * expensive and someone who reintroduces a setns() here will otherwise meet
+ * the same EINVAL and think it is new.
+ */
 
 int native_broker_ensure(void)
 {
@@ -810,7 +759,7 @@ static int broker_connection(void)
 
     if (broker_fd >= 0)
         return broker_fd;
-    fd = connect_joined_broker();
+    fd = connect_broker();
     if (fd < 0)
         return -1;
     broker_fd = fd;
@@ -925,7 +874,7 @@ int native_broker_task_attach(const char *name,
         errno = EINVAL;
         return -1;
     }
-    task_fd = connect_joined_broker();
+    task_fd = connect_broker();
     if (task_fd < 0)
         return -1;
     char pid[32];
@@ -987,7 +936,7 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
             *channel_id = port_channel_id;
         return 0;
     }
-    port_fd = connect_joined_broker();
+    port_fd = connect_broker();
     if (port_fd < 0)
         return -1;
     snprintf(pid, sizeof(pid), "%ld", (long)getpid());
@@ -1217,7 +1166,7 @@ int native_broker_task_break_foreground(uint32_t signals)
 
     if (native_broker_ensure() != 0)
         return -1;
-    fd = connect_joined_broker();
+    fd = connect_broker();
     if (fd < 0)
         return -1;
     snprintf(mask, sizeof(mask), "%u", signals);

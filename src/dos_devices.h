@@ -6,9 +6,17 @@
 /* Discover filesystem-bearing host block devices for the broker's DOS list. */
 void ace_dos_devices_discover(void);
 
-/* Select and prepare the broker-wide filesystem topology. Device view must
- * be called after discovery and from a private, privileged mount namespace. */
-int ace_dos_devices_prepare_device_view(void);
+struct ace_mediator;
+
+/* Build the device view through the mediator, after discovery.  The mounts
+ * are made in the mediator's private namespace, not this process's, and this
+ * process never acquires the privilege to make them itself. */
+int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator);
+
+/* Where the mediator put the device roots, or "" when there is no device
+ * view. Paths beneath it are reachable only through the access worker. */
+const char *ace_dos_devices_view_root(void);
+
 int ace_dos_devices_is_full_root(const char *path);
 
 /* Return 1 for a unique DOS device/volume alias, 0 for none, -1 if ambiguous. */

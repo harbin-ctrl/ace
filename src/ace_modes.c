@@ -77,156 +77,68 @@ int ace_mode_parse(int *argc, char **argv, struct ace_mode_options *options)
     return 0;
 }
 
-static int run_and_wait(char *const argv[])
-{
-    pid_t child = fork();
-    int status;
 
-    if (child < 0)
-        return -1;
-    if (child == 0) {
-        execv(argv[0], argv);
-        _exit(127);
-    }
-    while (waitpid(child, &status, 0) < 0) {
-        if (errno != EINTR)
-            return -1;
-    }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
 
-static void add_environment(char **arguments, size_t *used, size_t capacity,
-                            char storage[][PATH_MAX + 64], size_t *stored,
-                            const char *name, const char *value)
-{
-    int written;
 
-    if (!value || !*value || *used + 1 >= capacity || *stored >= 16)
-        return;
-    written = snprintf(storage[*stored], PATH_MAX + 64, "%s=%s", name,
-                       value);
-    if (written < 0 || written >= PATH_MAX + 64)
-        return;
-    arguments[(*used)++] = storage[(*stored)++];
-}
 
-static int exec_elevated(const char *elevator, int noninteractive,
-                         int argc, char **argv, uid_t owner)
-{
-    size_t capacity = (size_t)argc + 40;
-    char **arguments = calloc(capacity, sizeof(*arguments));
-    char storage[16][PATH_MAX + 64];
-    char owner_text[32];
-    char executable[PATH_MAX];
-    ssize_t executable_length;
-    size_t stored = 0;
-    size_t used = 0;
-    static const char *const preserved[] = {
-        "ACE_SYS_DIR", "ACE_BROKER_SOCKET", "ACE_BROKER_BINARY",
-        "ACE_MOUNT_ROOT", "ACE_SESSION", "XDG_RUNTIME_DIR",
-        "WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY",
-        "DBUS_SESSION_BUS_ADDRESS", "PATH"
-    };
-
-    if (!arguments)
-        return -1;
-    executable_length = readlink("/proc/self/exe", executable,
-                                 sizeof(executable) - 1);
-    if (executable_length < 0 ||
-        (size_t)executable_length >= sizeof(executable) - 1) {
-        free(arguments);
-        return -1;
-    }
-    executable[executable_length] = '\0';
-    arguments[used++] = (char *)elevator;
-    if (strstr(elevator, "sudo") != NULL && noninteractive)
-        arguments[used++] = "-n";
-    arguments[used++] = "/usr/bin/env";
-    snprintf(owner_text, sizeof(owner_text), "%lu", (unsigned long)owner);
-    add_environment(arguments, &used, capacity, storage, &stored,
-                    ACE_MODE_OWNER_UID_ENV, owner_text);
-    for (size_t index = 0;
-         index < sizeof(preserved) / sizeof(preserved[0]); index++)
-        add_environment(arguments, &used, capacity, storage, &stored,
-                        preserved[index], getenv(preserved[index]));
-    for (int index = 0; index < argc && used + 1 < capacity; index++)
-        arguments[used++] = index == 0 ? executable : argv[index];
-    arguments[used] = NULL;
-    execv(elevator, arguments);
-    free(arguments);
-    return -1;
-}
-
-static int run_elevated_and_wait(const char *elevator, int noninteractive,
-                                 int argc, char **argv, uid_t owner)
-{
-    pid_t child = fork();
-    int status;
-
-    if (child < 0)
-        return -1;
-    if (child == 0) {
-        (void)exec_elevated(elevator, noninteractive, argc, argv, owner);
-        _exit(127);
-    }
-    while (waitpid(child, &status, 0) < 0) {
-        if (errno != EINTR)
-            return -1;
-    }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-        _exit(0);
-    errno = EACCES;
-    return -1;
-}
-
-int ace_mode_elevate_if_needed(int argc, char **argv,
-                               const struct ace_mode_options *options)
-{
-    uid_t owner;
-    /* `sudo -n -v` fails with some otherwise NOPASSWD configurations;
-     * executing true is the reliable noninteractive credential probe. */
-    char *const sudo_probe[] = {
-        "/usr/bin/sudo", "-n", "/usr/bin/true", NULL
-    };
-    char *const sudo_prompt[] = { "/usr/bin/sudo", "-v", NULL };
-
-    if (!options || !options->root || geteuid() == 0)
-        return 0;
-    owner = initial_owner_uid();
-    if (access("/usr/bin/sudo", X_OK) == 0 &&
-        run_and_wait(sudo_probe) == 0)
-        return exec_elevated("/usr/bin/sudo", 1, argc, argv, owner);
-    if (access("/usr/bin/sudo", X_OK) == 0 && isatty(STDIN_FILENO) &&
-        run_and_wait(sudo_prompt) == 0)
-        return exec_elevated("/usr/bin/sudo", 1, argc, argv, owner);
-    if (access("/usr/bin/pkexec", X_OK) == 0)
-        return run_elevated_and_wait("/usr/bin/pkexec", 0, argc, argv,
-                                     owner);
-    errno = EACCES;
-    return -1;
-}
+/*
+ * ace_mode_elevate_if_needed() used to live here.  It probed for sudo, fell
+ * back to pkexec, and re-executed this program as root with the switches it
+ * started with.
+ *
+ * It is gone because --root no longer means "become root".  It means this
+ * session may ask a separate privileged process for narrowly scoped help.
+ * The shell, the console, the commands, and the broker stay the user's own
+ * processes for their whole lives -- which is the only way they can keep
+ * using the user's session bus, display connection, configuration and HOME,
+ * none of which a root process can borrow.
+ *
+ * The elevation that remains lives in ace_mediator_client.c, and what it
+ * elevates is the mediator, not ACE.
+ */
 
 static int configure(const struct ace_mode_options *options, int identity_only)
 {
-    int root = identity_only && options && options->root ? 1 :
-               identity_only && options && options->user ? 0 : geteuid() == 0;
-    int device_view;
+    /*
+     * What --root means now.
+     *
+     * It used to be answered by geteuid(), because the process had re-executed
+     * itself as root and the kernel's opinion was the truth.  Nothing
+     * re-executes any more, so the question is no longer "am I root" but "is
+     * this session allowed to ask the mediator for help", and only the
+     * switches and the inherited session state can answer that.
+     *
+     * The environment carries it to child processes because a command started
+     * by the shell must agree with the shell about what kind of session it is
+     * in, and it is a separate process that cannot ask.
+     */
+    const char *inherited_privilege = getenv(ACE_MODE_PRIVILEGE_ENV);
     const char *inherited_view = getenv(ACE_MODE_VIEW_ENV);
+    int root;
+    int device_view;
     char owner_text[32];
 
     if (!options) {
         errno = EINVAL;
         return -1;
     }
-    if (options->user &&
-        ((!identity_only && root) || (identity_only && geteuid() == 0))) {
+    /*
+     * Running ACE as root is refused rather than accommodated.  A root shell
+     * would have root's session bus, root's configuration and root's HOME,
+     * and would be a different user's desktop wearing this one's name.  The
+     * privilege this session may want is available without any of that.
+     */
+    if (geteuid() == 0) {
         errno = EPERM;
         return -1;
     }
-    if (!identity_only && options->root && !root) {
-        errno = EACCES;
-        return -1;
-    }
+    if (options->root)
+        root = 1;
+    else if (options->user)
+        root = 0;
+    else
+        root = inherited_privilege &&
+               strcmp(inherited_privilege, "root") == 0;
     if (options->device_view)
         device_view = 1;
     else if (options->mount_view)
@@ -241,6 +153,7 @@ static int configure(const struct ace_mode_options *options, int identity_only)
         errno = EACCES;
         return -1;
     }
+    (void)identity_only;
     configured_root = root;
     configured_device_view = device_view;
     configured_owner = initial_owner_uid();
@@ -265,8 +178,16 @@ int ace_mode_configure_identity(const struct ace_mode_options *options)
 
 int ace_mode_is_root(void)
 {
-    if (configured_root < 0)
-        configured_root = geteuid() == 0;
+    const char *value;
+
+    if (configured_root >= 0)
+        return configured_root;
+    /* Asked before configure(), which happens in short-lived helpers.  The
+       session's answer is in the environment, never in the effective uid --
+       an ACE process is never root, so geteuid() would answer "no" to a
+       question it was not being asked. */
+    value = getenv(ACE_MODE_PRIVILEGE_ENV);
+    configured_root = value && strcmp(value, "root") == 0;
     return configured_root;
 }
 
@@ -277,8 +198,7 @@ int ace_mode_is_device_view(void)
     if (configured_device_view >= 0)
         return configured_device_view;
     value = getenv(ACE_MODE_VIEW_ENV);
-    configured_device_view = value ? strcmp(value, "device") == 0
-                                   : geteuid() == 0;
+    configured_device_view = value && strcmp(value, "device") == 0;
     return configured_device_view;
 }
 

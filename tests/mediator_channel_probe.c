@@ -455,6 +455,64 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(mode, "elevated") == 0) {
+        /*
+         * The real thing: a genuinely privileged mediator, reached the way a
+         * session reaches it.  Everything else in this probe runs the
+         * mediator as the current user to keep the tests free of passwords;
+         * this one exercises the path that actually carries privilege, on
+         * machines where it can be taken noninteractively.
+         */
+        struct ace_mediator *worker;
+        struct ace_mediator_request request;
+        struct ace_mediator_response response;
+        char root[PATH_MAX / 2];
+        int fd = -1;
+
+        mediator = ace_mediator_start(ACE_MEDIATOR_CAP_VOLUME |
+                                      ACE_MEDIATOR_CAP_ACCESS);
+        if (!mediator) {
+            printf("start failed: %s\n", strerror(errno));
+            return 1;
+        }
+        printf("granted=0x%x\n", ace_mediator_capabilities(mediator));
+        printf("ping=%s\n", ace_mediator_ping(mediator) == 0 ? "ok" : "failed");
+
+        memset(&request, 0, sizeof(request));
+        request.operation = ACE_MEDIATOR_VOLUME_INIT_NAMESPACE;
+        if (ace_mediator_request(mediator, &request, NULL, &response, NULL, 0,
+                                 NULL) != 0)
+            return 1;
+        printf("namespace=%d\n", response.status);
+
+        memset(&request, 0, sizeof(request));
+        request.operation = ACE_MEDIATOR_VOLUME_PREPARE_VIEW;
+        if (ace_mediator_request(mediator, &request, NULL, &response, root,
+                                 sizeof(root), NULL) != 0)
+            return 1;
+        printf("prepare=%d\n", response.status);
+        if (response.status == ACE_MEDIATOR_OK)
+            printf("root=%s\n", root);
+
+        worker = ace_mediator_access_worker(mediator);
+        printf("worker=%s\n", worker ? "ok" : "failed");
+        if (worker) {
+            /* The view root is a real directory only root created, inside a
+               namespace this process is not in.  Reaching it at all is the
+               demonstration. */
+            printf("opendir=%d\n",
+                   access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_DIR, ".", &fd));
+            if (fd >= 0) { close(fd); fd = -1; }
+            printf("escape=%d\n",
+                   access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_READ,
+                               "../../etc/passwd", &fd));
+            ace_mediator_close(worker);
+        }
+        ace_mediator_close(mediator);
+        printf("done\n");
+        return 0;
+    }
+
     if (strcmp(mode, "abandon") == 0) {
         /*
          * The case a crashed broker produces: nobody sends SHUTDOWN, nobody
