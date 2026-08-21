@@ -257,7 +257,9 @@ static int perform_open(int channel, const struct ace_mediator_request *request,
         flags = O_PATH | O_CLOEXEC;
         break;
     case ACE_MEDIATOR_ACCESS_OPEN_WRITE:
-        flags = O_WRONLY | O_CLOEXEC;
+        flags = ((request->flags & ACE_MEDIATOR_FLAG_UPDATE) ? O_RDWR
+                                                             : O_WRONLY) |
+                O_CLOEXEC;
         if (request->flags & ACE_MEDIATOR_FLAG_CREATE)
             flags |= O_CREAT;
         if (request->flags & ACE_MEDIATOR_FLAG_TRUNCATE)

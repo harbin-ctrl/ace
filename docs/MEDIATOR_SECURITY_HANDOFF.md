@@ -529,9 +529,44 @@ rather than passing.
 
 ### Chunk D: escalation for protected paths, and the DOS seam
 
-The access worker exists and opens objects, but only beneath the device-view
-root. What remains is the other half: routing ordinary ACE file operations
-through it when the user's own attempt is refused.
+Mostly done. `src/ace_privops.[ch]` is the single place in ACE that decides an
+operation needs privilege: it does the ordinary thing first as the ordinary
+user, and only a genuine `EACCES`/`EPERM` becomes a request. `native_dos.c`
+and `ace_amiga_posix.c` both route through it, which covers ACE's own commands
+and the unmodified third-party code compiled with the `-Dopen=` redefinitions.
+
+Commands never hold a channel to a root process. They ask the broker
+(`AMIGA_BROKER_PRIVOP`), the broker asks the access worker, and the reply --
+including any descriptor -- comes back the same way. One semantic authority,
+one privilege ingress. The broker also decides which resolution domain a path
+is in, because the broker is where path translation lives.
+
+`make test-privileged-file` proves the whole path end to end: an unprivileged
+`Type` reads a root-only file, and `Delete` removes one from sticky `/tmp`
+where the user could not. It also checks the premise -- that the same user
+genuinely cannot read the file -- because without that the rest proves
+nothing.
+
+**What is not done, and is the next piece of work.** Path *resolution* still
+happens in the broker as the ordinary user, so an object inside a directory
+the user cannot traverse cannot be named at all:
+
+```text
+resolve RAM4:protected-dir        -> /tmp/protected-dir     (works)
+resolve RAM4:protected-dir/file   -> fails                  (broker cannot stat it)
+```
+
+Escalation therefore reaches protected objects in traversable directories --
+which is the common case, `/etc/shadow` among them -- but not objects inside a
+`0700` directory owned by root. The fix is for the broker's resolution to use
+its own access worker when a component is refused, exactly as the seam does
+for operations. It was left out rather than half-built: the resolution code is
+substantial and threading escalation through it deserves its own pass.
+
+Two smaller gaps: `ace_privops_last_was_privileged()` exists so that commands
+can be talky about a file that has just been created root-owned, and no
+command consults it yet; and `utime`, `symlink` and `readlink` have no mediator
+operations, so they do not escalate.
 
 
 

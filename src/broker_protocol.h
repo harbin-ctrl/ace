@@ -191,7 +191,38 @@ enum amiga_broker_operation {
     /* Request-side operation: push an opaque event to every attached port
        channel. It has no message correlation and is used for process-wide
        state notifications such as ARexx resource updates. */
-    AMIGA_BROKER_PORT_BROADCAST = 37
+    AMIGA_BROKER_PORT_BROADCAST = 37,
+    /*
+     * Where the mediator put the device roots, or empty for an ordinary
+     * session.
+     *
+     * A command needs this to recognise a path that only the access worker
+     * can open.  Such a path fails locally with ENOENT -- it is not in this
+     * process's mount namespace and never will be -- and ENOENT must never be
+     * what triggers a privileged request, or every misspelling in every
+     * script would become one.  So the seam asks once, caches it, and routes
+     * by where the path is rather than by how the attempt failed.
+     *
+     * This is not the forbidden list of protected paths.  It is one value,
+     * learned at runtime from the process that created it.
+     */
+    AMIGA_BROKER_VIEWROOT = 38,
+    /*
+     * Perform one privileged file operation, by proxy.
+     *
+     * The command asks the broker; the broker asks the mediator's access
+     * worker; the answer, and any descriptor it produced, comes back the same
+     * way.  Commands never hold a channel to a root process: one semantic
+     * authority and one privilege ingress, so "may this happen" has exactly
+     * one place to be answered and exactly one place to be got wrong.
+     *
+     * The broker also decides which path domain the request is in, because
+     * the broker is where path translation lives.  A path beneath the device
+     * view goes as a view-relative one, so it is resolved with RESOLVE_BENEATH
+     * and cannot leave its volume; anything else goes as a host path.  The
+     * command does not need to know the difference and is not asked.
+     */
+    AMIGA_BROKER_PRIVOP = 39
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
@@ -244,12 +275,30 @@ struct amiga_broker_request {
     uint32_t flags;
     uint32_t mode;
     uint32_t owner_uid;
+    /* For AMIGA_BROKER_PRIVOP: which mediator operation is being asked for.
+       Zero for everything else.  Carried as its own field rather than packed
+       into flags, so that a request naming no operation names none rather
+       than accidentally naming the first one. */
+    uint32_t privop;
+    /* The file mode for a privileged create or protection change.
+       Deliberately not `mode`, which every request already uses to carry the
+       session's privilege and view so the broker can refuse a client that
+       thinks it is in a different session.  Overloading it here made every
+       privileged request look like a mode mismatch and be refused with
+       EXDEV -- a failure that pointed at the wrong thing entirely. */
+    uint32_t privop_mode;
 };
+
+/* The response carries a descriptor as ancillary data.  Stated in a flag
+   rather than left for the receiver to notice, because "no descriptor" and "a
+   descriptor I failed to collect" must not look alike. */
+#define AMIGA_BROKER_RESPONSE_HAS_FD 0x0001u
 
 struct amiga_broker_response {
     uint32_t magic;
     int32_t status;
     uint32_t payload_length;
+    uint32_t flags;
 };
 
 /* Records sent only from broker to a TASK_ATTACH connection, after its

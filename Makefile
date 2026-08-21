@@ -82,7 +82,7 @@ BUILD := $(CURDIR)/build
 # that shared answer, so it travels with broker_client.o rather than being
 # listed separately in sixty link lines.
 BROKER_CLIENT_OBJS := $(BUILD)/broker_client.o $(BUILD)/broker-identity.o \
-                      $(BUILD)/ace-modes.o
+                      $(BUILD)/ace-modes.o $(BUILD)/ace-privops.o
 AROS_ROOT ?= $(HOME)/aros
 # Third-party source ACE builds but does not own: Regina and Vim live here,
 # each in its own directory. Both are built entirely out of tree -- every
@@ -464,10 +464,10 @@ $(LHA_AROS_SOURCE_STAMP): $(LHA_AROS_ARCHIVE) | $(BUILD)
 	$(TAR) --extract --gzip --file "$<" --strip-components=1 --directory "$(LHA_AROS_DIR)"
 	touch "$@"
 
-$(BUILD)/native_dos.o: src/native_dos.c src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h src/native_console_endpoint.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/ace_privops.h src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h src/native_console_endpoint.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
-$(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_amiga_posix.h \
+$(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_privops.h src/ace_amiga_posix.h \
                             src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
@@ -760,6 +760,11 @@ $(BUILD)/Info: $(BUILD)/Info.o $(BUILD)/native_command_entry.o \
 
 $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -c $< -o $@
+
+# The one place in ACE that decides an operation needs privilege.  Every
+# command links it, and none of them contains that decision themselves.
+$(BUILD)/ace-privops.o: src/ace_privops.c src/ace_privops.h src/broker_client.h src/ace_modes.h src/ace_mediator_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h src/ace_modes.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
@@ -1933,6 +1938,9 @@ test-device-view: all
 
 test-mediator-broker: all
 	sh tests/mediator_broker_test.sh
+
+test-privileged-file: all
+	sh tests/privileged_file_test.sh
 
 test-assign-missing-target: all
 	sh tests/assign_missing_target_test.sh

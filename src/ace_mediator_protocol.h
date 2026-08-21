@@ -341,6 +341,17 @@ enum ace_mediator_status {
  * quietly change domain.
  */
 #define ACE_MEDIATOR_FLAG_HOST_PATH 0x0020u
+/*
+ * Open for update rather than for writing.
+ *
+ * A separate flag rather than a separate opcode: it is the same operation on
+ * the same object, and what differs is only which ends of the handle the
+ * caller intends to use.  It exists because AmigaDOS MODE_READWRITE and C's
+ * "r+" are real, and a caller that asked for both and silently received a
+ * write-only descriptor would fail later, somewhere else, in a way that
+ * looked like a bug in the file rather than in the request.
+ */
+#define ACE_MEDIATOR_FLAG_UPDATE    0x0040u
 
 /* Length of the per-launch random instance identifier.  Sixteen bytes so
    that guessing it is not a strategy. */

@@ -15,8 +15,12 @@ export CCACHE_PREFIX
 # determine which mode-specific broker a client reaches. ACE's own Makefile
 # keeps the trio in BROKER_CLIENT_OBJS; tine builds separately, so it names
 # all three here.
+# ace-privops.o joins them for the same reason: the posix wrappers reach the
+# filesystem through the privilege seam now, so a build that has the wrappers
+# without the seam does not link.
 ACE_PATH_OBJS := $(ACE_BUILD)/ace-amiga-posix.o $(ACE_BUILD)/broker_client.o \
-                 $(ACE_BUILD)/broker-identity.o $(ACE_BUILD)/ace-modes.o
+                 $(ACE_BUILD)/broker-identity.o $(ACE_BUILD)/ace-modes.o \
+                 $(ACE_BUILD)/ace-privops.o
 
 all: tine
 	strip tine

@@ -3,7 +3,18 @@
 
 #include "ace_amiga_posix.h"
 
+#include "ace_privops.h"
 #include "broker_client.h"
+
+/*
+ * These wrappers are what unmodified third-party code reaches the filesystem
+ * through: LhA and the AROS commands are compiled with open, stat, opendir
+ * and friends redefined to the names below, and Vim through its own pair.
+ * That is what lets the privilege seam cover code nobody edited -- and it is
+ * also why nothing in ACE may ever open a raw host path directly, because
+ * anything that did would silently lose both the escalation and the device
+ * view.
+ */
 
 #include <errno.h>
 #include <limits.h>
@@ -26,7 +37,9 @@ FILE *ace_amiga_posix_fopen(const char *path, const char *mode)
 
     if (host_path(path, resolved) != 0)
         return NULL;
-    return fopen(resolved, mode);
+    /* Routed through the seam so a protected file opens the same way here as
+       everywhere else. */
+    return ace_privops_fopen(resolved, mode);
 }
 
 int ace_amiga_posix_open(const char *path, int flags, ...)
@@ -43,10 +56,7 @@ int ace_amiga_posix_open(const char *path, int flags, ...)
     }
     if (host_path(path, resolved) != 0)
         return -1;
-    if (flags & O_CREAT)
-        result = open(resolved, flags, mode);
-    else
-        result = open(resolved, flags);
+    result = ace_privops_open(resolved, flags, mode);
     return result;
 }
 
@@ -102,7 +112,7 @@ int ace_amiga_posix_stat(const char *path, struct stat *information)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return stat(resolved, information);
+    return ace_privops_stat(resolved, information, 1);
 }
 
 int ace_amiga_posix_lstat(const char *path, struct stat *information)
@@ -111,7 +121,7 @@ int ace_amiga_posix_lstat(const char *path, struct stat *information)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return lstat(resolved, information);
+    return ace_privops_stat(resolved, information, 0);
 }
 
 int ace_amiga_posix_access(const char *path, int mode)
@@ -129,7 +139,7 @@ int ace_amiga_posix_mkdir(const char *path, mode_t mode)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return mkdir(resolved, mode);
+    return ace_privops_mkdir(resolved, mode);
 }
 
 DIR *ace_amiga_posix_opendir(const char *path)
@@ -138,7 +148,7 @@ DIR *ace_amiga_posix_opendir(const char *path)
 
     if (host_path(path, resolved) != 0)
         return NULL;
-    return opendir(resolved);
+    return ace_privops_opendir(resolved);
 }
 
 int ace_amiga_posix_rename(const char *old_path, const char *new_path)
@@ -149,7 +159,7 @@ int ace_amiga_posix_rename(const char *old_path, const char *new_path)
     if (host_path(old_path, old_resolved) != 0 ||
         host_path(new_path, new_resolved) != 0)
         return -1;
-    return rename(old_resolved, new_resolved);
+    return ace_privops_rename(old_resolved, new_resolved);
 }
 
 int ace_amiga_posix_unlink(const char *path)
@@ -158,7 +168,7 @@ int ace_amiga_posix_unlink(const char *path)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return unlink(resolved);
+    return ace_privops_unlink(resolved);
 }
 
 int ace_amiga_posix_remove(const char *path)
@@ -167,7 +177,14 @@ int ace_amiga_posix_remove(const char *path)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return remove(resolved);
+    /* remove() is unlink-or-rmdir, and so is the privileged form: the
+       mediator retries with AT_REMOVEDIR, which is also what AmigaDOS Delete
+       means by one operation. */
+    if (remove(resolved) == 0)
+        return 0;
+    if (errno != EACCES && errno != EPERM)
+        return -1;
+    return ace_privops_unlink(resolved);
 }
 
 int ace_amiga_posix_rmdir(const char *path)
@@ -176,7 +193,11 @@ int ace_amiga_posix_rmdir(const char *path)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return rmdir(resolved);
+    if (rmdir(resolved) == 0)
+        return 0;
+    if (errno != EACCES && errno != EPERM)
+        return -1;
+    return ace_privops_unlink(resolved);
 }
 
 int ace_amiga_posix_chmod(const char *path, mode_t mode)
@@ -185,7 +206,7 @@ int ace_amiga_posix_chmod(const char *path, mode_t mode)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return chmod(resolved, mode);
+    return ace_privops_chmod(resolved, mode);
 }
 
 int ace_amiga_posix_utime(const char *path, const struct utimbuf *times)

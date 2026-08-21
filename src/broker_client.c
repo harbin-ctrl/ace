@@ -638,6 +638,8 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
                    (ace_mode_is_device_view() ?
                         AMIGA_BROKER_MODE_DEVICEVIEW : 0);
     request.owner_uid = (uint32_t)ace_mode_owner_uid();
+    request.privop = 0;
+    request.privop_mode = 0;
 
     /* The descriptors ride with the request header, which is the first thing
        written and always non-empty. */
@@ -810,6 +812,117 @@ static int broker_request_bytes(uint32_t operation,
                                         value, value_length, flags, fds,
                                         fd_count, result, result_size,
                                         result_length);
+        if (outcome == 0)
+            return 0;
+        if (outcome > 0)
+            return -1;
+        broker_disconnect();
+    }
+    return -1;
+}
+
+/*
+ * One privileged file operation, asked of the broker.
+ *
+ * Its own exchange rather than a flag on the ordinary one, because it is the
+ * only request whose reply can carry a descriptor and the only one that names
+ * a mediator operation.  Folding it into the general path would put an
+ * ancillary-data read in front of every getvar in the system.
+ *
+ * The command never speaks to a root process.  It asks the broker, the broker
+ * asks the access worker, and what comes back is a status and -- for the
+ * operations that open something -- a handle to that one object.
+ */
+static int privop_exchange(int fd, uint32_t privop, const char *path,
+                           const char *second, uint32_t flags, uint32_t mode,
+                           int *received_fd)
+{
+    const char *session = broker_session();
+    size_t session_length = strlen(session);
+    size_t path_length = path ? strlen(path) : 0;
+    size_t second_length = second ? strlen(second) : 0;
+    struct amiga_broker_request request;
+    struct amiga_broker_response response;
+    int fds[AMIGA_BROKER_PORT_MAX_FDS];
+    size_t fd_count = 0;
+
+    memset(&request, 0, sizeof(request));
+    request.magic = AMIGA_BROKER_MAGIC;
+    request.operation = AMIGA_BROKER_PRIVOP;
+    request.session_length = (uint32_t)session_length;
+    request.path_length = (uint32_t)path_length;
+    request.value_length = (uint32_t)second_length;
+    request.flags = flags;
+    /* The session's privilege and view, as every request carries: the broker
+       refuses a client that believes it is in a different session. */
+    request.mode = (ace_mode_is_root() ? AMIGA_BROKER_MODE_ROOT : 0) |
+                   (ace_mode_is_device_view() ?
+                        AMIGA_BROKER_MODE_DEVICEVIEW : 0);
+    request.owner_uid = (uint32_t)ace_mode_owner_uid();
+    request.privop = privop;
+    request.privop_mode = mode;
+
+    if (write_all(fd, &request, sizeof(request)) != 0 ||
+        write_all(fd, session, session_length) != 0 ||
+        write_all(fd, path, path_length) != 0 ||
+        write_all(fd, second, second_length) != 0)
+        return -1;
+    if (read_all_with_fds(fd, &response, sizeof(response), fds,
+                          AMIGA_BROKER_PORT_MAX_FDS, &fd_count) != 0)
+        return -1;
+    if (response.magic != AMIGA_BROKER_MAGIC) {
+        while (fd_count--)
+            close(fds[fd_count]);
+        errno = EPROTO;
+        return -1;
+    }
+    /* A descriptor that arrived without the flag, or a flag without its
+       descriptor, means the two sides disagree about what was sent.  Close
+       what came and refuse: guessing here would hand a command a handle to
+       something nobody named. */
+    if ((response.flags & AMIGA_BROKER_RESPONSE_HAS_FD) != 0) {
+        if (fd_count != 1) {
+            while (fd_count--)
+                close(fds[fd_count]);
+            errno = EPROTO;
+            return -1;
+        }
+        if (received_fd)
+            *received_fd = fds[0];
+        else
+            close(fds[0]);
+    } else {
+        while (fd_count--)
+            close(fds[fd_count]);
+    }
+    if (response.status != 0) {
+        errno = response.status;
+        return 1;
+    }
+    return 0;
+}
+
+int native_broker_privop(uint32_t privop, const char *path, const char *second,
+                         uint32_t flags, uint32_t mode, int *received_fd)
+{
+    if (received_fd)
+        *received_fd = -1;
+    /* Two attempts, for the same reason every other request gets two: a held
+       connection can die between requests.  A refusal from the broker is an
+       answer and is never retried. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int fd = broker_connection();
+        int outcome;
+
+        if (fd < 0) {
+            if (native_broker_ensure() != 0)
+                return -1;
+            fd = broker_connection();
+        }
+        if (fd < 0)
+            return -1;
+        outcome = privop_exchange(fd, privop, path, second, flags, mode,
+                                  received_fd);
         if (outcome == 0)
             return 0;
         if (outcome > 0)
@@ -1179,6 +1292,12 @@ int native_broker_task_break_foreground(uint32_t signals)
 int native_broker_task_list(char *result, size_t result_size)
 {
     return broker_request(AMIGA_BROKER_TASK_LIST, NULL, NULL, 0, result,
+                          result_size);
+}
+
+int native_broker_view_root(char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_VIEWROOT, NULL, NULL, 0, result,
                           result_size);
 }
 

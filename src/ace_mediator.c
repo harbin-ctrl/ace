@@ -218,13 +218,20 @@ static int spawn_access_worker(struct mediator_state *state,
     int pair[2];
     pid_t child;
 
-    if (!namespace_is_ready()) {
-        /* Without a namespace the worker would be in the same view as
-           everybody else, which is not wrong but is not what was asked for.
-           Say so rather than quietly handing back a lesser thing. */
-        reply(state, request_id, ACE_MEDIATOR_REFUSED, 0, NULL, 0);
-        return 0;
-    }
+    /*
+     * A namespace is not required.
+     *
+     * It was, while the device view was the only thing an access worker could
+     * reach: a worker outside the namespace would have been unable to see the
+     * one tree it existed for.  Now that protected host paths are the other
+     * half of its job, a worker without a namespace is a perfectly good
+     * worker -- it simply has no device view to offer, and says so by
+     * refusing view-domain requests for want of a root to resolve them under.
+     *
+     * This matters for the ordinary case: a session with --root and no device
+     * view wants exactly this worker, and refusing to make one would mean
+     * escalation only worked for people who had also asked for a device view.
+     */
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) {
         reply(state, request_id, ACE_MEDIATOR_HOST_ERROR, errno, NULL, 0);
         return 0;

@@ -122,4 +122,20 @@ int native_broker_task_set_foreground_pid(pid_t pid);
 int native_broker_task_break_foreground(uint32_t signals);
 int native_broker_task_list(char *result, size_t result_size);
 
+/*
+ * One privileged file operation, performed by the mediator's access worker on
+ * this process's behalf.  privop names the mediator operation; second is the
+ * destination of a rename and NULL otherwise; received_fd takes the
+ * descriptor an opening operation produced.
+ *
+ * Paths are absolute host paths.  Which resolution domain they end up in is
+ * the broker's decision, because that is where path translation lives.
+ */
+int native_broker_privop(uint32_t privop, const char *path, const char *second,
+                         uint32_t flags, uint32_t mode, int *received_fd);
+
+/* Where the mediator put the device roots, or empty for a session without a
+   device view.  Paths beneath it exist only in the mediator's namespace. */
+int native_broker_view_root(char *result, size_t result_size);
+
 #endif

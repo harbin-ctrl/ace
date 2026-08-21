@@ -2327,9 +2327,170 @@ static int send_response_bytes(int fd, int status, const void *payload,
     response.magic = AMIGA_BROKER_MAGIC;
     response.status = status;
     response.payload_length = (uint32_t)length;
+    response.flags = 0;
     if (write_all(fd, &response, sizeof(response)) != 0)
         return -1;
     return length ? write_all(fd, payload, length) : 0;
+}
+
+/*
+ * A response that carries one descriptor.
+ *
+ * SCM_RIGHTS has to ride with real data, so the header is the data it
+ * accompanies.  This is how a protected object reaches the command that asked
+ * for it: the access worker opened it, the broker never looked inside it, and
+ * what the command receives is a handle to that one object rather than any
+ * ability to open another.
+ */
+static int send_response_with_fd(int fd, int status, int passed_fd)
+{
+    struct amiga_broker_response response;
+    struct iovec io;
+    struct msghdr message;
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align;
+    } control;
+    struct cmsghdr *entry;
+    ssize_t sent;
+
+    memset(&response, 0, sizeof(response));
+    response.magic = AMIGA_BROKER_MAGIC;
+    response.status = status;
+    response.payload_length = 0;
+    response.flags = passed_fd >= 0 ? AMIGA_BROKER_RESPONSE_HAS_FD : 0;
+
+    memset(&message, 0, sizeof(message));
+    io.iov_base = &response;
+    io.iov_len = sizeof(response);
+    message.msg_iov = &io;
+    message.msg_iovlen = 1;
+    if (passed_fd >= 0) {
+        message.msg_control = control.bytes;
+        message.msg_controllen = sizeof(control.bytes);
+        entry = CMSG_FIRSTHDR(&message);
+        entry->cmsg_level = SOL_SOCKET;
+        entry->cmsg_type = SCM_RIGHTS;
+        entry->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(entry), &passed_fd, sizeof(passed_fd));
+    }
+    do {
+        sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    return sent < 0 ? -1 : 0;
+}
+
+/*
+ * Ask the mediator's access worker to do one thing, on behalf of a command.
+ *
+ * Everything privileged in an ACE session funnels through here.  The command
+ * has already tried the operation as itself and been refused, or the path is
+ * one only the mediator's namespace contains; either way this is the single
+ * point where a user process's request becomes a root process's action, and
+ * it is worth it being one function in one program.
+ *
+ * The mediator is started on first need rather than at --root, because --root
+ * is permission to ask and not an instruction to authenticate.  A session that
+ * never touches a protected object never raises an authentication prompt.
+ */
+static struct ace_mediator *access_worker;
+
+static int ensure_access_worker(void)
+{
+    if (access_worker)
+        return 0;
+    if (!ace_mode_is_root()) {
+        /* Not an authorised session.  The command's own refusal stands, which
+           is what it would have got without --root. */
+        errno = EACCES;
+        return -1;
+    }
+    if (!mediator) {
+        mediator = ace_mediator_start(ACE_MEDIATOR_CAP_VOLUME |
+                                      ACE_MEDIATOR_CAP_ACCESS);
+        if (!mediator)
+            return -1;
+    }
+    access_worker = ace_mediator_access_worker(mediator);
+    return access_worker ? 0 : -1;
+}
+
+/*
+ * Which domain a path is in, decided here because path translation lives
+ * here.
+ *
+ * A path inside the device view goes as a view-relative one, so the worker
+ * resolves it with RESOLVE_BENEATH and it cannot leave its volume by any
+ * route.  Anything else goes as a host path.  The command never has to know
+ * the difference and is never asked to state it.
+ */
+static const char *privop_domain_path(const char *path, uint32_t *flags)
+{
+    const char *view_root = ace_dos_devices_view_root();
+    size_t length = view_root ? strlen(view_root) : 0;
+
+    if (length && strncmp(path, view_root, length) == 0 &&
+        path[length] == '/' && path[length + 1]) {
+        *flags &= ~(uint32_t)ACE_MEDIATOR_FLAG_HOST_PATH;
+        return path + length + 1;
+    }
+    *flags |= ACE_MEDIATOR_FLAG_HOST_PATH;
+    /* An absolute path becomes one relative to the worker's root, which is
+       the real root.  The leading slash is dropped rather than kept, because
+       the worker refuses an absolute path outright: which root a path is
+       relative to is stated by the domain flag, not by punctuation. */
+    return path[0] == '/' ? path + 1 : path;
+}
+
+static int perform_privileged_operation(const struct amiga_broker_request *request,
+                                        const char *path, const char *value,
+                                        int *received_fd)
+{
+    uint32_t flags = request->flags;
+    const char *first;
+    const char *second = NULL;
+    int status;
+
+    *received_fd = -1;
+    if (!path || !*path || path[0] != '/')
+        return EINVAL;
+    if (ensure_access_worker() != 0)
+        return errno ? errno : EACCES;
+
+    first = privop_domain_path(path, &flags);
+    if (request->privop == ACE_MEDIATOR_ACCESS_RENAME) {
+        uint32_t second_flags = flags;
+
+        if (!value || !*value || value[0] != '/')
+            return EINVAL;
+        second = privop_domain_path(value, &second_flags);
+        /* Both halves must be in the same domain.  A rename that crossed from
+           a volume into the host tree is not a rename this layer can express,
+           and pretending otherwise would resolve the two ends under different
+           rules. */
+        if ((second_flags & ACE_MEDIATOR_FLAG_HOST_PATH) !=
+            (flags & ACE_MEDIATOR_FLAG_HOST_PATH))
+            return EXDEV;
+    }
+
+    status = ace_mediator_access(access_worker, request->privop, first, second,
+                                 flags, request->privop_mode, received_fd);
+    if (status < 0) {
+        /* The channel failed, not the operation.  Drop the worker so the next
+           request builds a fresh one rather than talking to a corpse. */
+        ace_mediator_close(access_worker);
+        access_worker = NULL;
+        return EIO;
+    }
+    if (status == ACE_MEDIATOR_OK)
+        return 0;
+    if (status == ACE_MEDIATOR_ESCAPED)
+        return ELOOP;
+    if (status == ACE_MEDIATOR_UNAUTHORISED || status == ACE_MEDIATOR_REFUSED)
+        return EACCES;
+    if (status == ACE_MEDIATOR_UNSUPPORTED)
+        return ENOSYS;
+    return errno ? errno : EIO;
 }
 
 static int send_response(int fd, int status, const char *payload)
@@ -2774,6 +2935,9 @@ static int handle_client(struct broker_connection *connection)
        below rather than a bare return. */
     int passed_fds[AMIGA_BROKER_PORT_MAX_FDS];
     size_t passed_fd_count = 0;
+
+    int privop_fd = -1;
+    int privop_used = 0;
 
     if (read_message_with_fds(fd, &request, sizeof(request), passed_fds,
                               AMIGA_BROKER_PORT_MAX_FDS,
@@ -3681,11 +3845,28 @@ static int handle_client(struct broker_connection *connection)
         break;
     }
 
+    case AMIGA_BROKER_VIEWROOT:
+        snprintf(result, sizeof(result), "%s", ace_dos_devices_view_root());
+        break;
+
+    case AMIGA_BROKER_PRIVOP:
+        privop_used = 1;
+        status = perform_privileged_operation(&request, path, value,
+                                              &privop_fd);
+        break;
+
     default:
         status = EINVAL;
         break;
     }
-    if (status) {
+    if (privop_used) {
+        /* Its own response, because it may carry a descriptor and the
+           ordinary path cannot. */
+        if (send_response_with_fd(fd, status, privop_fd) != 0)
+            outcome = -1;
+        if (privop_fd >= 0)
+            close(privop_fd);
+    } else if (status) {
         if (send_response(fd, status, strerror(status)) != 0)
             outcome = -1;
     } else if (request.operation == AMIGA_BROKER_RESOLVE ||
@@ -3707,6 +3888,7 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_PORT_PUT ||
                request.operation == AMIGA_BROKER_PORT_BROADCAST ||
                request.operation == AMIGA_BROKER_TASK_LIST ||
+               request.operation == AMIGA_BROKER_VIEWROOT ||
                request.operation == AMIGA_BROKER_STATUS) {
         if (send_response(fd, 0, result) != 0)
             outcome = -1;

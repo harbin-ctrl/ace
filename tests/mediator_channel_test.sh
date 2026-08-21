@@ -147,12 +147,20 @@ else
     printf 'namespace creation not covered\n'
 fi
 
-# The two personalities are two processes.  Without a namespace there is
-# nothing for an access worker to be inside, so asking for one is refused
-# rather than answered with a lesser thing.
+# The two personalities are two processes.
+#
+# A namespace is not required to have one: a worker without a device view is
+# still the right worker for protected host paths, and refusing to make one
+# would mean escalation only worked for sessions that had also asked for a
+# device view.  What such a worker cannot do is resolve a view-domain path,
+# and it says so rather than inventing a root to resolve it under.
 out=$("$probe" access "$mediator") || fail "access probe failed: $out"
-printf '%s\n' "$out" | grep -q '^spawn=failed$' ||
-    fail "an access worker was spawned with no namespace to put it in: $out"
+printf '%s\n' "$out" | grep -q '^spawn=ok$' ||
+    fail "no access worker without a namespace: $out"
+printf '%s\n' "$out" | grep -q '^worker-rootless=1$' ||
+    fail "a worker with no device view resolved a view-domain path: $out"
+printf '%s\n' "$out" | grep -q '^worker-volume=1$' ||
+    fail "the access worker did not refuse a volume operation: $out"
 
 if unshare -Ur -m true 2>/dev/null; then
     out=$(unshare -Ur -m "$probe" access "$mediator") ||
