@@ -111,6 +111,22 @@ output=$(run_shell 'Echo found-through-c
 ')
 expect_contains "$output" "found-through-c" "a bare command did not resolve"
 
+# A failed command must retain its DOS error through the C: fallback. In
+# particular, a missing named assign must not leave IoErr() at zero and make
+# the Shell silently accept the line.
+output=$(run_shell 'NoSuchCommand
+')
+expect_contains "$output" "NoSuchCommand: object not found" \
+    "a nonexistent command did not report object-not-found"
+
+# Alias expansion must remain on the same command path as a directly typed
+# command, including in a fresh broker session.
+output=$(run_shell 'Alias TestAlias Echo alias-through-shell
+TestAlias
+')
+expect_contains "$output" "alias-through-shell" \
+    "an alias did not expand to its command"
+
 # An Amiga filesystem does not distinguish case, so a command answers to any
 # spelling of its name. This is the whole reason anyone can type "dir".
 output=$(run_shell 'echo lower-case-name

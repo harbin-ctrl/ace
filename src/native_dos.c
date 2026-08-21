@@ -2389,9 +2389,22 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         return native_console_open(name);
 
     if (native_named_device_path(name)) {
-        struct DevProc *device = ace_aros_GetDeviceProc(name, NULL);
+        struct DevProc *device;
 
         file = NULL;
+
+        /* A broker assignment is a complete logical path even when the
+           compatibility DosList has not materialised a packet handler for
+           it.  Resolve it directly first.  This is especially important for
+           a fresh root/device-view session: Open("C:") must see the drawer
+           as a directory so Shell.c can apply its implicit-CD behavior. */
+        if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0) {
+            errno = 0;
+            file = ace_privops_fopen(resolved, access);
+            open_errno = errno;
+        }
+
+        device = file ? NULL : ace_aros_GetDeviceProc(name, NULL);
         while (device) {
             if (native_union_candidate(name, device, resolved,
                                        sizeof(resolved)) == 0) {
@@ -2410,10 +2423,11 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         if (file)
             native_ioerr = 0;
         else
-            native_ioerr = open_errno == ENOENT ? ERROR_OBJECT_NOT_FOUND :
-                           open_errno;
+            native_ioerr = open_errno == ENOENT || open_errno == 0 ?
+                           ERROR_OBJECT_NOT_FOUND : open_errno;
     } else if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0) {
-        native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
+        native_ioerr = errno == ENOENT || errno == 0 ?
+                       ERROR_OBJECT_NOT_FOUND : errno;
         return NULL;
     } else {
         errno = 0;
