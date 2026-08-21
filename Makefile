@@ -24,13 +24,18 @@ override CFLAGS += -MMD -MP -MF $(BUILD)/$(@F).d
 # fold this into the protocol magic; a mismatch is then caught on the first
 # field read rather than after a payload has been misparsed.
 ACE_BROKER_PROTOCOL_VERSION := $(shell sha256sum src/broker_protocol.h | cut -c1-8)
+# The mediator's protocol version follows the same rule, and for a sharper
+# reason: the peers are a user process and a root one, so a version they
+# disagree about is a privileged process misreading a payload.
+ACE_MEDIATOR_PROTOCOL_VERSION := $(shell sha256sum src/ace_mediator_protocol.h | cut -c1-8)
 
 # ACE_SYS_DIR used to be given to broker.o alone.  Every client now resolves
 # SYS: too, because the broker's socket name is keyed to it, and a client that
 # resolved a different root would look for its broker on a different socket
 # and never find it.  One definition, given to everything.
 override CFLAGS += -DACE_SYS_DIR='"$(SYSDIR)"' \
-                   -DAMIGA_BROKER_PROTOCOL_VERSION=0x$(ACE_BROKER_PROTOCOL_VERSION)u
+                   -DAMIGA_BROKER_PROTOCOL_VERSION=0x$(ACE_BROKER_PROTOCOL_VERSION)u \
+                   -DACE_MEDIATOR_PROTOCOL_VERSION=0x$(ACE_MEDIATOR_PROTOCOL_VERSION)u
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
 BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
