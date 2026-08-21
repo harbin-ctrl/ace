@@ -297,8 +297,31 @@ static int path_is_mountpoint(const char *path)
  */
 static int ensure_view_root(uid_t served_uid)
 {
+    /*
+     * ACE_MOUNT_ROOT relocates the user's own mount tree, which is a choice
+     * about tidiness rather than about privilege: the mediator still derives
+     * every device path itself, still validates the device, and still names
+     * the leaf.  pkexec scrubs the environment, so a production mediator
+     * never sees this and always uses /run -- it is reachable only by a
+     * mediator launched directly, which is to say by a test.
+     */
+    const char *configured = getenv("ACE_MOUNT_ROOT");
+
     if (view_root[0])
         return 0;
+    if (configured && *configured) {
+        if (snprintf(view_root, sizeof(view_root), "%s/device-roots",
+                     configured) >= (int)sizeof(view_root)) {
+            view_root[0] = '\0';
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        if (make_directory_path(view_root) != 0) {
+            view_root[0] = '\0';
+            return -1;
+        }
+        return 0;
+    }
     if (snprintf(view_root, sizeof(view_root), "/run/ace-%lu/device-roots",
                  (unsigned long)served_uid) >= (int)sizeof(view_root)) {
         view_root[0] = '\0';
@@ -310,6 +333,11 @@ static int ensure_view_root(uid_t served_uid)
         return -1;
     }
     return 0;
+}
+
+const char *ace_mediator_volume_view_root(void)
+{
+    return view_root;
 }
 
 int namespace_is_ready(void)

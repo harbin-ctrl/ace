@@ -58,14 +58,14 @@ printf '%s\n' "$out" | grep -q '^granted=0x2$' ||
 printf '%s\n' "$out" | grep -q '^volume=1$' ||
     fail "expected REFUSED (1) for an ungranted class, got: $out"
 
-# Holding the capability, a class that is contracted but not yet built is
-# answered differently from one that was never granted.  The distinction
+# Holding the capability, an operation that is contracted but not yet built is
+# answered differently from a class that was never granted.  The distinction
 # matters -- a broker built ahead of its mediator must be able to tell "you
-# may not" from "not yet".  The volume class is implemented now, so the access
-# class is what carries this.
+# may not" from "not yet".  The opens are implemented now, so the operations
+# still to come carry this.
 out=$("$probe" unsupported "$mediator") || fail "unsupported probe failed: $out"
 printf '%s\n' "$out" | grep -q '^access=6$' ||
-    fail "expected UNSUPPORTED (6) for a granted but unbuilt class, got: $out"
+    fail "expected UNSUPPORTED (6) for a granted but unbuilt operation, got: $out"
 
 # Giving privilege up mid-session works, and the channel is spent afterwards.
 out=$("$probe" drop "$mediator") || fail "drop probe failed: $out"
@@ -174,11 +174,50 @@ if unshare -Ur -m true 2>/dev/null; then
     # It holds no channel to the volume side, and says so as well.
     printf '%s\n' "$out" | grep -q '^worker-volume=1$' ||
         fail "the access worker did not refuse a volume operation: $out"
-    printf '%s\n' "$out" | grep -q '^worker-access=6$' ||
-        fail "the access class did not report itself unbuilt: $out"
+    # With no view prepared there is no subtree to resolve inside, and the
+    # worker declines rather than falling back to somewhere it invented.
+    printf '%s\n' "$out" | grep -q '^worker-rootless=1$' ||
+        fail "the access worker resolved a path with no view root: $out"
     # Closing one channel must not disturb the other.
     printf '%s\n' "$out" | grep -q '^volume-alive=ok$' ||
         fail "closing the access worker broke the volume channel: $out"
+fi
+
+# What the access worker will open, and what it will not.
+#
+# This is the mechanism the whole design rests on: a root process opens the
+# object, an unprivileged one reads it through the descriptor that comes back,
+# and no unprivileged process ever enters the namespace or holds anything
+# wider than a handle to one file.
+if unshare -Ur -m true 2>/dev/null; then
+    mount_root=$(mktemp -d "$test_dir/mounts.XXXXXX")
+    out=$(ACE_MOUNT_ROOT="$mount_root" unshare -Ur -m "$probe" openat \
+              "$mediator") || fail "openat probe failed: $out"
+    printf '%s\n' "$out" | grep -q '^prepare=0$' ||
+        fail "the view root was not prepared: $out"
+    printf '%s\n' "$out" | grep -q '^read=0$' ||
+        fail "the access worker would not open an ordinary file: $out"
+    # Opened there, read here.
+    printf '%s\n' "$out" | grep -q '^content=ok$' ||
+        fail "the passed descriptor did not read back the file: $out"
+    printf '%s\n' "$out" | grep -q '^dotdot=2$' ||
+        fail "a .. path was not refused as an escape: $out"
+    # An absolute path is not a thing this interface does, so it is refused as
+    # malformed rather than quietly trimmed into something it might accept.
+    printf '%s\n' "$out" | grep -q '^absolute=7$' ||
+        fail "an absolute path was not refused as malformed: $out"
+    # The case that separates resolving-with-constraints from checking a
+    # string: "out/passwd" looks harmless and out is a symlink to /etc.
+    printf '%s\n' "$out" | grep -q '^symlink=2$' ||
+        fail "a symlink out of the tree was followed: $out"
+    printf '%s\n' "$out" | grep -q '^dir=0$' ||
+        fail "a directory would not open for enumeration: $out"
+    printf '%s\n' "$out" | grep -q '^notdir=4$' ||
+        fail "opening a file as a directory did not report a host error: $out"
+    printf '%s\n' "$out" | grep -q '^stat=0$' ||
+        fail "metadata could not be reached: $out"
+    printf '%s\n' "$out" | grep -q '^size=ok$' ||
+        fail "the O_PATH descriptor did not fstat correctly: $out"
 fi
 
 # A channel name that is not a mediator rendezvous is refused before any

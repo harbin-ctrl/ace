@@ -36,6 +36,11 @@ int ace_mediator_volume_dispatch(const struct ace_mediator_request *request,
    see the device view it exists to reach. */
 int namespace_is_ready(void);
 
+/* Where the device roots hang, or "" before the view has been prepared.  The
+   supervisor hands this to the access worker: it is the subtree that worker
+   is allowed to resolve inside, and it is the only one it is given. */
+const char *ace_mediator_volume_view_root(void);
+
 /* Unmount everything this worker mounted, in reverse order.  Called on the
    way out, including the way out that a dead broker causes. */
 void ace_mediator_volume_shutdown(void);

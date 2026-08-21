@@ -18,10 +18,12 @@
 #include "ace_mediator_client.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -29,6 +31,24 @@
 static struct ace_mediator *start(const char *program, uint32_t caps)
 {
     return ace_mediator_start_as(caps, getuid(), program, 0);
+}
+
+/* One typed access request naming a path relative to the view root.  Any
+   descriptor that comes back belongs to the caller. */
+static int access_open(struct ace_mediator *worker, uint32_t operation,
+                       const char *path, int *received)
+{
+    struct ace_mediator_request request;
+    struct ace_mediator_response response;
+
+    *received = -1;
+    memset(&request, 0, sizeof(request));
+    request.operation = operation;
+    request.payload_length = (uint32_t)strlen(path) + 1;
+    if (ace_mediator_request(worker, &request, path, &response, NULL, 0,
+                             received) != 0)
+        return -1;
+    return response.status;
 }
 
 /* One typed mount request: the device named, the type proposed. */
@@ -112,16 +132,16 @@ int main(int argc, char **argv)
     }
 
     if (strcmp(mode, "unsupported") == 0) {
-        /* Holding the capability, a class that is contracted but not yet
-           built answers differently from one that was never granted.  The
-           volume class is implemented now, so the access class is what
-           carries this distinction. */
+        /* Holding the capability, an operation that is contracted but not
+           yet built answers differently from a class that was never granted.
+           The opens are implemented now, so the operations still to come --
+           mkdir among them -- are what carry this distinction. */
         mediator = start(program, ACE_MEDIATOR_CAP_ACCESS);
         if (!mediator) {
             printf("start failed: %s\n", strerror(errno));
             return 1;
         }
-        printf("access=%d\n", class_probe(mediator, ACE_MEDIATOR_ACCESS_STAT));
+        printf("access=%d\n", class_probe(mediator, ACE_MEDIATOR_ACCESS_MKDIR));
         ace_mediator_close(mediator);
         return 0;
     }
@@ -275,7 +295,9 @@ int main(int argc, char **argv)
         /* The volume class, asked of a process that has no volume side. */
         printf("worker-volume=%d\n",
                class_probe(worker, ACE_MEDIATOR_VOLUME_MOUNT));
-        printf("worker-access=%d\n",
+        /* No view has been prepared, so the worker holds no subtree to
+           resolve inside and declines rather than guessing at one. */
+        printf("worker-rootless=%d\n",
                class_probe(worker, ACE_MEDIATOR_ACCESS_STAT));
 
         snprintf(link, sizeof(link), "/proc/%ld/ns/mnt",
@@ -308,6 +330,127 @@ int main(int argc, char **argv)
         /* Closing the worker must not disturb the channel it came from. */
         printf("volume-alive=%s\n",
                ace_mediator_ping(mediator) == 0 ? "ok" : "failed");
+        ace_mediator_close(mediator);
+        return 0;
+    }
+
+    if (strcmp(mode, "openat") == 0) {
+        /*
+         * What the access worker will and will not open.
+         *
+         * The interesting cases are the escapes, and the symlink one most of
+         * all: a check that inspected the string would pass "out/passwd"
+         * happily and only discover where it led after following it.
+         * openat2() applies the constraint during resolution, so there is no
+         * such moment.
+         */
+        struct ace_mediator *worker;
+        struct ace_mediator_request request;
+        struct ace_mediator_response response;
+        char root[PATH_MAX / 2];
+        char scratch[PATH_MAX];
+        int fd = -1;
+
+        mediator = start(program, ACE_MEDIATOR_CAP_VOLUME |
+                                  ACE_MEDIATOR_CAP_ACCESS);
+        if (!mediator) {
+            printf("start failed: %s\n", strerror(errno));
+            return 1;
+        }
+        memset(&request, 0, sizeof(request));
+        request.operation = ACE_MEDIATOR_VOLUME_INIT_NAMESPACE;
+        if (ace_mediator_request(mediator, &request, NULL, &response, NULL, 0,
+                                 NULL) != 0)
+            return 1;
+        if (response.status != ACE_MEDIATOR_OK) {
+            printf("namespace=%d\n", response.status);
+            return 0;
+        }
+        memset(&request, 0, sizeof(request));
+        request.operation = ACE_MEDIATOR_VOLUME_PREPARE_VIEW;
+        if (ace_mediator_request(mediator, &request, NULL, &response, root,
+                                 sizeof(root), NULL) != 0)
+            return 1;
+        if (response.status != ACE_MEDIATOR_OK) {
+            printf("prepare=%d\n", response.status);
+            return 0;
+        }
+        printf("prepare=0\n");
+
+        /* Something to find, something to look inside, and a way out. */
+        snprintf(scratch, sizeof(scratch), "%s/hello", root);
+        {
+            int made = open(scratch, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+            if (made < 0 || write(made, "amiga\n", 6) != 6) {
+                printf("setup failed: %s\n", strerror(errno));
+                return 1;
+            }
+            close(made);
+        }
+        snprintf(scratch, sizeof(scratch), "%s/sub", root);
+        if (mkdir(scratch, 0755) != 0 && errno != EEXIST) {
+            printf("setup failed: %s\n", strerror(errno));
+            return 1;
+        }
+        snprintf(scratch, sizeof(scratch), "%s/out", root);
+        unlink(scratch);
+        if (symlink("/etc", scratch) != 0) {
+            printf("setup failed: %s\n", strerror(errno));
+            return 1;
+        }
+
+        worker = ace_mediator_access_worker(mediator);
+        if (!worker) {
+            printf("spawn=failed\n");
+            return 1;
+        }
+
+        /* An ordinary file, opened and then read here rather than there. */
+        printf("read=%d\n", access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_READ,
+                                         "hello", &fd));
+        if (fd >= 0) {
+            char got[16] = {0};
+            ssize_t length = read(fd, got, sizeof(got) - 1);
+
+            printf("content=%s\n",
+                   length == 6 && strcmp(got, "amiga\n") == 0 ? "ok" : "wrong");
+            close(fd);
+            fd = -1;
+        } else {
+            printf("content=none\n");
+        }
+
+        printf("dotdot=%d\n", access_open(worker,
+                                           ACE_MEDIATOR_ACCESS_OPEN_READ,
+                                           "../hello", &fd));
+        printf("absolute=%d\n", access_open(worker,
+                                             ACE_MEDIATOR_ACCESS_OPEN_READ,
+                                             "/etc/passwd", &fd));
+        /* The one a string check would wave through. */
+        printf("symlink=%d\n", access_open(worker,
+                                            ACE_MEDIATOR_ACCESS_OPEN_READ,
+                                            "out/passwd", &fd));
+        printf("dir=%d\n", access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_DIR,
+                                        "sub", &fd));
+        if (fd >= 0) { close(fd); fd = -1; }
+        printf("notdir=%d\n", access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_DIR,
+                                           "hello", &fd));
+        printf("stat=%d\n", access_open(worker, ACE_MEDIATOR_ACCESS_STAT,
+                                         "hello", &fd));
+        if (fd >= 0) {
+            struct stat information;
+
+            printf("size=%s\n",
+                   fstat(fd, &information) == 0 && information.st_size == 6
+                       ? "ok" : "wrong");
+            close(fd);
+            fd = -1;
+        } else {
+            printf("size=none\n");
+        }
+
+        ace_mediator_close(worker);
         ace_mediator_close(mediator);
         return 0;
     }

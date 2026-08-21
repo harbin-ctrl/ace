@@ -13,6 +13,6 @@
  * the caller is expected to _exit() immediately afterwards -- this process
  * exists for one channel and has nothing to do once it is gone.
  */
-void ace_mediator_access_serve(int fd, uid_t served_uid);
+void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root);
 
 #endif

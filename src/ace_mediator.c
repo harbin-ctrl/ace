@@ -243,7 +243,8 @@ static int spawn_access_worker(struct mediator_state *state,
         /* The supervisor's channel is not this process's business.  Closing
            it is what makes the isolation structural rather than declared. */
         close(state->fd);
-        ace_mediator_access_serve(pair[1], state->served_uid);
+        ace_mediator_access_serve(pair[1], state->served_uid,
+                                  ace_mediator_volume_view_root());
         _exit(0);
     }
     close(pair[1]);

@@ -26,11 +26,117 @@
 #include "ace_mediator_access.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/openat2.h>
 #include <poll.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#ifndef SYS_openat2
+#define SYS_openat2 437
+#endif
+
+/* The directory every path in this process is resolved beneath.  Opened once,
+   at start, and never re-derived from a string: a subtree that is looked up
+   again each time is a subtree that can change between the check and the
+   use. */
+static int view_root_fd = -1;
+
+/*
+ * Resolve one relative path beneath the view root, and nothing else.
+ *
+ * RESOLVE_BENEATH is what makes "..", an absolute path, and a symlink
+ * pointing out of the tree into refusals rather than into a walk that happens
+ * to end up somewhere else.  RESOLVE_NO_MAGICLINKS stops the magic links
+ * under procfs, the descriptor ones especially, from being a way back out.  Symlinks *within* the tree
+ * still work, because a Linux symlink keeps its Linux meaning inside an ACE
+ * volume and following one is what the user asked for.
+ *
+ * openat2() rather than a check followed by an open: the kernel applies the
+ * constraint during resolution, so there is no window between deciding a path
+ * is acceptable and using it.
+ */
+static int resolve_beneath(const char *relative, uint64_t flags,
+                           int32_t *status)
+{
+    struct open_how how;
+    int fd;
+
+    memset(&how, 0, sizeof(how));
+    how.flags = flags;
+    how.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS;
+    fd = (int)syscall(SYS_openat2, view_root_fd, relative, &how, sizeof(how));
+    if (fd >= 0)
+        return fd;
+    /* EXDEV and ELOOP are what RESOLVE_BENEATH reports when a path tried to
+       leave.  They are not ordinary failures and should not be reported as
+       "denied" -- "it tried to get out" is a different sentence. */
+    if (errno == EXDEV || errno == ELOOP)
+        *status = ACE_MEDIATOR_ESCAPED;
+    else
+        *status = ACE_MEDIATOR_HOST_ERROR;
+    return -1;
+}
+
+/* A path this worker will consider: relative, terminated, and not empty.  An
+   absolute path is refused outright rather than trimmed, because a caller
+   that sent one meant something this interface does not do. */
+static const char *checked_relative(const void *payload, uint32_t length)
+{
+    const char *bytes = payload;
+
+    if (!bytes || length < 2 || bytes[length - 1] != '\0')
+        return NULL;
+    if (bytes[0] == '/' || bytes[0] == '\0')
+        return NULL;
+    if (strnlen(bytes, length) != length - 1)
+        return NULL;
+    return bytes;
+}
+
+/* Reply carrying the descriptor the operation produced.  The worker never
+   serialises metadata: it hands back an open handle and lets the ordinary
+   user process do the interpreting, which is both fewer bytes of protocol to
+   get wrong and the thing that keeps bulk I/O out of this process. */
+static int send_reply_fd(int fd, uint64_t request_id, int passed_fd)
+{
+    struct ace_mediator_response response;
+    struct iovec io;
+    struct msghdr message;
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align;
+    } control;
+    struct cmsghdr *entry;
+    ssize_t sent;
+
+    memset(&response, 0, sizeof(response));
+    response.magic = ACE_MEDIATOR_MAGIC;
+    response.request_id = request_id;
+    response.status = ACE_MEDIATOR_OK;
+    response.flags = ACE_MEDIATOR_FLAG_HAS_FD;
+
+    memset(&message, 0, sizeof(message));
+    io.iov_base = &response;
+    io.iov_len = sizeof(response);
+    message.msg_iov = &io;
+    message.msg_iovlen = 1;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    entry = CMSG_FIRSTHDR(&message);
+    entry->cmsg_level = SOL_SOCKET;
+    entry->cmsg_type = SCM_RIGHTS;
+    entry->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(entry), &passed_fd, sizeof(passed_fd));
+    do {
+        sent = sendmsg(fd, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    return sent < 0 ? -1 : 0;
+}
 
 static int send_reply(int fd, uint64_t request_id, int32_t status,
                       int host_errno)
@@ -49,9 +155,65 @@ static int send_reply(int fd, uint64_t request_id, int32_t status,
     return sent < 0 ? -1 : 0;
 }
 
-void ace_mediator_access_serve(int fd, uid_t served_uid)
+/*
+ * One typed operation on one exact object.
+ *
+ * Every one of these opens something and hands the descriptor back.  There is
+ * no operation that reads, writes, lists, or copies: those happen in the
+ * user's own process, on the handle this returned.  The privileged part is
+ * the single open() that needed to be privileged, and what crosses back is a
+ * capability to one object rather than the power to reach others.
+ */
+static int perform(int channel, const struct ace_mediator_request *request,
+                   const void *payload)
 {
-    (void)served_uid; /* Used by the typed operations in chunk D. */
+    const char *relative;
+    int32_t status = ACE_MEDIATOR_HOST_ERROR;
+    uint64_t flags;
+    int opened;
+
+    switch (request->operation) {
+    case ACE_MEDIATOR_ACCESS_OPEN_READ:
+        flags = O_RDONLY | O_CLOEXEC;
+        break;
+    case ACE_MEDIATOR_ACCESS_OPEN_DIR:
+        flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
+        break;
+    case ACE_MEDIATOR_ACCESS_STAT:
+        /* O_PATH: enough to fstat through, and not enough to read.  Examine
+           does not need the contents and should not be handed them. */
+        flags = O_PATH | O_CLOEXEC;
+        break;
+    default:
+        return send_reply(channel, request->request_id,
+                          ACE_MEDIATOR_UNSUPPORTED, ENOSYS);
+    }
+
+    if (view_root_fd < 0)
+        return send_reply(channel, request->request_id, ACE_MEDIATOR_REFUSED,
+                          0);
+    relative = checked_relative(payload, request->payload_length);
+    if (!relative)
+        return send_reply(channel, request->request_id,
+                          ACE_MEDIATOR_PROTOCOL_ERROR, 0);
+
+    opened = resolve_beneath(relative, flags, &status);
+    if (opened < 0)
+        return send_reply(channel, request->request_id, status, errno);
+    if (send_reply_fd(channel, request->request_id, opened) != 0) {
+        close(opened);
+        return -1;
+    }
+    close(opened);
+    return 0;
+}
+
+void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root)
+{
+    (void)served_uid; /* Ownership of created files arrives with OPEN_WRITE. */
+
+    if (view_root && *view_root)
+        view_root_fd = open(view_root, O_PATH | O_DIRECTORY | O_CLOEXEC);
 
     for (;;) {
         struct ace_mediator_request request;
@@ -107,6 +269,7 @@ void ace_mediator_access_serve(int fd, uid_t served_uid)
             send_reply(fd, request.request_id, ACE_MEDIATOR_REFUSED, 0);
             continue;
         }
-        send_reply(fd, request.request_id, ACE_MEDIATOR_UNSUPPORTED, ENOSYS);
+        if (perform(fd, &request, payload) != 0)
+            return;
     }
 }
