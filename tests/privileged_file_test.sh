@@ -58,8 +58,10 @@ fi
 
 start_broker()
 {
-    ACE_BROKER_SOCKET="$socket_path" "$repo_dir/build/ace-broker" "$1" \
-        --mountview "$socket_path" &
+    broker_args=
+    [ "${1-}" = "--root" ] && broker_args=--root
+    ACE_BROKER_SOCKET="$socket_path" "$repo_dir/build/ace-broker" \
+        ${broker_args:+'--root'} "$socket_path" &
     broker_pid=$!
     for _ in $(seq 1 400); do
         [ -S "$socket_path" ] && return 0
@@ -85,8 +87,10 @@ ace()
 {
     privilege=$1
     shift
+    view=mount
+    [ "$privilege" = root ] && view=device
     ACE_BROKER_SOCKET="$socket_path" ACE_MODE_PRIVILEGE="$privilege" \
-        ACE_MODE_VIEW=mount ACE_MODE_OWNER_UID="$owner_uid" "$@"
+        ACE_MODE_VIEW="$view" ACE_MODE_OWNER_UID="$owner_uid" "$@"
 }
 
 # An authorised session reaches it.
@@ -117,7 +121,7 @@ stop_broker
 # Without --root the same operation is refused, and the refusal is the
 # ordinary one the user would have had with no mediator at all.
 sudo -n sh -c "printf 'top-secret\n' > $secret && chmod 600 $secret"
-start_broker --user || fail 'the unprivileged broker did not start'
+start_broker || fail 'the unprivileged broker did not start'
 if ace user "$repo_dir/build/Type" "$name" >/dev/null 2>&1; then
     fail 'an unauthorised session read the protected file'
 fi

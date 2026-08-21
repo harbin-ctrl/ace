@@ -58,22 +58,17 @@ int ace_mode_parse(int *argc, char **argv, struct ace_mode_options *options)
     for (int index = 1; index < *argc; index++) {
         if (strcmp(argv[index], "--root") == 0)
             options->root = 1;
-        else if (strcmp(argv[index], "--user") == 0)
-            options->user = 1;
-        else if (strcmp(argv[index], "--deviceview") == 0)
-            options->device_view = 1;
-        else if (strcmp(argv[index], "--mountview") == 0)
-            options->mount_view = 1;
+        else if (strcmp(argv[index], "--user") == 0 ||
+                 strcmp(argv[index], "--deviceview") == 0 ||
+                 strcmp(argv[index], "--mountview") == 0) {
+            errno = EINVAL;
+            return -1;
+        }
         else
             argv[output++] = argv[index];
     }
     argv[output] = NULL;
     *argc = output;
-    if ((options->root && options->user) ||
-        (options->device_view && options->mount_view)) {
-        errno = EINVAL;
-        return -1;
-    }
     return 0;
 }
 
@@ -113,7 +108,6 @@ static int configure(const struct ace_mode_options *options, int identity_only)
      * in, and it is a separate process that cannot ask.
      */
     const char *inherited_privilege = getenv(ACE_MODE_PRIVILEGE_ENV);
-    const char *inherited_view = getenv(ACE_MODE_VIEW_ENV);
     int root;
     int device_view;
     char owner_text[32];
@@ -132,27 +126,12 @@ static int configure(const struct ace_mode_options *options, int identity_only)
         errno = EPERM;
         return -1;
     }
-    if (options->root)
-        root = 1;
-    else if (options->user)
-        root = 0;
-    else
-        root = inherited_privilege &&
-               strcmp(inherited_privilege, "root") == 0;
-    if (options->device_view)
-        device_view = 1;
-    else if (options->mount_view)
-        device_view = 0;
-    else if (inherited_view && strcmp(inherited_view, "device") == 0)
-        device_view = 1;
-    else if (inherited_view && strcmp(inherited_view, "mount") == 0)
-        device_view = 0;
-    else
-        device_view = root;
-    if (device_view && !root) {
-        errno = EACCES;
-        return -1;
-    }
+    root = options->root || (inherited_privilege &&
+                             strcmp(inherited_privilege, "root") == 0);
+    /* The view is no longer a product choice.  A normal session uses the
+       host's existing mounts; an authorised session gets the mediator-owned
+       device view as part of that authorization. */
+    device_view = root;
     (void)identity_only;
     configured_root = root;
     configured_device_view = device_view;
@@ -207,14 +186,4 @@ uid_t ace_mode_owner_uid(void)
     if (configured_owner == (uid_t)-1)
         configured_owner = initial_owner_uid();
     return configured_owner;
-}
-
-const char *ace_mode_privilege_switch(void)
-{
-    return ace_mode_is_root() ? "--root" : "--user";
-}
-
-const char *ace_mode_view_switch(void)
-{
-    return ace_mode_is_device_view() ? "--deviceview" : "--mountview";
 }

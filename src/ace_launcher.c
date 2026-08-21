@@ -37,8 +37,7 @@ int main(int argc, char **argv)
     pid_t child;
 
     if (ace_mode_parse(&argc, argv, &modes) != 0) {
-        fprintf(stderr, "usage: %s [--root|--user] "
-                        "[--deviceview|--mountview]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--root]\n", argv[0]);
         return RETURN_FAIL;
     }
     if (ace_mode_configure(&modes) != 0) {
@@ -55,8 +54,7 @@ int main(int argc, char **argv)
         return RETURN_FAIL;
     }
     if (argc != 1) {
-        fprintf(stderr, "usage: %s [--root|--user] "
-                        "[--deviceview|--mountview]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--root]\n", argv[0]);
         return RETURN_FAIL;
     }
     if (!session || !*session)

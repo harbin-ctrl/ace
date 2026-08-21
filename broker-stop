@@ -21,11 +21,8 @@ for argument in "$@"; do
             mode_args+=("$argument")
             root_requested=1
             ;;
-        --user|--deviceview|--mountview)
-            mode_args+=("$argument")
-            ;;
         *)
-            printf 'usage: %s [--root|--user] [--deviceview|--mountview]\n' \
+            printf 'usage: %s [--root]\n' \
                 "${BASH_SOURCE[0]}" >&2
             if (( sourced )); then return 2; else exit 2; fi
             ;;

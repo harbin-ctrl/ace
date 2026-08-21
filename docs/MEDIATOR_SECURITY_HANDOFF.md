@@ -590,14 +590,21 @@ them.
 Adapt `src/native_dos.c`, `src/ace_amiga_posix.c`, and the broker path seam.
 Do not edit commands one at a time.
 
-### Chunk E: policy, hardening, install, documentation
+### Chunk E: policy, hardening, install, documentation (complete)
 
-`--root` becomes authorization only. Retire `--user`, `--deviceview`, and
-`--mountview` from the normal product path. Test ordinary operations, denied
-operations without `--root`, mediator death, broker death, stale channels,
-malformed packets, path traversal, symlink escapes, cross-class requests, and
-cancellation. Verify the console keeps the user's menu, colours, fonts, D-Bus
-session, and configuration while protected operations succeed.
+`--root` is now authorization only. `--user`, `--deviceview`, and
+`--mountview` are rejected by the product CLI; the broker chooses its internal
+view from the authorization policy. The mediator launch tries silent
+`sudo -n` first and falls back to the ACE-specific `org.ace.Ace.mediator`
+polkit action, with generic `pkexec` retained for installs whose user-local
+policy directory is not searched by polkit.
+
+The full test target set covers ordinary and denied operations, mediator and
+broker death, stale channels, malformed packets, path traversal, symlink
+escapes, cross-class requests, cancellation, and the protected-file end to
+end path. `make install` installs the action, desktop launcher, matching
+binaries, and optional companions. The remaining mediator gaps are the path
+resolution, talky reporting, and unsupported DOS-call items recorded below.
 
 Run the full suite, `make install`, update `README.md`, `HANDOFF.md`, and
 `TODO.md`. Do not leave a root GUI or root broker running as a test artifact.
@@ -693,4 +700,3 @@ The central security/product decision is now:
 > privileged operations from a root mediator. The mediator has a volume-view
 > personality and a separate protected-operation personality, but it is not a
 > root shell and it does not own user state.
-

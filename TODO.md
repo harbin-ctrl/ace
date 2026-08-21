@@ -5,6 +5,11 @@ is and how it is built; this file is only for outstanding items, with enough
 evidence attached that whoever picks one up does not have to rediscover why it
 matters.
 
+The mediator policy pass is complete: `--root` is authorization-only, the
+legacy mode/view switches are retired, and the installed polkit action is
+`org.ace.Ace.mediator`. Remaining mediator gaps are listed below where they
+affect path resolution, command reporting, or unsupported DOS calls.
+
 ## Also open
 
 Smaller items found alongside the above, in rough order of value.

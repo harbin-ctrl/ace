@@ -9,12 +9,9 @@
 
 struct ace_mode_options {
     int root;
-    int user;
-    int device_view;
-    int mount_view;
 };
 
-/* Remove ACE's four mode switches from argv, preserving every other word. */
+/* Remove ACE's authorization switch from argv, preserving every other word. */
 int ace_mode_parse(int *argc, char **argv, struct ace_mode_options *options);
 
 /* Validate the requested combination, apply defaults, and publish it.  Fails
@@ -28,7 +25,5 @@ int ace_mode_configure_identity(const struct ace_mode_options *options);
 int ace_mode_is_root(void);
 int ace_mode_is_device_view(void);
 uid_t ace_mode_owner_uid(void);
-const char *ace_mode_privilege_switch(void);
-const char *ace_mode_view_switch(void);
 
 #endif

@@ -27,63 +27,32 @@ fail()
 
 broker="$repo_dir/build/ace-broker"
 ctl="$repo_dir/build/ace-brokerctl"
-root_mount=$($broker --root --mountview --print-socket)
-root_device=$($broker --root --deviceview --print-socket)
 
-[ "$($broker --root --print-socket)" = "$root_device" ] ||
-    fail '--root did not default to device view'
 if [ "$(id -u)" -eq 0 ]; then
-    if $broker --user --print-socket >/dev/null 2>&1; then
-        fail '--user print-socket succeeded under uid 0'
+    if $broker --print-socket >/dev/null 2>&1 ||
+       $broker --root --print-socket >/dev/null 2>&1; then
+        fail 'ACE accepted a root-owned session'
     fi
-    [ "$($broker --print-socket)" = "$root_device" ] ||
-        fail 'uid 0 did not default to root/device view'
 else
-    user_mount=$($broker --user --mountview --print-socket)
-    [ "$($broker --user --print-socket)" = "$user_mount" ] ||
-        fail '--user did not default to mount view'
-    [ "$($broker --print-socket)" = "$user_mount" ] ||
-        fail 'an ordinary user did not default to user/mount view'
-    [ "$user_mount" != "$root_mount" ] ||
-        fail 'user and root brokers have the same identity'
+    user_mount=$($broker --print-socket)
+    root_device=$($broker --root --print-socket)
+    [ "$user_mount" != "$root_device" ] ||
+        fail 'user and root authorization sockets have the same identity'
     case "$user_mount" in *-u"$(id -u)"-um-*) ;; *)
         fail "user/mount socket does not encode its mode: $user_mount" ;;
     esac
+    case "$root_device" in *-u"$(id -u)"-rd-*) : ;; *)
+        fail "root authorization socket does not retain the originating uid: $root_device" ;;
+    esac
+    for retired in --user --deviceview --mountview; do
+        if $broker "$retired" --print-socket >/dev/null 2>&1; then
+            fail "$retired was still accepted"
+        fi
+    done
 fi
 
-[ "$root_mount" != "$root_device" ] ||
-    fail 'mount and device-view brokers have the same identity'
-case "$root_device" in *-u"$(id -u)"-rd-*) ;; *)
-    fail "root/device socket does not retain the originating uid: $root_device" ;;
-esac
-
-if $broker --root --user --print-socket >/dev/null 2>&1; then
-    fail '--root and --user were accepted together'
-fi
-if $broker --deviceview --mountview --print-socket >/dev/null 2>&1; then
-    fail '--deviceview and --mountview were accepted together'
-fi
-
-if [ "$(id -u)" -ne 0 ]; then
-    if $broker --user --deviceview "$test_dir/impossible.sock" \
-        >/dev/null 2>&1; then
-        fail 'an unprivileged device view started'
-    fi
-else
-    if $broker --user --mountview "$test_dir/impossible.sock" \
-        >/dev/null 2>&1; then
-        fail '--user started under uid 0'
-    fi
-fi
-
-privilege_switch=--user
-privilege_name=user
-if [ "$(id -u)" -eq 0 ]; then
-    privilege_switch=--root
-    privilege_name=root
-fi
 ACE_MODE_OWNER_UID="$(id -u)" ACE_BROKER_SOCKET="$socket_path" \
-    $broker "$privilege_switch" --mountview "$socket_path" &
+    $broker "$socket_path" &
 broker_pid=$!
 for _ in $(seq 1 100); do
     [ -S "$socket_path" ] && break
@@ -91,10 +60,10 @@ for _ in $(seq 1 100); do
 done
 [ -S "$socket_path" ] || fail 'user/mount broker did not start'
 
-status=$(ACE_MODE_VIEW=mount ACE_MODE_OWNER_UID="$(id -u)" \
-    ACE_BROKER_SOCKET="$socket_path" "$ctl" status) ||
-    fail 'matching client could not reach broker'
-case "$status" in *"privilege"*"$privilege_name"*"view"*"mount"*) ;; *)
+status=$(ACE_MODE_PRIVILEGE=user ACE_MODE_VIEW=mount \
+    ACE_MODE_OWNER_UID="$(id -u)" ACE_BROKER_SOCKET="$socket_path" \
+    "$ctl" status) || fail 'matching client could not reach broker'
+case "$status" in *"privilege"*user*"view"*mount*) ;; *)
     fail "broker did not report its active mode: $status" ;;
 esac
 
@@ -104,4 +73,4 @@ if ACE_MODE_VIEW=mount ACE_MODE_OWNER_UID="$wrong_uid" \
     fail 'broker accepted a client with a different originating uid'
 fi
 
-printf 'ACE privilege and filesystem-view mode tests passed\n'
+printf 'ACE authorization policy and default-view tests passed\n'

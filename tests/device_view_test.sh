@@ -67,7 +67,7 @@ fail()
 
 as_root env ACE_MODE_OWNER_UID="$owner_uid" \
     ACE_BROKER_SOCKET="$socket_path" ACE_MOUNT_ROOT="$test_dir/mounts" \
-    "$repo_dir/build/ace-broker" --root --deviceview "$socket_path" &
+    "$repo_dir/build/ace-broker" --root "$socket_path" &
 launcher_pid=$!
 for _ in $(seq 1 100); do
     [ -S "$socket_path" ] && break

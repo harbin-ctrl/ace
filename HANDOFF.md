@@ -9,7 +9,7 @@ Two hosts are set up, both building and passing the full test suite:
 
 `make install` installs into `~/.local/bin` and needs no privileges. A
 system-wide install is a `PREFIX` override --
-`sudo make PREFIX=/usr/local AROS_ROOT="$HOME/aros" install` -- with
+`sudo make PREFIX=/usr/local POLKIT_ACTIONDIR=/usr/share/polkit-1/actions AROS_ROOT="$HOME/aros" install` -- with
 `AROS_ROOT` passed explicitly because `sudo` resets `$HOME` and the Makefile
 defaults `AROS_ROOT` to `$HOME/aros`; without it the build looks for AROS
 under `/root` and the install fails before it copies anything.
@@ -43,6 +43,14 @@ The real AROS `EndCLI.c` is included. Its state change is carried across the
 child command process and stops the parent shell. Ordinary host commands are
 not searched through `PATH`; `LNX` is the explicit direct Linux executable
 escape hatch.
+
+The public startup policy is intentionally small. No switch starts an
+ordinary user session; `--root` authorizes lazy requests to the separate
+privileged mediator. The old `--user`, `--deviceview`, and `--mountview`
+switches are retired. The broker selects the ordinary host view or the
+mediator-backed device view from that authorization policy internally. Sudo
+is tried noninteractively first; when that is unavailable, the mediator uses
+the installed `org.ace.Ace.mediator` polkit action.
 
 `Edit`, the AmigaDOS line editor, is the one command here that is written
 rather than ported: AROS has no source for it, so `src/edit.c` follows the

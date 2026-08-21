@@ -64,6 +64,7 @@ BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 APPLICATIONSDIR ?= $(DATADIR)/applications
 ICONDIR ?= $(DATADIR)/icons/hicolor/512x512/apps
+POLKIT_ACTIONDIR ?= $(DATADIR)/polkit-1/actions
 # What SYS: means on this host: the boot volume's root, laid out the Amiga way
 # so C: really is SYS:C and S: really is SYS:S. The binaries themselves stay in
 # BINDIR, where a Linux user's PATH can reach them and where every "look for
@@ -1601,10 +1602,15 @@ install: all tine
 	done
 	$(INSTALL) -m 0644 data/Startup-Sequence $(DESTDIR)$(SYSDIR)/S/Startup-Sequence
 	$(INSTALL) -m 0644 data/Shell-Startup $(DESTDIR)$(SYSDIR)/S/Shell-Startup
-	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR)
+	$(INSTALL) -d $(DESTDIR)$(APPLICATIONSDIR) $(DESTDIR)$(ICONDIR) \
+	              $(DESTDIR)$(POLKIT_ACTIONDIR)
 	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
 	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
 	$(INSTALL) -m 0644 assets/ace.png $(DESTDIR)$(ICONDIR)/ace.png
+	sed 's|@BINDIR@|$(BINDIR)|g' data/org.ace.Ace.mediator.policy > \
+	              $(BUILD)/org.ace.Ace.mediator.policy
+	$(INSTALL) -m 0644 $(BUILD)/org.ace.Ace.mediator.policy \
+	              $(DESTDIR)$(POLKIT_ACTIONDIR)/org.ace.Ace.mediator.policy
 	# Vim, Regina and LhA, after the base install rather than as ordinary
 	# prerequisites of it. Order matters: install-regina checks that
 	# ace-user-shell is already beside the rexx it installs, and as a

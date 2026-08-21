@@ -164,8 +164,7 @@ int main(int argc, char **argv)
     int status;
 
     if (ace_mode_parse(&argc, argv, &modes) != 0 || argc != 1) {
-        fprintf(stderr, "usage: %s [--root|--user] "
-                        "[--deviceview|--mountview]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--root]\n", argv[0]);
         return 20;
     }
     if (ace_mode_configure(&modes) != 0) {

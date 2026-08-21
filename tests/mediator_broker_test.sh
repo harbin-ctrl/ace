@@ -51,7 +51,7 @@ broker="$repo_dir/build/ace-broker"
 ctl="$repo_dir/build/ace-brokerctl"
 
 # Started as the user, with no sudo in front of it.  That is the change.
-ACE_BROKER_SOCKET="$socket_path" "$broker" --root --deviceview "$socket_path" &
+ACE_BROKER_SOCKET="$socket_path" "$broker" --root "$socket_path" &
 broker_pid=$!
 for _ in $(seq 1 400); do
     [ -S "$socket_path" ] && break
@@ -132,7 +132,7 @@ broker_pid=
 # Running ACE as root is refused rather than accommodated: a root shell would
 # have root's session bus, configuration and HOME, and would be a different
 # user's desktop wearing this one's name.
-if sudo -n "$broker" --root --deviceview "$test_dir/refused.sock" \
+if sudo -n "$broker" --root "$test_dir/refused.sock" \
         >"$test_dir/asroot.out" 2>&1; then
     fail 'the broker started as root'
 fi

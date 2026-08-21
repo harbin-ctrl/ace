@@ -15,31 +15,19 @@ Edified Tine. Its submotto is *Back in Tine.*
 
 ```sh
 make
-./build/ace-broker --user --mountview
+./build/ace-broker
 ```
 
 The broker takes an optional socket path. With none, the name distinguishes
-the originating user, privilege mode, view mode, SYS: root, and protocol
-version. One broker serves the matching ACE processes: a second one started
-on the same socket reports that one is already running and exits rather than
-displacing it.
-
-ACE has two independent pairs of startup switches:
-
-- `--root` requires full root privilege. When invoked by a user it first tries
-  `sudo`, then `pkexec`, and fails if neither can grant it. `--user` rejects a
-  process already running as root.
-- `--deviceview` exposes the true top of every supported block-backed
-  filesystem through private bind roots and therefore requires root.
-  `--mountview` uses Linux's current mount tree, which is ACE's traditional
-  behavior.
-
-With no switches, a user process selects `--user --mountview`; a root process
-selects `--root --deviceview`. The explicit mates can be combined, notably
-`--root --mountview`. `--root`/`--user` and
-`--deviceview`/`--mountview` are mutually exclusive pairs. Device view
-currently supports ext2, ext3, ext4, and vfat block devices. Btrfs, procfs,
-sysfs, and other synthetic filesystems are not part of this model yet.
+the originating user, authorization policy, view, SYS: root, and protocol
+version. A normal session uses the host's existing mount tree. Start ACE with
+`--root` when protected filesystem operations may request the separate root
+mediator; the shell, console, and broker remain the logged-in user. Sudo is
+tried noninteractively first, so a configured `sudo -n` path stays quiet;
+otherwise polkit asks for authorization only when a protected operation first
+needs it. Device view currently supports ext2, ext3, ext4, and vfat block
+devices. Btrfs, procfs, sysfs, and other synthetic filesystems are not part of
+this model yet.
 
 In device view the broker creates a private mount namespace, makes the host
 mount tree private, and non-recursively bind-mounts each already-mounted
@@ -73,7 +61,8 @@ A system-wide install is an ordinary `PREFIX` override rather than a target of
 its own:
 
 ```sh
-sudo make PREFIX=/usr/local AROS_ROOT="$HOME/aros" install
+sudo make PREFIX=/usr/local POLKIT_ACTIONDIR=/usr/share/polkit-1/actions \
+  AROS_ROOT="$HOME/aros" install
 ```
 
 `AROS_ROOT` has to be passed explicitly there because `sudo` resets `$HOME`.
@@ -143,8 +132,8 @@ set of companions.
 For testing, the project also provides quiet lifecycle commands:
 
 ```sh
-source ./broker-start --user --mountview
-source ./broker-stop --user --mountview
+source ./broker-start
+source ./broker-stop
 ```
 
 When sourced, `broker-start` also prepends `build/` to `PATH`, and
@@ -153,7 +142,7 @@ child script cannot modify its parent shell's environment. Both commands also
 work as ordinary executables for broker lifecycle control, but only the
 source form changes `PATH`.
 
-Both commands accept the four ACE mode switches and honor
+Both commands accept the optional `--root` authorization switch and honor
 `ACE_BROKER_SOCKET`; an optional
 `ACE_BROKER_PIDFILE` selects the PID-file location. If the socket
 variable is unset, they use the same default as the DOS client.

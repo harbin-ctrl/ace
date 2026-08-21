@@ -159,6 +159,8 @@ static int mediator_program(char *result, size_t result_size)
  */
 enum elevation { ELEVATE_NONE, ELEVATE_SUDO, ELEVATE_PKEXEC };
 
+#define ACE_POLKIT_ACTION "org.ace.Ace.mediator"
+
 static int probe_succeeds(char *const arguments[])
 {
     pid_t child = fork();
@@ -197,6 +199,41 @@ static enum elevation choose_elevation(void)
     if (access("/usr/bin/pkexec", X_OK) == 0)
         return ELEVATE_PKEXEC;
     return ELEVATE_NONE;
+}
+
+/*
+ * Authorise the broker's process for ACE's action before asking pkexec to
+ * start the mediator.  pkexec's built-in action is intentionally generic;
+ * this explicit check gives desktop policy a stable ACE-specific action and
+ * lets installations grant or audit ACE without broadening the policy for
+ * arbitrary pkexec commands.  sudo remains the first choice when its
+ * noninteractive probe succeeds, so a configured NOPASSWD setup never nags.
+ */
+static int polkit_authorise(pid_t broker_pid)
+{
+    char process[32];
+    char *const arguments[] = {
+        (char *)"/usr/bin/pkcheck", (char *)"--action-id",
+        (char *)ACE_POLKIT_ACTION, (char *)"--process", process,
+        (char *)"--allow-user-interaction", NULL
+    };
+
+    if (snprintf(process, sizeof(process), "%ld", (long)broker_pid) >=
+        (int)sizeof(process)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return probe_succeeds(arguments) ? 0 : -1;
+}
+
+static int polkit_action_available(void)
+{
+    char *const arguments[] = {
+        (char *)"/usr/bin/pkaction", (char *)"--action-id",
+        (char *)ACE_POLKIT_ACTION, NULL
+    };
+
+    return probe_succeeds(arguments);
 }
 
 static int send_record(int fd, const void *header, size_t header_size,
@@ -445,7 +482,19 @@ struct ace_mediator *ace_mediator_start_as(uint32_t wanted_capabilities,
             execl("/usr/bin/sudo", "sudo", "-n", program, path, (char *)NULL);
             break;
         case ELEVATE_PKEXEC:
-            execl("/usr/bin/pkexec", "pkexec", program, path, (char *)NULL);
+            if (polkit_action_available()) {
+                if (polkit_authorise(getppid()) != 0)
+                    break;
+                execl("/usr/bin/pkexec", "pkexec",
+                      "--disable-internal-agent", program, path,
+                      (char *)NULL);
+            } else {
+                /* A per-user install may not be in polkit's compiled-in
+                   action directory. Keep the generic pkexec fallback usable
+                   there; system installs use the ACE-specific action above. */
+                execl("/usr/bin/pkexec", "pkexec", program, path,
+                      (char *)NULL);
+            }
             break;
         case ELEVATE_NONE:
             execl(program, program, path, (char *)NULL);

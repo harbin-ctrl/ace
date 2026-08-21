@@ -340,8 +340,7 @@ int native_broker_ensure(void)
             if (null_fd > STDERR_FILENO)
                 close(null_fd);
         }
-        execl(executable, executable, ace_mode_privilege_switch(),
-              ace_mode_view_switch(), broker_socket_path(), (char *)NULL);
+        execl(executable, executable, broker_socket_path(), (char *)NULL);
         _exit(127);
     }
     if (child < 0 || broker_wait_until_reachable() != 0) {

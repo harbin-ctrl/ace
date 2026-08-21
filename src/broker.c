@@ -4075,8 +4075,7 @@ int main(int argc, char **argv)
        through sudo with the switches it started with.  Nothing re-executes
        any more: privilege arrives as a separate process, not as a new self. */
     if (ace_mode_parse(&argc, argv, &modes) != 0) {
-        fprintf(stderr, "usage: %s [--root|--user] "
-                        "[--deviceview|--mountview] "
+        fprintf(stderr, "usage: %s [--root] "
                         "[socket-path | --print-socket]\n", argv[0]);
         return 2;
     }
@@ -4104,8 +4103,7 @@ int main(int argc, char **argv)
         return 1;
     }
     if (argc > 2 || (argc == 2 && argv[1][0] == '\0')) {
-        fprintf(stderr, "usage: %s [--root|--user] "
-                        "[--deviceview|--mountview] "
+        fprintf(stderr, "usage: %s [--root] "
                         "[socket-path | --print-socket]\n", argv[0]);
         return 2;
     }
