@@ -16,7 +16,7 @@ int ace_mode_parse(int *argc, char **argv, struct ace_mode_options *options);
 
 /* Validate the requested combination, apply defaults, and publish it.  Fails
  * with EPERM when the process is running as root: ACE is never root, and the
- * privilege a session may want comes from the mediator instead. */
+ * privilege a session may want comes from the fmm instead. */
 int ace_mode_configure(const struct ace_mode_options *options);
 /* Configure the identity requested by flags without acquiring privileges.
  * Used only by --print-socket so start/stop scripts can find a future broker. */

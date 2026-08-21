@@ -1,5 +1,5 @@
 /*
- * The access worker: one protected object operation at a time.
+ * The CRM: one protected object operation at a time.
  *
  * A separate process from the volume worker, and separate on purpose.  It is
  * forked after the mount namespace exists, so it is inside it and can see the
@@ -23,7 +23,7 @@
 
 #define _GNU_SOURCE
 
-#include "ace_mediator_access.h"
+#include "ace_crm.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -77,13 +77,13 @@ static int host_root_fd = -1;
 static int resolve_in_domain(const char *relative, uint32_t request_flags,
                              uint64_t flags, mode_t mode, int32_t *status)
 {
-    int host = (request_flags & ACE_MEDIATOR_FLAG_HOST_PATH) != 0;
+    int host = (request_flags & ACE_PRIVILEGE_FLAG_HOST_PATH) != 0;
     int start = host ? host_root_fd : view_root_fd;
     struct open_how how;
     int fd;
 
     if (start < 0) {
-        *status = ACE_MEDIATOR_REFUSED;
+        *status = ACE_PRIVILEGE_REFUSED;
         return -1;
     }
     memset(&how, 0, sizeof(how));
@@ -98,9 +98,9 @@ static int resolve_in_domain(const char *relative, uint32_t request_flags,
        leave.  "It tried to get out" is a different sentence from "you may
        not", and the caller should be able to tell them apart. */
     if (errno == EXDEV || errno == ELOOP)
-        *status = ACE_MEDIATOR_ESCAPED;
+        *status = ACE_PRIVILEGE_ESCAPED;
     else
-        *status = ACE_MEDIATOR_HOST_ERROR;
+        *status = ACE_PRIVILEGE_HOST_ERROR;
     return -1;
 }
 
@@ -163,7 +163,7 @@ static int open_parent(const char *path, uint32_t request_flags,
                        int32_t *status)
 {
     if (split_last(path, directory, size, name) != 0) {
-        *status = ACE_MEDIATOR_PROTOCOL_ERROR;
+        *status = ACE_PRIVILEGE_PROTOCOL_ERROR;
         return -1;
     }
     return resolve_in_domain(directory, request_flags,
@@ -176,7 +176,7 @@ static int open_parent(const char *path, uint32_t request_flags,
    get wrong and the thing that keeps bulk I/O out of this process. */
 static int send_reply_fd(int fd, uint64_t request_id, int passed_fd)
 {
-    struct ace_mediator_response response;
+    struct ace_privilege_response response;
     struct iovec io;
     struct msghdr message;
     union {
@@ -187,10 +187,10 @@ static int send_reply_fd(int fd, uint64_t request_id, int passed_fd)
     ssize_t sent;
 
     memset(&response, 0, sizeof(response));
-    response.magic = ACE_MEDIATOR_MAGIC;
+    response.magic = ACE_PRIVILEGE_MAGIC;
     response.request_id = request_id;
-    response.status = ACE_MEDIATOR_OK;
-    response.flags = ACE_MEDIATOR_FLAG_HAS_FD;
+    response.status = ACE_PRIVILEGE_OK;
+    response.flags = ACE_PRIVILEGE_FLAG_HAS_FD;
 
     memset(&message, 0, sizeof(message));
     io.iov_base = &response;
@@ -213,11 +213,11 @@ static int send_reply_fd(int fd, uint64_t request_id, int passed_fd)
 static int send_reply(int fd, uint64_t request_id, int32_t status,
                       int host_errno)
 {
-    struct ace_mediator_response response;
+    struct ace_privilege_response response;
     ssize_t sent;
 
     memset(&response, 0, sizeof(response));
-    response.magic = ACE_MEDIATOR_MAGIC;
+    response.magic = ACE_PRIVILEGE_MAGIC;
     response.request_id = request_id;
     response.status = status;
     response.host_errno = host_errno;
@@ -236,42 +236,42 @@ static int send_reply(int fd, uint64_t request_id, int32_t status,
  * that had to be privileged, and what crosses back is a capability to one
  * object rather than the power to reach others.
  */
-static int perform_open(int channel, const struct ace_mediator_request *request,
+static int perform_open(int channel, const struct ace_privilege_request *request,
                         const char *relative)
 {
-    int32_t status = ACE_MEDIATOR_HOST_ERROR;
+    int32_t status = ACE_PRIVILEGE_HOST_ERROR;
     uint64_t flags;
     mode_t mode;
     int opened;
 
     switch (request->operation) {
-    case ACE_MEDIATOR_ACCESS_OPEN_READ:
+    case ACE_PRIVILEGE_ACCESS_OPEN_READ:
         flags = O_RDONLY | O_CLOEXEC;
         break;
-    case ACE_MEDIATOR_ACCESS_OPEN_DIR:
+    case ACE_PRIVILEGE_ACCESS_OPEN_DIR:
         flags = O_RDONLY | O_DIRECTORY | O_CLOEXEC;
         break;
-    case ACE_MEDIATOR_ACCESS_STAT:
+    case ACE_PRIVILEGE_ACCESS_STAT:
         /* O_PATH: enough to fstat through, and not enough to read.  Examine
            does not need the contents and should not be handed them. */
         flags = O_PATH | O_CLOEXEC;
         break;
-    case ACE_MEDIATOR_ACCESS_OPEN_WRITE:
-        flags = ((request->flags & ACE_MEDIATOR_FLAG_UPDATE) ? O_RDWR
+    case ACE_PRIVILEGE_ACCESS_OPEN_WRITE:
+        flags = ((request->flags & ACE_PRIVILEGE_FLAG_UPDATE) ? O_RDWR
                                                              : O_WRONLY) |
                 O_CLOEXEC;
-        if (request->flags & ACE_MEDIATOR_FLAG_CREATE)
+        if (request->flags & ACE_PRIVILEGE_FLAG_CREATE)
             flags |= O_CREAT;
-        if (request->flags & ACE_MEDIATOR_FLAG_TRUNCATE)
+        if (request->flags & ACE_PRIVILEGE_FLAG_TRUNCATE)
             flags |= O_TRUNC;
-        if (request->flags & ACE_MEDIATOR_FLAG_APPEND)
+        if (request->flags & ACE_PRIVILEGE_FLAG_APPEND)
             flags |= O_APPEND;
-        if (request->flags & ACE_MEDIATOR_FLAG_EXCLUSIVE)
+        if (request->flags & ACE_PRIVILEGE_FLAG_EXCLUSIVE)
             flags |= O_EXCL;
         break;
     default:
         return send_reply(channel, request->request_id,
-                          ACE_MEDIATOR_UNSUPPORTED, ENOSYS);
+                          ACE_PRIVILEGE_UNSUPPORTED, ENOSYS);
     }
 
     /*
@@ -306,16 +306,16 @@ static int perform_open(int channel, const struct ace_mediator_request *request,
  * and the list is not to grow casually.
  */
 static int perform_named(int channel,
-                         const struct ace_mediator_request *request,
+                         const struct ace_privilege_request *request,
                          const char *relative)
 {
-    int32_t status = ACE_MEDIATOR_HOST_ERROR;
+    int32_t status = ACE_PRIVILEGE_HOST_ERROR;
     char directory[PATH_MAX];
     const char *name = NULL;
     int parent;
     int outcome;
 
-    if (request->operation == ACE_MEDIATOR_ACCESS_RENAME) {
+    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME) {
         /*
          * Both halves in one request, resolved here, one after the other,
          * with nothing in between.  A rename whose halves were authorised
@@ -338,14 +338,14 @@ static int perform_named(int channel,
             relative[request->payload_length - 1] != '\0' ||
             !*relative || *relative == '/')
             return send_reply(channel, request->request_id,
-                              ACE_MEDIATOR_PROTOCOL_ERROR, 0);
+                              ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
         second = relative + request->first_path_length;
         if (!*second || *second == '/' ||
             strnlen(second, request->payload_length -
                             request->first_path_length) !=
                 request->payload_length - request->first_path_length - 1)
             return send_reply(channel, request->request_id,
-                              ACE_MEDIATOR_PROTOCOL_ERROR, 0);
+                              ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
 
         from_parent = open_parent(relative, request->flags, &from_name,
                                   from_directory, sizeof(from_directory),
@@ -364,8 +364,8 @@ static int perform_named(int channel,
         close(from_parent);
         close(parent);
         return send_reply(channel, request->request_id,
-                          outcome == 0 ? ACE_MEDIATOR_OK
-                                       : ACE_MEDIATOR_HOST_ERROR,
+                          outcome == 0 ? ACE_PRIVILEGE_OK
+                                       : ACE_PRIVILEGE_HOST_ERROR,
                           outcome == 0 ? 0 : errno);
     }
 
@@ -375,7 +375,7 @@ static int perform_named(int channel,
         return send_reply(channel, request->request_id, status, errno);
 
     switch (request->operation) {
-    case ACE_MEDIATOR_ACCESS_UNLINK:
+    case ACE_PRIVILEGE_ACCESS_UNLINK:
         outcome = unlinkat(parent, name, 0);
         /* AmigaDOS Delete removes both, and Linux reports the difference as
            EISDIR rather than doing it.  Retrying is what makes the one DOS
@@ -383,12 +383,12 @@ static int perform_named(int channel,
         if (outcome != 0 && (errno == EISDIR || errno == EPERM))
             outcome = unlinkat(parent, name, AT_REMOVEDIR);
         break;
-    case ACE_MEDIATOR_ACCESS_MKDIR:
+    case ACE_PRIVILEGE_ACCESS_MKDIR:
         outcome = mkdirat(parent, name,
                           request->mode ? (mode_t)(request->mode & 07777)
                                         : 0755);
         break;
-    case ACE_MEDIATOR_ACCESS_SET_PROTECTION:
+    case ACE_PRIVILEGE_ACCESS_SET_PROTECTION:
         /* The AmigaDOS-to-Linux translation happens at the seam, where the
            protection bits are understood.  What arrives here is already a
            mode, and this worker's job is only to apply it to one exact
@@ -398,15 +398,15 @@ static int perform_named(int channel,
     default:
         close(parent);
         return send_reply(channel, request->request_id,
-                          ACE_MEDIATOR_UNSUPPORTED, ENOSYS);
+                          ACE_PRIVILEGE_UNSUPPORTED, ENOSYS);
     }
     close(parent);
     return send_reply(channel, request->request_id,
-                      outcome == 0 ? ACE_MEDIATOR_OK : ACE_MEDIATOR_HOST_ERROR,
+                      outcome == 0 ? ACE_PRIVILEGE_OK : ACE_PRIVILEGE_HOST_ERROR,
                       outcome == 0 ? 0 : errno);
 }
 
-static int perform(int channel, const struct ace_mediator_request *request,
+static int perform(int channel, const struct ace_privilege_request *request,
                    const void *payload)
 {
     const char *relative;
@@ -414,17 +414,17 @@ static int perform(int channel, const struct ace_mediator_request *request,
     /* Rename is the one operation whose payload is two paths, so it is also
        the one that cannot be checked as a single string.  It validates both
        halves itself. */
-    if (request->operation == ACE_MEDIATOR_ACCESS_RENAME)
+    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME)
         return perform_named(channel, request, payload);
 
     relative = checked_relative(payload, request->payload_length);
     if (!relative)
         return send_reply(channel, request->request_id,
-                          ACE_MEDIATOR_PROTOCOL_ERROR, 0);
+                          ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
     switch (request->operation) {
-    case ACE_MEDIATOR_ACCESS_UNLINK:
-    case ACE_MEDIATOR_ACCESS_MKDIR:
-    case ACE_MEDIATOR_ACCESS_SET_PROTECTION:
+    case ACE_PRIVILEGE_ACCESS_UNLINK:
+    case ACE_PRIVILEGE_ACCESS_MKDIR:
+    case ACE_PRIVILEGE_ACCESS_SET_PROTECTION:
         return perform_named(channel, request, relative);
     default:
         break;
@@ -432,7 +432,7 @@ static int perform(int channel, const struct ace_mediator_request *request,
     return perform_open(channel, request, relative);
 }
 
-void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root)
+void ace_crm_serve(int fd, uid_t served_uid, const char *view_root)
 {
     (void)served_uid; /* Ownership of created files arrives with OPEN_WRITE. */
 
@@ -445,8 +445,8 @@ void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root)
     host_root_fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
 
     for (;;) {
-        struct ace_mediator_request request;
-        unsigned char payload[ACE_MEDIATOR_MAX_PAYLOAD];
+        struct ace_privilege_request request;
+        unsigned char payload[ACE_PRIVILEGE_MAX_PAYLOAD];
         struct iovec io[2];
         struct msghdr message;
         ssize_t got;
@@ -465,22 +465,22 @@ void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root)
            process that crashed sends nothing, so silence has to mean it. */
         if (got <= 0 || (size_t)got < sizeof(request))
             return;
-        if (request.magic != ACE_MEDIATOR_MAGIC ||
-            request.payload_length > ACE_MEDIATOR_MAX_PAYLOAD) {
-            send_reply(fd, request.request_id, ACE_MEDIATOR_PROTOCOL_ERROR, 0);
+        if (request.magic != ACE_PRIVILEGE_MAGIC ||
+            request.payload_length > ACE_PRIVILEGE_MAX_PAYLOAD) {
+            send_reply(fd, request.request_id, ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
             return;
         }
 
         switch (request.operation) {
-        case ACE_MEDIATOR_PING:
-            send_reply(fd, request.request_id, ACE_MEDIATOR_OK, 0);
+        case ACE_PRIVILEGE_PING:
+            send_reply(fd, request.request_id, ACE_PRIVILEGE_OK, 0);
             continue;
-        case ACE_MEDIATOR_SHUTDOWN:
-        case ACE_MEDIATOR_DROP_PRIVILEGE:
-            send_reply(fd, request.request_id, ACE_MEDIATOR_OK, 0);
+        case ACE_PRIVILEGE_SHUTDOWN:
+        case ACE_PRIVILEGE_DROP_PRIVILEGE:
+            send_reply(fd, request.request_id, ACE_PRIVILEGE_OK, 0);
             return;
-        case ACE_MEDIATOR_CANCEL:
-            send_reply(fd, request.request_id, ACE_MEDIATOR_OK, 0);
+        case ACE_PRIVILEGE_CANCEL:
+            send_reply(fd, request.request_id, ACE_PRIVILEGE_OK, 0);
             continue;
         default:
             break;
@@ -493,9 +493,9 @@ void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root)
          * one is stated, and a reader of either should reach the same
          * conclusion about what this process can do.
          */
-        if (ACE_MEDIATOR_CLASS_OF(request.operation) !=
-            ACE_MEDIATOR_CLASS_ACCESS) {
-            send_reply(fd, request.request_id, ACE_MEDIATOR_REFUSED, 0);
+        if (ACE_PRIVILEGE_CLASS_OF(request.operation) !=
+            ACE_PRIVILEGE_CLASS_ACCESS) {
+            send_reply(fd, request.request_id, ACE_PRIVILEGE_REFUSED, 0);
             continue;
         }
         if (perform(fd, &request, payload) != 0)

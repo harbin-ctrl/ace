@@ -1,5 +1,5 @@
 #!/bin/sh
-# The broker and the mediator together, as a session actually runs them.
+# The broker and the fmm together, as a session actually runs them.
 #
 # The device-view test next door checks a property of the view itself and
 # skips wherever the machine has no nested mount to reveal -- which is most
@@ -13,18 +13,18 @@ repo_dir=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 owner_uid=$(id -u)
 
 if [ "$owner_uid" -eq 0 ]; then
-    printf 'ACE mediator broker test skipped (must run as an ordinary user)\n'
+    printf 'ACE fmm broker test skipped (must run as an ordinary user)\n'
     exit 0
 fi
 # pkexec would need a human at the keyboard.  Where sudo can be taken
 # noninteractively the whole elevated path runs; where it cannot, say so
 # rather than passing quietly.
 if ! command -v sudo >/dev/null 2>&1 || ! sudo -n /usr/bin/true 2>/dev/null; then
-    printf 'ACE mediator broker test skipped (no noninteractive root helper)\n'
+    printf 'ACE fmm broker test skipped (no noninteractive root helper)\n'
     exit 0
 fi
 
-test_dir=$(mktemp -d "$repo_dir/.ace-mediator-broker.XXXXXX")
+test_dir=$(mktemp -d "$repo_dir/.ace-fmm-broker.XXXXXX")
 socket_path="$test_dir/broker.sock"
 broker_pid=
 
@@ -43,7 +43,7 @@ trap cleanup EXIT HUP INT TERM
 
 fail()
 {
-    printf 'ACE mediator broker test: %s\n' "$1" >&2
+    printf 'ACE fmm broker test: %s\n' "$1" >&2
     exit 1
 }
 
@@ -67,31 +67,31 @@ broker_uid=$(stat -c %u "/proc/$broker_pid")
     fail "the broker is running as uid $broker_uid, not $owner_uid"
 
 # The privilege is somewhere else, and is real.
-mediator_pid=
+fmm_pid=
 for _ in $(seq 1 200); do
-    mediator_pid=$(pgrep -u 0 -x ace-mediator 2>/dev/null | head -1 || true)
-    [ -n "$mediator_pid" ] && break
+    fmm_pid=$(pgrep -u 0 -x ace-fmm 2>/dev/null | head -1 || true)
+    [ -n "$fmm_pid" ] && break
     sleep 0.05
 done
-[ -n "$mediator_pid" ] || fail 'no root mediator was started'
-mediator_uid=$(stat -c %u "/proc/$mediator_pid")
-[ "$mediator_uid" = "0" ] || fail "the mediator is not root (uid $mediator_uid)"
+[ -n "$fmm_pid" ] || fail 'no root fmm was started'
+fmm_uid=$(stat -c %u "/proc/$fmm_pid")
+[ "$fmm_uid" = "0" ] || fail "the fmm is not root (uid $fmm_uid)"
 
-# The mount namespace is the mediator's, and the broker is not in it.  This is
+# The mount namespace is the fmm's, and the broker is not in it.  This is
 # the property that made the two-process split necessary: an unprivileged
 # process cannot enter one, so it must not need to.
 broker_ns=$(readlink "/proc/$broker_pid/ns/mnt")
-mediator_ns=$(sudo -n readlink "/proc/$mediator_pid/ns/mnt")
-[ -n "$mediator_ns" ] || fail 'could not read the mediator namespace'
-[ "$broker_ns" != "$mediator_ns" ] ||
-    fail 'the broker is inside the mediator mount namespace'
+fmm_ns=$(sudo -n readlink "/proc/$fmm_pid/ns/mnt")
+[ -n "$fmm_ns" ] || fail 'could not read the fmm namespace'
+[ "$broker_ns" != "$fmm_ns" ] ||
+    fail 'the broker is inside the fmm mount namespace'
 
 # And the session works: the broker answers, with its DOS device list built
 # from mounts it never made itself.
 #
 # Every request carries the session mode and the broker refuses one that
 # disagrees with its own, so a client has to be told which session it is
-# joining.  That check predates the mediator and is worth keeping: a client
+# joining.  That check predates the fmm and is worth keeping: a client
 # that thought it was in a different view would resolve paths against a
 # topology the broker is not serving.
 ace_ctl()
@@ -109,7 +109,7 @@ ace_ctl status | grep -q '^privilege	root$' ||
 ace_ctl status | grep -q '^view	device$' ||
     fail 'the broker did not report a device view'
 
-# When the broker goes, the mediator goes.  Nobody signals it: it is a root
+# When the broker goes, the fmm goes.  Nobody signals it: it is a root
 # process and the broker holds no lever on it, so what ends it is the EOF on
 # the channel that the broker's exit produces.
 kill -TERM "$broker_pid"
@@ -119,7 +119,7 @@ for _ in $(seq 1 400); do
 done
 gone=0
 for _ in $(seq 1 400); do
-    if ! kill -0 "$mediator_pid" 2>/dev/null; then
+    if ! kill -0 "$fmm_pid" 2>/dev/null; then
         gone=1
         break
     fi
@@ -127,7 +127,7 @@ for _ in $(seq 1 400); do
 done
 broker_pid=
 [ "$gone" -eq 1 ] ||
-    fail "mediator $mediator_pid outlived the broker that authorised it"
+    fail "fmm $fmm_pid outlived the broker that authorised it"
 
 # Running ACE as root is refused rather than accommodated: a root shell would
 # have root's session bus, configuration and HOME, and would be a different
@@ -139,4 +139,4 @@ fi
 grep -q 'normal user' "$test_dir/asroot.out" ||
     fail "running as root failed without explaining why: $(cat "$test_dir/asroot.out")"
 
-printf 'ACE broker ran as the user while a root mediator held the privilege\n'
+printf 'ACE broker ran as the user while a root fmm held the privilege\n'

@@ -193,10 +193,10 @@ enum amiga_broker_operation {
        state notifications such as ARexx resource updates. */
     AMIGA_BROKER_PORT_BROADCAST = 37,
     /*
-     * Where the mediator put the device roots, or empty for an ordinary
+     * Where the FMM/CRM service put the device roots, or empty for an ordinary
      * session.
      *
-     * A command needs this to recognise a path that only the access worker
+     * A command needs this to recognise a path that only the CRM
      * can open.  Such a path fails locally with ENOENT -- it is not in this
      * process's mount namespace and never will be -- and ENOENT must never be
      * what triggers a privileged request, or every misspelling in every
@@ -210,7 +210,7 @@ enum amiga_broker_operation {
     /*
      * Perform one privileged file operation, by proxy.
      *
-     * The command asks the broker; the broker asks the mediator's access
+     * The command asks the broker; the broker asks the FMM/CRM service's access
      * worker; the answer, and any descriptor it produced, comes back the same
      * way.  Commands never hold a channel to a root process: one semantic
      * authority and one privilege ingress, so "may this happen" has exactly
@@ -275,7 +275,7 @@ struct amiga_broker_request {
     uint32_t flags;
     uint32_t mode;
     uint32_t owner_uid;
-    /* For AMIGA_BROKER_PRIVOP: which mediator operation is being asked for.
+    /* For AMIGA_BROKER_PRIVOP: which FMM/CRM service operation is being asked for.
        Zero for everything else.  Carried as its own field rather than packed
        into flags, so that a request naming no operation names none rather
        than accidentally naming the first one. */

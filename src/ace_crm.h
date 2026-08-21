@@ -1,7 +1,7 @@
-#ifndef ACE_MEDIATOR_ACCESS_H
-#define ACE_MEDIATOR_ACCESS_H
+#ifndef ACE_PRIVILEGE_ACCESS_H
+#define ACE_PRIVILEGE_ACCESS_H
 
-#include "ace_mediator_protocol.h"
+#include "ace_privilege_protocol.h"
 
 #include <sys/types.h>
 
@@ -13,6 +13,6 @@
  * the caller is expected to _exit() immediately afterwards -- this process
  * exists for one channel and has nothing to do once it is gone.
  */
-void ace_mediator_access_serve(int fd, uid_t served_uid, const char *view_root);
+void ace_crm_serve(int fd, uid_t served_uid, const char *view_root);
 
 #endif

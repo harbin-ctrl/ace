@@ -1,4 +1,4 @@
-# ACE security mediator redesign handoff
+# ACE security FMM/CRM service redesign handoff
 
 This document is a handoff for a future AI or engineer continuing ACE work.
 It records the architectural decision reached in discussion with the user and
@@ -30,7 +30,7 @@ therefore different desktop/session state; copying the user's environment into
 it does not make it the user's D-Bus peer or configuration owner.
 
 The user may still ask ACE to perform operations that require administrator
-power. That power is delegated to a privileged mediator and is requested only
+power. That power is delegated to a privileged FMM/CRM service and is requested only
 when needed.
 
 ## The agreed process model
@@ -44,21 +44,21 @@ The model is two privileged processes, both reached through the user's broker:
       ace-broker                ordinary user; owns env, cwd, assigns,
            |                    aliases, path translation, sessions
            |
-           +---- authenticated once ----> volume mediator   root
+           +---- authenticated once ----> volume FMM/CRM service   root
            |                              owns the private mount namespace,
            |                              the mounts, the device view
            |                                     |
            |                                     | forks, inside that namespace
            |                                     v
-           +---- second channel --------> access worker     root
+           +---- second channel --------> CRM     root
                                           one typed file operation at a time,
                                           returns descriptors
 ```
 
 The workers are separate processes rather than modules in one, and the reason
-is stronger than tidiness. The access worker is forked after the namespace
+is stronger than tidiness. The CRM is forked after the namespace
 exists, so it is inside it; it closes the supervisor's channel on the way in,
-so it holds no route to the volume side. "The access worker must not be able
+so it holds no route to the volume side. "The CRM must not be able
 to issue volume operations" therefore stops being a check that can be got
 wrong and becomes a connection that does not exist.
 
@@ -82,7 +82,7 @@ joined from root:
 ```
 
 `setns(fd, CLONE_NEWNS)` requires `CAP_SYS_ADMIN` in the user namespace that
-owns the target mount namespace. A namespace created by the root mediator is
+owns the target mount namespace. A namespace created by the root FMM/CRM service is
 owned by the initial user namespace, where a user process has no such
 capability and no way to acquire one. Today this is invisible only because
 `--root` re-executes the shell, the broker, and every command as root, so
@@ -90,7 +90,7 @@ everything is already inside.
 
 The two-process split dissolves this rather than working around it: nobody
 unprivileged ever needs to enter the namespace, because nobody unprivileged
-ever opens a path inside it. The access worker opens the object and passes
+ever opens a path inside it. The CRM opens the object and passes
 back a descriptor, and a descriptor does not belong to a namespace. Bulk I/O
 then happens in the user's own process on that descriptor, so a large Copy is
 one request rather than one per byte.
@@ -105,10 +105,10 @@ view, and that is the property to protect.
 ### Consequences that follow from the split
 
 Two escalation triggers, not one. A protected path escalates on
-`EACCES`/`EPERM`, as before. A device-view path is served by the access worker
+`EACCES`/`EPERM`, as before. A device-view path is served by the CRM
 *by construction*, because locally it fails with `ENOENT` -- and `ENOENT` must
 never trigger escalation. The broker routes paths beneath the view root
-because the mediator told it where that root is. This is not the forbidden
+because the FMM/CRM service told it where that root is. This is not the forbidden
 list of protected paths: it is one value learned at runtime from the process
 that created it.
 
@@ -141,16 +141,16 @@ Amiga-semantic state, including:
 * pending operation IDs and cancellation state.
 
 The broker must not become a root process merely because a client asks for
-privileged assistance. It sends a typed request to the mediator and returns the
-mediator's result to the DOS compatibility layer.
+privileged assistance. It sends a typed request to the FMM/CRM service and returns the
+FMM/CRM service's result to the DOS compatibility layer.
 
 The broker may retain descriptors, request IDs, and reconnect metadata. “No
-state in the mediator” does not mean no state anywhere; Amiga session state
+state in the FMM/CRM service” does not mean no state anywhere; Amiga session state
 belongs in the broker, while mount/resource state belongs in the volume worker.
 
-### Mediator supervisor
+### FMM/CRM service supervisor
 
-The mediator is a privileged implementation service, not a shell and not a
+The FMM/CRM service is a privileged implementation service, not a shell and not a
 general root command runner. It has no `HOME`, current directory, user config,
 GUI, D-Bus menu, or arbitrary command-string interface.
 
@@ -159,7 +159,7 @@ accept a request equivalent to “execute this shell command as root.” In
 particular, it must not provide a generic root `execve()` operation to ACE
 scripts, ARexx, or malformed commands.
 
-The mediator is launched only for a session that has opted into privileged
+The FMM/CRM service is launched only for a session that has opted into privileged
 requests. It may be launched lazily on the first operation requiring it.
 
 ### Volume worker
@@ -184,9 +184,9 @@ mounts, bindroots, open descriptors, and worker lifetime. That is acceptable.
 It must not hold Amiga current directories, assigns, environment variables, or
 other semantic session state.
 
-### Access workers
+### CRMs
 
-An access worker handles a narrowly scoped privileged DOS operation. It may be
+An CRM handles a narrowly scoped privileged DOS operation. It may be
 one-shot or short-lived. Examples:
 
 * open one exact protected source file for reading;
@@ -197,14 +197,14 @@ one-shot or short-lived. Examples:
 * create one exact directory;
 * perform one explicitly supported metadata operation.
 
-For file I/O, prefer opening the object in the access worker and passing the
-resulting descriptor back over the broker/mediator channel. The ACE command can
+For file I/O, prefer opening the object in the CRM and passing the
+resulting descriptor back over the broker/FMM/CRM service channel. The ACE command can
 then copy bytes as the ordinary user without receiving general root power.
 For unlink, rename, mkdir, and similar operations that cannot be represented by
-an fd, the access worker performs exactly that typed operation and returns a
+an fd, the CRM performs exactly that typed operation and returns a
 precise status.
 
-The access worker cannot issue volume-worker operations, and this is now
+The CRM cannot issue volume-worker operations, and this is now
 structural rather than enforced. It is a separate process, forked by the
 supervisor after the namespace exists so that it is inside it, and it closes
 the supervisor's channel on the way in. There is no capability bit meaning
@@ -217,11 +217,11 @@ that a reader of either reaches the same conclusion.
 `--root` is no longer a request to run ACE as UID 0. It means:
 
 > This ACE session is allowed to request privileged assistance from the
-> mediator when ordinary user access is insufficient.
+> FMM/CRM service when ordinary user access is insufficient.
 
 Without `--root`, ACE performs ordinary user operations and reports the
 permission failure immediately. With `--root`, the shared DOS layer may retry a
-denied operation through the access mediator. Authorization is lazy: starting
+denied operation through the access FMM/CRM service. Authorization is lazy: starting
 ACE with `--root` does not make the shell root and should not necessarily prompt
 immediately.
 
@@ -234,7 +234,7 @@ Copy SYS:foo TO /root/foo
 The command remains a user process. It copies ordinary files normally. When
 opening the protected destination fails with `EACCES` or `EPERM`, the DOS
 compatibility layer reports a structured `NEEDS_PRIVILEGE` condition to the
-broker. The mediator requests administrator authorization for that operation,
+broker. The FMM/CRM service requests administrator authorization for that operation,
 opens the exact object as needed, and the command continues.
 
 The user-facing explanation should be “ACE requests administrator access for
@@ -251,7 +251,7 @@ Running the shell or broker while already UID 0 should fail clearly by default:
 
 ```text
 ACE must be started as a normal user; privileged operations are provided by
-the ACE mediator.
+the ACE FMM/CRM service.
 ```
 
 Do not try to repair `sudo ace-shell` by copying `HOME`, D-Bus, or Wayland
@@ -272,7 +272,7 @@ Most AROS/Amiga commands use common DOS APIs such as:
 * the ACE POSIX wrapper used by embedded Vim and related components.
 
 The common layer should attempt the operation as the user first. Only
-`EACCES`/`EPERM`-type results should trigger a mediator request. `ENOENT`,
+`EACCES`/`EPERM`-type results should trigger a FMM/CRM service request. `ENOENT`,
 `EROFS`, invalid names, I/O errors, and other ordinary failures must not be
 silently converted into root requests.
 
@@ -280,7 +280,7 @@ This lets commands remain unchanged:
 
 ```text
 command -> DOS compatibility API -> user syscall
-                                  -> if denied: broker -> mediator
+                                  -> if denied: broker -> FMM/CRM service
 ```
 
 The implementation work is concentrated in the shared DOS/native seam and the
@@ -299,7 +299,7 @@ global syscall interception layer just to cover it.
 
 ## Authorization and powers
 
-The mediator should use polkit or an equivalent action-based authorization
+The FMM/CRM service should use polkit or an equivalent action-based authorization
 mechanism for production. `sudo`/`pkexec` may be useful for development or
 bootstrap experiments, but they are poor foundations for a descriptor-sensitive
 long-lived GUI protocol because they rewrite environments and may not preserve
@@ -316,7 +316,7 @@ Use distinct authorization concepts even if `--root` enables both:
 
 The explicit product decision this section previously asked for has been made:
 `--root` is the permission, one authentication turns it into a running
-mediator, and that mediator serves the session until the session ends, the
+FMM/CRM service, and that FMM/CRM service serves the session until the session ends, the
 user gives the privilege up through `DROP_PRIVILEGE`, or an optional timeout
 expires. The timeout is off by default and exists because it was asked for,
 not because ACE imposes it.
@@ -332,23 +332,23 @@ privilege model because the person at the keyboard owns the computer, and an
 interface that repeatedly asks that person for permission to use their own
 disk feels like a guest account, not an Amiga.
 
-The consequence is recorded in `src/ace_mediator_protocol.h` and must not be
-forgotten: with session-scoped authorization the mediator's opcode surface is
+The consequence is recorded in `src/ace_privilege_protocol.h` and must not be
+forgotten: with session-scoped authorization the FMM/CRM service's opcode surface is
 the entire security boundary, not one layer of several. Nothing downstream
 asks again. That makes the narrow typed interface more load-bearing, not less.
-A generic operation added to the mediator would not be a weakness in depth --
+A generic operation added to the FMM/CRM service would not be a weakness in depth --
 in a `--root` session it would be a root shell reachable from any ARexx
 script.
 
 ### File ownership: decided, and emergent rather than configured
 
-Files created through the mediator are owned by root, as `sudo cp` would leave
+Files created through the FMM/CRM service are owned by root, as `sudo cp` would leave
 them. ACE does not invent an ownership rule, and AmigaDOS has no owner model
 to borrow one from.
 
 This is safe only because authorization is not execution as root. The shell,
 the commands, and the broker remain the user's own processes; the shared seam
-attempts every operation as the user first and reaches the mediator only on a
+attempts every operation as the user first and reaches the FMM/CRM service only on a
 genuine `EACCES`/`EPERM`. So the session-long authorization does not make
 everything the user touches root-owned -- which is precisely what the current
 `ace_mode_elevate_if_needed()` re-exec does today, including in the user's own
@@ -381,7 +381,7 @@ FAT, exFAT, and NTFS do not carry ownership either. The kernel invents it at
 mount time from `uid=`/`gid=`. The volume worker therefore mounts those
 filesystems with `uid=` set to the ACE user, which makes the Amiga model
 exactly true rather than approximately true: an ownerless filesystem presented
-to a single user who owns all of it is what a floppy was. No mediator
+to a single user who owns all of it is what a floppy was. No FMM/CRM service
 involvement and no ownership concept anywhere in sight.
 
 Filesystems that genuinely carry ownership, and the system directories, keep
@@ -394,7 +394,7 @@ Use an inherited Unix `SOCK_SEQPACKET` socketpair or an equally private,
 descriptor-based channel whenever possible. Do not use a predictable global
 socket as the trust boundary.
 
-The mediator handshake should include:
+The FMM/CRM service handshake should include:
 
 * protocol magic and version;
 * per-launch random instance identifier;
@@ -414,7 +414,7 @@ magic links, and symlink escapes according to the chosen DOS semantics. Use
 `openat2()`-style beneath/no-magic-link constraints where available, and use
 dirfds/open handles rather than repeatedly resolving untrusted strings.
 
-The mediator must never parse or invoke a shell command. It must never accept an
+The FMM/CRM service must never parse or invoke a shell command. It must never accept an
 arbitrary executable path from an ACE script.
 
 ## Signals, cancellation, and lifetime
@@ -426,17 +426,17 @@ Signals should be translated into protocol messages:
 terminal SIGINT/SIGBREAK
     -> ACE shell
     -> broker BREAK/CANCEL(request_id)
-    -> mediator operation worker
+    -> FMM/CRM service operation worker
 ```
 
-The broker must not rely on `kill()` to control a root mediator. The mediator
+The broker must not rely on `kill()` to control a root FMM/CRM service. The FMM/CRM service
 should watch its private channel for EOF/HUP and, where available, monitor a
 broker `pidfd`. An orderly shutdown is an authenticated `SHUTDOWN` request.
 
-If the broker dies, the mediator must clean up and exit. If the volume worker
+If the broker dies, the FMM/CRM service must clean up and exit. If the volume worker
 dies, its mount namespace must eventually disappear; the broker reports the
 device-view service as unavailable and can request a clean restart. If an
-access worker dies, only that operation fails.
+CRM dies, only that operation fails.
 
 Cancellation must be operation-specific. Atomic operations such as rename and
 unlink either happen or do not happen. Multi-file copy needs defined behavior
@@ -456,7 +456,7 @@ it the other way round means writing a compatibility path that is discarded
 unread.
 
 Two other merges follow from reading the code rather than the design: the
-mediator channel and the de-rooting are one change once the volume worker
+FMM/CRM service channel and the de-rooting are one change once the volume worker
 exists, and the shared-wrapper work and the access opcodes are a single design
 because the wrappers and the operations that serve them have to be shaped
 together.
@@ -467,7 +467,7 @@ Five chunks, in dependency order.
 
 Write the protocol and the error semantics before implementing any privilege.
 
-`src/ace_mediator_protocol.h` exists and is the authority: opcodes carrying
+`src/ace_privilege_protocol.h` exists and is the authority: opcodes carrying
 their capability class in the high byte so the check is a mask rather than a
 table that can drift from the enum beside it; the handshake, nonce, and peer
 validation; bounded payloads and descriptor counts; a stable ACE status space
@@ -478,7 +478,7 @@ Decisions recorded above: session-scoped authorization, root-owned creates in
 root-owned places with no configured path list, ownerless filesystems mounted
 as the user, `DROP_PRIVILEGE` for deliberate reduction.
 
-Provisional and reversible: the mediator is launched with `pkexec` and
+Provisional and reversible: the FMM/CRM service is launched with `pkexec` and
 connects *back* to a nonce-named socket under `XDG_RUNTIME_DIR`, because
 `pkexec` rewrites the environment and will not carry an inherited socketpair
 across the exec. Polkit action names can replace the authorization step later
@@ -486,33 +486,33 @@ without changing the protocol.
 
 No behaviour change in this chunk.
 
-### Chunk B: the mediator process and its channel
+### Chunk B: the FMM/CRM service process and its channel
 
-A privileged `ace-mediator` and the broker-side client. Launch, handshake,
+A privileged `ace-fmm` and the broker-side client. Launch, handshake,
 `SO_PEERCRED` and nonce validation in both directions, request ids,
 `PING`/`CAPS`/`CANCEL`/`DROP_PRIVILEGE`/`SHUTDOWN`. No privileged operation is
 served yet, which is the point: the channel and its lifetime get tested before
 anything dangerous rides on them.
 
-Lifetime: the mediator exits on channel EOF, because a broker that crashed
-cannot send `SHUTDOWN`. The broker never uses `kill()` on the mediator -- a
+Lifetime: the FMM/CRM service exits on channel EOF, because a broker that crashed
+cannot send `SHUTDOWN`. The broker never uses `kill()` on the FMM/CRM service -- a
 user process holding a signal lever on a privileged one is the arrangement
 this design exists to avoid.
 
 ### Chunk C: the two privileged processes, then de-root the broker
 
 C1 and C2 are done: the volume worker owns the namespace, the mounts, and the
-device view, and the supervisor forks an access worker inside that namespace
+device view, and the supervisor forks an CRM inside that namespace
 and hands the broker its channel.
 
-C3 is done. `prepare_device_view()` asks the mediator instead of mounting;
+C3 is done. `prepare_device_view()` asks the FMM/CRM service instead of mounting;
 `broker.c` no longer unshares anything; `broker_client.c`'s namespace joining
 and its `unshare(CLONE_FS)` workaround are deleted rather than moved, since no
 user process enters a namespace any more; and `--root` no longer re-executes
 anything, so `ace_mode_elevate_if_needed()` is gone. Starting any ACE program
 as root now fails with an explanation.
 
-The mediator launcher prefers a noninteractive `sudo` probe over `pkexec`,
+The FMM/CRM service launcher prefers a noninteractive `sudo` probe over `pkexec`,
 following what `ace_modes.c` already did and for the same reason its comment
 gives. That is also what makes the elevated path testable: an elevated channel
 that only runs when somebody types a password is one that never runs in a test
@@ -521,22 +521,22 @@ suite.
 `make test-device-view` was named here as the regression gate, and it was the
 wrong choice: it skips on any machine without a nested mount to reveal, which
 includes the machine this was developed on, so it gated nothing.
-`make test-mediator-broker` covers what actually changed -- the broker runs as
-the user, a root mediator holds the privilege, the two are in different mount
-namespaces, the session answers, the mediator dies when the broker does, and a
+`make test-FMM/CRM service-broker` covers what actually changed -- the broker runs as
+the user, a root FMM/CRM service holds the privilege, the two are in different mount
+namespaces, the session answers, the FMM/CRM service dies when the broker does, and a
 root broker is refused. Prefer it, and treat a skipping test as untested
 rather than passing.
 
 ### Chunk D: escalation for protected paths, and the DOS seam
 
-Mostly done. `src/ace_privops.[ch]` is the single place in ACE that decides an
+Mostly done. `src/ace_crm_retry.[ch]` is the single place in ACE that decides an
 operation needs privilege: it does the ordinary thing first as the ordinary
 user, and only a genuine `EACCES`/`EPERM` becomes a request. `native_dos.c`
 and `ace_amiga_posix.c` both route through it, which covers ACE's own commands
 and the unmodified third-party code compiled with the `-Dopen=` redefinitions.
 
 Commands never hold a channel to a root process. They ask the broker
-(`AMIGA_BROKER_PRIVOP`), the broker asks the access worker, and the reply --
+(`AMIGA_BROKER_PRIVOP`), the broker asks the CRM, and the reply --
 including any descriptor -- comes back the same way. One semantic authority,
 one privilege ingress. The broker also decides which resolution domain a path
 is in, because the broker is where path translation lives.
@@ -559,20 +559,20 @@ resolve RAM4:protected-dir/file   -> fails                  (broker cannot stat 
 Escalation therefore reaches protected objects in traversable directories --
 which is the common case, `/etc/shadow` among them -- but not objects inside a
 `0700` directory owned by root. The fix is for the broker's resolution to use
-its own access worker when a component is refused, exactly as the seam does
+its own CRM when a component is refused, exactly as the seam does
 for operations. It was left out rather than half-built: the resolution code is
 substantial and threading escalation through it deserves its own pass.
 
-Two smaller gaps: `ace_privops_last_was_privileged()` exists so that commands
+Two smaller gaps: `ace_crm_retry_last_was_privileged()` exists so that commands
 can be talky about a file that has just been created root-owned, and no
-command consults it yet; and `utime`, `symlink` and `readlink` have no mediator
+command consults it yet; and `utime`, `symlink` and `readlink` have no FMM/CRM service
 operations, so they do not escalate.
 
 
 
 Shared wrappers for `open`, `stat`, directory enumeration, `unlink`, `rename`,
 `mkdir`, and protection changes. Attempt as the user; fall back to the
-mediator only on `EACCES`/`EPERM`. `ENOENT`, `EROFS`, invalid names, and I/O
+FMM/CRM service only on `EACCES`/`EPERM`. `ENOENT`, `EROFS`, invalid names, and I/O
 errors must never become privilege requests.
 
 Prefer opening in the worker and passing the descriptor back over the existing
@@ -581,7 +581,7 @@ is the single `open()` that needed it and what returns is a capability to one
 object rather than power over others.
 
 Every path is resolved with `openat2()` under `RESOLVE_BENEATH` and
-`RESOLVE_NO_MAGICLINKS` against a dirfd the mediator already holds. `..`,
+`RESOLVE_NO_MAGICLINKS` against a dirfd the FMM/CRM service already holds. `..`,
 unexpected absolute paths, and symlinks leaving the tree are refused rather
 than normalised. `RENAME` carries both paths in one request, because a rename
 whose halves were resolved separately is two operations with a window between
@@ -594,16 +594,16 @@ Do not edit commands one at a time.
 
 `--root` is now authorization only. `--user`, `--deviceview`, and
 `--mountview` are rejected by the product CLI; the broker chooses its internal
-view from the authorization policy. The mediator launch tries silent
-`sudo -n` first and falls back to the ACE-specific `org.ace.Ace.mediator`
+view from the authorization policy. The FMM/CRM service launch tries silent
+`sudo -n` first and falls back to the ACE-specific `org.ace.Ace.fmm`
 polkit action, with generic `pkexec` retained for installs whose user-local
 policy directory is not searched by polkit.
 
-The full test target set covers ordinary and denied operations, mediator and
+The full test target set covers ordinary and denied operations, FMM/CRM service and
 broker death, stale channels, malformed packets, path traversal, symlink
 escapes, cross-class requests, cancellation, and the protected-file end to
 end path. `make install` installs the action, desktop launcher, matching
-binaries, and optional companions. The remaining mediator gaps are the path
+binaries, and optional companions. The remaining FMM/CRM service gaps are the path
 resolution, talky reporting, and unsupported DOS-call items recorded below.
 
 Run the full suite, `make install`, update `README.md`, `HANDOFF.md`, and
@@ -645,8 +645,8 @@ When validating changes:
 
 Useful existing focused tests include `test-modes`, `test-device-view`,
 `test-filesystem-translation`, `test-system-assigns`, and the broader command
-and shell tests listed in the Makefile. New mediator tests should use private
-temporary broker/mediator sockets and must always clean up their processes and
+and shell tests listed in the Makefile. New FMM/CRM service tests should use private
+temporary broker/FMM/CRM service sockets and must always clean up their processes and
 mount resources.
 
 ## Decisions not to regress
@@ -669,19 +669,19 @@ The following user decisions remain in force unless explicitly revisited:
   session ends, `DROP_PRIVILEGE`, or an optional timeout that is off by
   default. ACE does not prompt per object, and must not be changed to;
 * the shared seam always attempts an operation as the user first, and reaches
-  the mediator only on `EACCES`/`EPERM`. This is what keeps session-scoped
+  the FMM/CRM service only on `EACCES`/`EPERM`. This is what keeps session-scoped
   authorization from making everything the user touches root-owned;
 * there is no configured list of protected paths, and none may be added. The
   boundary is whatever the kernel refuses;
-* files created through the mediator are root-owned, and ACE says so when it
+* files created through the FMM/CRM service are root-owned, and ACE says so when it
   creates them;
 * ownerless filesystems (FAT, exFAT, NTFS) are mounted with `uid=` set to the
   ACE user, because a filesystem with no owners presented to a single user who
   owns all of it is exactly what an Amiga floppy was;
-* the mediator has no operation that executes anything, and gaining one would
+* the FMM/CRM service has no operation that executes anything, and gaining one would
   turn a `--root` session into a root shell reachable from any ARexx script;
-* the volume worker and the access worker are separate processes, and the
-  access worker's inability to mount anything is structural -- it holds no
+* the volume worker and the CRM are separate processes, and the
+  CRM's inability to mount anything is structural -- it holds no
   channel to the volume side. Do not merge them back into one process with a
   capability mask;
 * no unprivileged ACE process ever enters a mount namespace, because it
@@ -697,6 +697,6 @@ The central security/product decision is now:
 
 > ACE's shell, console, and broker always run as the user. A user who starts
 > ACE with `--root` permits the user-owned broker to request narrowly scoped
-> privileged operations from a root mediator. The mediator has a volume-view
+> privileged operations from a root FMM/CRM service. The FMM/CRM service has a volume-view
 > personality and a separate protected-operation personality, but it is not a
 > root shell and it does not own user state.

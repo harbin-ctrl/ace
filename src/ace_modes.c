@@ -88,8 +88,8 @@ int ace_mode_parse(int *argc, char **argv, struct ace_mode_options *options)
  * using the user's session bus, display connection, configuration and HOME,
  * none of which a root process can borrow.
  *
- * The elevation that remains lives in ace_mediator_client.c, and what it
- * elevates is the mediator, not ACE.
+ * The elevation that remains lives in ace_fmm_client.c, and what it
+ * elevates is the fmm, not ACE.
  */
 
 static int configure(const struct ace_mode_options *options, int identity_only)
@@ -100,7 +100,7 @@ static int configure(const struct ace_mode_options *options, int identity_only)
      * It used to be answered by geteuid(), because the process had re-executed
      * itself as root and the kernel's opinion was the truth.  Nothing
      * re-executes any more, so the question is no longer "am I root" but "is
-     * this session allowed to ask the mediator for help", and only the
+     * this session allowed to ask the fmm for help", and only the
      * switches and the inherited session state can answer that.
      *
      * The environment carries it to child processes because a command started
@@ -129,7 +129,7 @@ static int configure(const struct ace_mode_options *options, int identity_only)
     root = options->root || (inherited_privilege &&
                              strcmp(inherited_privilege, "root") == 0);
     /* The view is no longer a product choice.  A normal session uses the
-       host's existing mounts; an authorised session gets the mediator-owned
+       host's existing mounts; an authorised session gets the fmm-owned
        device view as part of that authorization. */
     device_view = root;
     (void)identity_only;

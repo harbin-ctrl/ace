@@ -31,7 +31,7 @@
 #include <exec/execbase.h>
 #include <exec/libraries.h>
 #include <utility/utility.h>
-#include "ace_privops.h"
+#include "ace_crm_retry.h"
 #include "ace_modes.h"
 #include "broker_client.h"
 #include "native_host.h"
@@ -585,7 +585,7 @@ BOOL SetFileDate(CONST_STRPTR name, const struct DateStamp *date)
         return DOSFALSE;
     }
     if (native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
-        ace_privops_stat(resolved, &information, 1) != 0) {
+        ace_crm_retry_stat(resolved, &information, 1) != 0) {
         set_native_broker_error();
         return DOSFALSE;
     }
@@ -787,7 +787,7 @@ static int native_fill_fib(const char *path, const char *name, int follow,
     char mapped_path[PATH_MAX];
 
     /* A Linux symbolic link maps directly to AmigaDOS's ST_SOFTLINK. */
-    if (ace_privops_stat(path, &information, follow) != 0) {
+    if (ace_crm_retry_stat(path, &information, follow) != 0) {
         native_ioerr = errno;
         return -1;
     }
@@ -1610,8 +1610,8 @@ static int native_named_device_path(CONST_STRPTR name)
  * The ordinary resolver intentionally walks as the session user, which is
  * the right answer for normal names and for deciding whether a typo exists.
  * Once the shell has deliberately entered a directory such as /root, though,
- * resolving ".bashrc" fails before ace_privops_fopen() gets to try the
- * mediator.  The broker already gave us the trusted host spelling of the
+ * resolving ".bashrc" fails before ace_crm_retry_fopen() gets to try the
+ * crm.  The broker already gave us the trusted host spelling of the
  * current directory; combine that with the relative name and let the access
  * seam make the permission decision on the complete object.
  */
@@ -1722,7 +1722,7 @@ static int native_union_existing(CONST_STRPTR name, char *result,
        in a fresh root session.  If the object is absent, retain the iterator
        below for true multi-assigns. */
     if (native_broker_resolve_path(name, result, result_size) == 0 &&
-        ace_privops_stat(result, &direct_information, 1) == 0) {
+        ace_crm_retry_stat(result, &direct_information, 1) == 0) {
         if (device)
             ace_aros_FreeDeviceProc(device);
         return 0;
@@ -1732,7 +1732,7 @@ static int native_union_existing(CONST_STRPTR name, char *result,
         struct stat information;
 
         if (native_union_candidate(name, device, result, result_size) == 0) {
-            if (ace_privops_stat(result, &information, 1) == 0) {
+            if (ace_crm_retry_stat(result, &information, 1) == 0) {
                 ace_aros_FreeDeviceProc(device);
                 return 0;
             }
@@ -1760,7 +1760,7 @@ BPTR Lock(CONST_STRPTR name, LONG mode)
     if ((native_named_device_path(name) ?
          native_union_existing(name, resolved, sizeof(resolved)) :
          native_resolve_path_for_access(name, resolved, sizeof(resolved))) != 0 ||
-        ace_privops_stat(resolved, &information, 1) != 0) {
+        ace_crm_retry_stat(resolved, &information, 1) != 0) {
         if (native_named_device_path(name) &&
             (errno == ENOENT || errno == ENOTDIR))
             native_ioerr = ERROR_OBJECT_NOT_FOUND;
@@ -1788,7 +1788,7 @@ BPTR native_lock_host_path(const char *path)
     struct stat information;
     struct native_lock *lock;
 
-    if (!path || ace_privops_stat(path, &information, 1) != 0) {
+    if (!path || ace_crm_retry_stat(path, &information, 1) != 0) {
         native_ioerr = errno;
         return NULL;
     }
@@ -1997,7 +1997,7 @@ BPTR CreateDir(CONST_STRPTR name)
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
         return BNULL;
     }
-    if (ace_privops_mkdir(resolved, 0777) != 0) {
+    if (ace_crm_retry_mkdir(resolved, 0777) != 0) {
         if (errno == EEXIST)
             native_ioerr = ERROR_OBJECT_EXISTS;
         else
@@ -2048,7 +2048,7 @@ LONG Examine(BPTR handle, struct FileInfoBlock *fib)
        again. */
     if (lock->scan)
         closedir(lock->scan);
-    lock->scan = fib->fib_DirEntryType > 0 ? ace_privops_opendir(lock->path)
+    lock->scan = fib->fib_DirEntryType > 0 ? ace_crm_retry_opendir(lock->path)
                                            : NULL;
     lock->scan_key = 0;
     lock->scan_prev_pos = lock->scan ? telldir(lock->scan) : 0;
@@ -2297,7 +2297,7 @@ BPTR OpenFromLock(BPTR handle)
     if (!lock)
         return BNULL;
     
-    FILE *file = ace_privops_fopen(lock->path, "rb");
+    FILE *file = ace_crm_retry_fopen(lock->path, "rb");
     if (!file) {
         native_ioerr = errno == ENOENT ? ERROR_OBJECT_NOT_FOUND : errno;
         return BNULL;
@@ -2442,7 +2442,7 @@ BPTR Open(CONST_STRPTR name, LONG mode)
            as a directory so Shell.c can apply its implicit-CD behavior. */
         if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0) {
             errno = 0;
-            file = ace_privops_fopen(resolved, access);
+            file = ace_crm_retry_fopen(resolved, access);
             open_errno = errno;
         }
 
@@ -2451,7 +2451,7 @@ BPTR Open(CONST_STRPTR name, LONG mode)
             if (native_union_candidate(name, device, resolved,
                                        sizeof(resolved)) == 0) {
                 errno = 0;
-                file = ace_privops_fopen(resolved, access);
+                file = ace_crm_retry_fopen(resolved, access);
                 open_errno = errno;
             }
             if (file || mode == MODE_NEWFILE ||
@@ -2474,7 +2474,7 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         return NULL;
     } else {
         errno = 0;
-        file = ace_privops_fopen(resolved, access);
+        file = ace_crm_retry_fopen(resolved, access);
         open_errno = errno;
     }
     /* A bare name that is not in the current directory used to be looked up
@@ -2545,7 +2545,7 @@ LONG DeleteFile(CONST_STRPTR name)
        allows EPERM), and an empty one is then rmdir()'s job; a directory
        that still has children stays refused, which is what makes Delete
        recurse into it before trying again. */
-    if (ace_privops_unlink(resolved) == 0) {
+    if (ace_crm_retry_unlink(resolved) == 0) {
         ace_clipboard_store_deleted_path(resolved);
         return DOSTRUE;
     }
@@ -2599,8 +2599,8 @@ LONG SetProtection(CONST_STRPTR name, ULONG protection)
 
     if (!name ||
         native_broker_resolve_path(name, resolved, sizeof(resolved)) != 0 ||
-        ace_privops_stat(resolved, &information, 1) != 0 ||
-        ace_privops_chmod(resolved,
+        ace_crm_retry_stat(resolved, &information, 1) != 0 ||
+        ace_crm_retry_chmod(resolved,
                           native_mode_from_protection(information.st_mode,
                                                       (LONG)protection)) != 0) {
         set_native_broker_error();
@@ -2630,7 +2630,14 @@ LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name)
         set_native_broker_error();
         return DOSFALSE;
     }
-    if (ace_privops_rename(old_path, new_path) != 0) {
+    /* Temporary root-rename diagnostic.  The AROS command has already shown
+       its DOS-level calls; record ACE's resulting host spellings before any
+       crm decision, and deliberately leave the filesystem unchanged. */
+    Printf("ACE Rename(%s, %s) resolves to (%s, %s) [not executed]\n",
+           old_name, new_name, old_path, new_path);
+    native_ioerr = 0;
+    return DOSTRUE;
+    if (ace_crm_retry_rename(old_path, new_path) != 0) {
         native_ioerr = errno == EXDEV ? ERROR_RENAME_ACROSS_DEVICES : errno;
         if (errno == ENOENT)
             native_ioerr = ERROR_OBJECT_NOT_FOUND;

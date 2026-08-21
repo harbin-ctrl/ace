@@ -1,9 +1,9 @@
 #!/bin/sh
 # An ordinary ACE command reaching a file only root can reach.
 #
-# This is the user-facing end of the whole mediator design, and the only test
+# This is the user-facing end of the whole fmm design, and the only test
 # that exercises the entire path in one go: an unprivileged command, the
-# shared DOS seam, the user's broker, a root mediator, an access worker, a
+# shared DOS seam, the user's broker, a root fmm, an CRM, a
 # descriptor passed back, and the bytes read by the command that asked.
 #
 # It also checks the half that makes the other half mean anything -- that the
@@ -104,10 +104,10 @@ output=$(ace root "$repo_dir/build/Type" "$name" 2>&1) ||
 [ "$output" = "top-secret" ] ||
     fail "Type returned the wrong contents: $output"
 
-# The mediator is what made that possible, and it is a root process.
-mediator_pid=$(pgrep -u 0 -x ace-mediator 2>/dev/null | head -1 || true)
-[ -n "$mediator_pid" ] ||
-    fail 'the file was read without a root mediator, which should be impossible'
+# The fmm is what made that possible, and it is a root process.
+fmm_pid=$(pgrep -u 0 -x ace-fmm 2>/dev/null | head -1 || true)
+[ -n "$fmm_pid" ] ||
+    fail 'the file was read without a root fmm, which should be impossible'
 
 # Delete needs privilege too: /tmp is sticky, so the user cannot remove a file
 # owned by root even though the directory is writable.
@@ -119,17 +119,17 @@ fi
 stop_broker
 
 # Without --root the same operation is refused, and the refusal is the
-# ordinary one the user would have had with no mediator at all.
+# ordinary one the user would have had with no fmm at all.
 sudo -n sh -c "printf 'top-secret\n' > $secret && chmod 600 $secret"
 start_broker || fail 'the unprivileged broker did not start'
 if ace user "$repo_dir/build/Type" "$name" >/dev/null 2>&1; then
     fail 'an unauthorised session read the protected file'
 fi
-# And no mediator was started for it: --root is the permission, and without it
+# And no fmm was started for it: --root is the permission, and without it
 # nothing should be asking for one.
-if pgrep -u 0 -x ace-mediator >/dev/null 2>&1; then
-    fail 'an unauthorised session started a root mediator'
+if pgrep -u 0 -x ace-fmm >/dev/null 2>&1; then
+    fail 'an unauthorised session started a root fmm'
 fi
 stop_broker
 
-printf 'ACE read and deleted a root-only file through the mediator\n'
+printf 'ACE read and deleted a root-only file through the fmm\n'

@@ -283,8 +283,8 @@ static int broker_wait_until_reachable(void)
  * enters a mount namespace any more, because none can: setns() with
  * CLONE_NEWNS requires CAP_SYS_ADMIN in the user namespace that owns the
  * target, and every process on this side of the design is now an ordinary
- * user process.  The device view is reached instead by asking the mediator's
- * access worker to open an object and passing the descriptor back, which gets
+ * user process.  The device view is reached instead by asking the FMM/CRM service's
+ * CRM to open an object and passing the descriptor back, which gets
  * across that boundary without anybody crossing it.
  *
  * Recorded rather than removed in silence, because the CLONE_FS discovery was
@@ -825,11 +825,11 @@ static int broker_request_bytes(uint32_t operation,
  *
  * Its own exchange rather than a flag on the ordinary one, because it is the
  * only request whose reply can carry a descriptor and the only one that names
- * a mediator operation.  Folding it into the general path would put an
+ * a FMM/CRM service operation.  Folding it into the general path would put an
  * ancillary-data read in front of every getvar in the system.
  *
  * The command never speaks to a root process.  It asks the broker, the broker
- * asks the access worker, and what comes back is a status and -- for the
+ * asks the CRM, and what comes back is a status and -- for the
  * operations that open something -- a handle to that one object.
  */
 static int privop_exchange(int fd, uint32_t privop, const char *path,

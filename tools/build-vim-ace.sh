@@ -114,7 +114,7 @@ ace_objects=(
     # belongs to this ACE process.
     "$ace_build/broker-identity.o"
     "$ace_build/ace-modes.o"
-    "$ace_build/ace-privops.o"
+    "$ace_build/ace-crm-retry.o"
     "$ace_build/native_process.o"
     "$ace_build/native_command.o"
     # native_command.c raises the Amiga break signals through the exec

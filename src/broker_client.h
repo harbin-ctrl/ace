@@ -123,8 +123,8 @@ int native_broker_task_break_foreground(uint32_t signals);
 int native_broker_task_list(char *result, size_t result_size);
 
 /*
- * One privileged file operation, performed by the mediator's access worker on
- * this process's behalf.  privop names the mediator operation; second is the
+ * One privileged file operation, performed by the FMM/CRM service's CRM on
+ * this process's behalf.  privop names the FMM/CRM service operation; second is the
  * destination of a rename and NULL otherwise; received_fd takes the
  * descriptor an opening operation produced.
  *
@@ -134,8 +134,8 @@ int native_broker_task_list(char *result, size_t result_size);
 int native_broker_privop(uint32_t privop, const char *path, const char *second,
                          uint32_t flags, uint32_t mode, int *received_fd);
 
-/* Where the mediator put the device roots, or empty for a session without a
-   device view.  Paths beneath it exist only in the mediator's namespace. */
+/* Where the FMM/CRM service put the device roots, or empty for a session without a
+   device view.  Paths beneath it exist only in the FMM/CRM service's namespace. */
 int native_broker_view_root(char *result, size_t result_size);
 
 #endif

@@ -11,9 +11,9 @@
 
 #define _GNU_SOURCE
 
-#include "ace_privops.h"
+#include "ace_crm_retry.h"
 
-#include "ace_mediator_protocol.h"
+#include "ace_privilege_protocol.h"
 #include "ace_modes.h"
 #include "broker_client.h"
 
@@ -44,8 +44,8 @@ static int refusal_is_permission(int failure)
  * The device-view root, asked of the broker once.
  *
  * Cached for the life of the process because it cannot change under a running
- * session: the mediator creates it at startup and it lives as long as the
- * mediator does.  An empty answer means an ordinary session with no device
+ * session: the crm creates it at startup and it lives as long as the
+ * crm does.  An empty answer means an ordinary session with no device
  * view, and is cached too -- asking again on every open would put a broker
  * round trip in front of every file in a Dir.
  */
@@ -63,14 +63,14 @@ static const char *view_root(void)
 }
 
 /*
- * A path that only the mediator can reach.
+ * A path that only the crm can reach.
  *
  * Not a permission question at all: these live in a mount namespace this
  * process is not in and cannot enter, so the local attempt fails with ENOENT
  * however the permissions stand.  Recognising them by position is the only
  * way, and the position comes from the process that chose it.
  */
-static int needs_mediator_regardless(const char *path)
+static int needs_crm_regardless(const char *path)
 {
     const char *root = view_root();
     size_t length = strlen(root);
@@ -80,44 +80,44 @@ static int needs_mediator_regardless(const char *path)
 }
 
 /* Whether this session may ask at all.  Without --root a refusal simply
-   stands, which is what it would have been without the mediator. */
+   stands, which is what it would have been without the crm. */
 static int may_escalate(void)
 {
     return ace_mode_is_root();
 }
 
-static uint32_t open_flags_to_mediator(int flags)
+static uint32_t open_flags_to_crm(int flags)
 {
     uint32_t result = 0;
 
     if (flags & O_CREAT)
-        result |= ACE_MEDIATOR_FLAG_CREATE;
+        result |= ACE_PRIVILEGE_FLAG_CREATE;
     if (flags & O_TRUNC)
-        result |= ACE_MEDIATOR_FLAG_TRUNCATE;
+        result |= ACE_PRIVILEGE_FLAG_TRUNCATE;
     if (flags & O_APPEND)
-        result |= ACE_MEDIATOR_FLAG_APPEND;
+        result |= ACE_PRIVILEGE_FLAG_APPEND;
     if (flags & O_EXCL)
-        result |= ACE_MEDIATOR_FLAG_EXCLUSIVE;
+        result |= ACE_PRIVILEGE_FLAG_EXCLUSIVE;
     return result;
 }
 
-static int mediator_operation_for_open(int flags)
+static int crm_operation_for_open(int flags)
 {
     int access_mode = flags & O_ACCMODE;
 
     if (flags & O_DIRECTORY)
-        return ACE_MEDIATOR_ACCESS_OPEN_DIR;
+        return ACE_PRIVILEGE_ACCESS_OPEN_DIR;
     if (access_mode == O_RDONLY)
-        return ACE_MEDIATOR_ACCESS_OPEN_READ;
-    return ACE_MEDIATOR_ACCESS_OPEN_WRITE;
+        return ACE_PRIVILEGE_ACCESS_OPEN_READ;
+    return ACE_PRIVILEGE_ACCESS_OPEN_WRITE;
 }
 
 static uint32_t update_flag(int flags)
 {
-    return (flags & O_ACCMODE) == O_RDWR ? ACE_MEDIATOR_FLAG_UPDATE : 0;
+    return (flags & O_ACCMODE) == O_RDWR ? ACE_PRIVILEGE_FLAG_UPDATE : 0;
 }
 
-int ace_privops_open(const char *path, int flags, mode_t mode)
+int ace_crm_retry_open(const char *path, int flags, mode_t mode)
 {
     int result;
     int failure;
@@ -128,7 +128,7 @@ int ace_privops_open(const char *path, int flags, mode_t mode)
         errno = EINVAL;
         return -1;
     }
-    if (!needs_mediator_regardless(path)) {
+    if (!needs_crm_regardless(path)) {
         result = open(path, flags, mode);
         if (result >= 0)
             return result;
@@ -139,14 +139,14 @@ int ace_privops_open(const char *path, int flags, mode_t mode)
         }
     }
     /*
-     * Read-write is asked for as write.  The mediator's opens are typed and
+     * Read-write is asked for as write.  The crm's opens are typed and
      * there is no read-write among them, deliberately: an operation that both
      * reads and writes a protected object is two capabilities, and ACE's uses
      * -- copy in, copy out, examine -- each want one.
      */
-    if (native_broker_privop((uint32_t)mediator_operation_for_open(flags), path,
+    if (native_broker_privop((uint32_t)crm_operation_for_open(flags), path,
                              NULL,
-                             open_flags_to_mediator(flags) |
+                             open_flags_to_crm(flags) |
                                  update_flag(flags),
                              (uint32_t)(mode & 07777), &received) != 0)
         return -1;
@@ -176,7 +176,7 @@ static int flags_for_stdio_mode(const char *mode)
     }
 }
 
-FILE *ace_privops_fopen(const char *path, const char *mode)
+FILE *ace_crm_retry_fopen(const char *path, const char *mode)
 {
     int fd;
     FILE *stream;
@@ -185,7 +185,7 @@ FILE *ace_privops_fopen(const char *path, const char *mode)
         errno = EINVAL;
         return NULL;
     }
-    fd = ace_privops_open(path, flags_for_stdio_mode(mode), 0666);
+    fd = ace_crm_retry_open(path, flags_for_stdio_mode(mode), 0666);
     if (fd < 0)
         return NULL;
     stream = fdopen(fd, mode);
@@ -198,9 +198,9 @@ FILE *ace_privops_fopen(const char *path, const char *mode)
     return stream;
 }
 
-DIR *ace_privops_opendir(const char *path)
+DIR *ace_crm_retry_opendir(const char *path)
 {
-    int fd = ace_privops_open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+    int fd = ace_crm_retry_open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
     DIR *directory;
 
     if (fd < 0)
@@ -215,7 +215,7 @@ DIR *ace_privops_opendir(const char *path)
     return directory;
 }
 
-int ace_privops_stat(const char *path, struct stat *information, int follow)
+int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
 {
     int failure;
     int received = -1;
@@ -225,7 +225,7 @@ int ace_privops_stat(const char *path, struct stat *information, int follow)
         errno = EINVAL;
         return -1;
     }
-    if (!needs_mediator_regardless(path)) {
+    if (!needs_crm_regardless(path)) {
         if ((follow ? stat(path, information)
                     : lstat(path, information)) == 0)
             return 0;
@@ -241,7 +241,7 @@ int ace_privops_stat(const char *path, struct stat *information, int follow)
      * kernel's business and a copy of it in a protocol is a copy that can
      * disagree with the one the caller compiled against.
      */
-    if (native_broker_privop(ACE_MEDIATOR_ACCESS_STAT, path, NULL, 0, 0,
+    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL, 0, 0,
                              &received) != 0)
         return -1;
     if (received < 0) {
@@ -293,61 +293,61 @@ static int named_operation(uint32_t privop, const char *path,
     return 0;
 }
 
-int ace_privops_unlink(const char *path)
+int ace_crm_retry_unlink(const char *path)
 {
     last_was_privileged = 0;
     if (!path) {
         errno = EINVAL;
         return -1;
     }
-    if (needs_mediator_regardless(path))
-        return named_operation(ACE_MEDIATOR_ACCESS_UNLINK, path, NULL, 0, -1, 1);
-    return named_operation(ACE_MEDIATOR_ACCESS_UNLINK, path, NULL, 0,
+    if (needs_crm_regardless(path))
+        return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, -1, 1);
+    return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0,
                            unlink(path), 0);
 }
 
-int ace_privops_rename(const char *from, const char *to)
+int ace_crm_retry_rename(const char *from, const char *to)
 {
     last_was_privileged = 0;
     if (!from || !to) {
         errno = EINVAL;
         return -1;
     }
-    if (needs_mediator_regardless(from) || needs_mediator_regardless(to))
-        return named_operation(ACE_MEDIATOR_ACCESS_RENAME, from, to, 0, -1, 1);
-    return named_operation(ACE_MEDIATOR_ACCESS_RENAME, from, to, 0,
+    if (needs_crm_regardless(from) || needs_crm_regardless(to))
+        return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, -1, 1);
+    return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0,
                            rename(from, to), 0);
 }
 
-int ace_privops_mkdir(const char *path, mode_t mode)
+int ace_crm_retry_mkdir(const char *path, mode_t mode)
 {
     last_was_privileged = 0;
     if (!path) {
         errno = EINVAL;
         return -1;
     }
-    if (needs_mediator_regardless(path))
-        return named_operation(ACE_MEDIATOR_ACCESS_MKDIR, path, NULL,
+    if (needs_crm_regardless(path))
+        return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
                                (uint32_t)(mode & 07777), -1, 1);
-    return named_operation(ACE_MEDIATOR_ACCESS_MKDIR, path, NULL,
+    return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
                            (uint32_t)(mode & 07777), mkdir(path, mode), 0);
 }
 
-int ace_privops_chmod(const char *path, mode_t mode)
+int ace_crm_retry_chmod(const char *path, mode_t mode)
 {
     last_was_privileged = 0;
     if (!path) {
         errno = EINVAL;
         return -1;
     }
-    if (needs_mediator_regardless(path))
-        return named_operation(ACE_MEDIATOR_ACCESS_SET_PROTECTION, path, NULL,
+    if (needs_crm_regardless(path))
+        return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
                                (uint32_t)(mode & 07777), -1, 1);
-    return named_operation(ACE_MEDIATOR_ACCESS_SET_PROTECTION, path, NULL,
+    return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
                            (uint32_t)(mode & 07777), chmod(path, mode), 0);
 }
 
-int ace_privops_last_was_privileged(void)
+int ace_crm_retry_last_was_privileged(void)
 {
     return last_was_privileged;
 }

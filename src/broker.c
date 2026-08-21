@@ -7,7 +7,7 @@
 #include "broker_dictionary.h"
 #include "broker_protocol.h"
 #include "clipboard_bridge.h"
-#include "ace_mediator_client.h"
+#include "ace_fmm_client.h"
 #include "dos_devices.h"
 #include "ace_modes.h"
 
@@ -386,15 +386,56 @@ static void release_session(struct broker_session *session)
  */
 static char system_root[PATH_MAX];
 /*
- * The session's mediator, or NULL for an ordinary unprivileged session.
+ * The session's fmm, or NULL for an ordinary unprivileged session.
  *
  * Deliberately not closed from the signal handler.  Closing it politely means
  * sending a message and waiting, which a handler must not do; letting the
- * process exit closes the descriptor, and the mediator treats that EOF as the
+ * process exit closes the descriptor, and the fmm treats that EOF as the
  * end of the session.  It is the same path a crashed broker takes, so it is
  * the path that has to work anyway.
  */
-static struct ace_mediator *mediator;
+static struct ace_privilege_connection *fmm;
+/* The broker owns the CRM channel as well as the FMM channel.  Keeping both
+ * handles here makes their common --root-shell lifetime explicit. */
+static struct ace_privilege_connection *crm;
+static uint32_t root_shells;
+
+/*
+ * The privileged services belong to the set of live --root shells, not to
+ * the broker process itself.  The transition from no such shells to one is
+ * the one time an authentication request may be made; further shells reuse
+ * the already-authorised pair.
+ */
+static int start_root_services(void)
+{
+    if (!ace_mode_is_root() || fmm)
+        return 0;
+    fmm = ace_fmm_start(ACE_PRIVILEGE_CAP_VOLUME |
+                        ACE_PRIVILEGE_CAP_ACCESS);
+    if (!fmm)
+        return -1;
+    if (ace_dos_devices_prepare_device_view(fmm) == 0)
+        return 0;
+    ace_privilege_connection_close(fmm);
+    fmm = NULL;
+    ace_dos_devices_shutdown();
+    return -1;
+}
+
+/* Close the CRM first: its EOF is its unambiguous stop signal.  The FMM then
+ * shuts down its private mount namespace. */
+static void stop_root_services(void)
+{
+    if (crm) {
+        ace_privilege_connection_close(crm);
+        crm = NULL;
+    }
+    if (fmm) {
+        ace_privilege_connection_close(fmm);
+        fmm = NULL;
+    }
+    ace_dos_devices_shutdown();
+}
 
 static struct assign_entry *allocate_assign(struct broker_session *session,
                                             const char *name);
@@ -2338,7 +2379,7 @@ static int send_response_bytes(int fd, int status, const void *payload,
  *
  * SCM_RIGHTS has to ride with real data, so the header is the data it
  * accompanies.  This is how a protected object reaches the command that asked
- * for it: the access worker opened it, the broker never looked inside it, and
+ * for it: the CRM opened it, the broker never looked inside it, and
  * what the command receives is a handle to that one object rather than any
  * ability to open another.
  */
@@ -2381,23 +2422,21 @@ static int send_response_with_fd(int fd, int status, int passed_fd)
 }
 
 /*
- * Ask the mediator's access worker to do one thing, on behalf of a command.
+ * Ask the fmm's CRM to do one thing, on behalf of a command.
  *
  * Everything privileged in an ACE session funnels through here.  The command
  * has already tried the operation as itself and been refused, or the path is
- * one only the mediator's namespace contains; either way this is the single
+ * one only the fmm's namespace contains; either way this is the single
  * point where a user process's request becomes a root process's action, and
  * it is worth it being one function in one program.
  *
- * The mediator is started on first need rather than at --root, because --root
- * is permission to ask and not an instruction to authenticate.  A session that
- * never touches a protected object never raises an authentication prompt.
+ * The first live --root shell starts the FMM; the CRM is still created on its
+ * first file-operation use.  Both remain available until the final --root
+ * shell leaves the broker.
  */
-static struct ace_mediator *access_worker;
-
 static int ensure_access_worker(void)
 {
-    if (access_worker)
+    if (crm)
         return 0;
     if (!ace_mode_is_root()) {
         /* Not an authorised session.  The command's own refusal stands, which
@@ -2405,14 +2444,10 @@ static int ensure_access_worker(void)
         errno = EACCES;
         return -1;
     }
-    if (!mediator) {
-        mediator = ace_mediator_start(ACE_MEDIATOR_CAP_VOLUME |
-                                      ACE_MEDIATOR_CAP_ACCESS);
-        if (!mediator)
-            return -1;
-    }
-    access_worker = ace_mediator_access_worker(mediator);
-    return access_worker ? 0 : -1;
+    if (!fmm && start_root_services() != 0)
+        return -1;
+    crm = ace_fmm_start_crm(fmm);
+    return crm ? 0 : -1;
 }
 
 /*
@@ -2431,10 +2466,10 @@ static const char *privop_domain_path(const char *path, uint32_t *flags)
 
     if (length && strncmp(path, view_root, length) == 0 &&
         path[length] == '/' && path[length + 1]) {
-        *flags &= ~(uint32_t)ACE_MEDIATOR_FLAG_HOST_PATH;
+        *flags &= ~(uint32_t)ACE_PRIVILEGE_FLAG_HOST_PATH;
         return path + length + 1;
     }
-    *flags |= ACE_MEDIATOR_FLAG_HOST_PATH;
+    *flags |= ACE_PRIVILEGE_FLAG_HOST_PATH;
     /* An absolute path becomes one relative to the worker's root, which is
        the real root.  The leading slash is dropped rather than kept, because
        the worker refuses an absolute path outright: which root a path is
@@ -2458,7 +2493,7 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
         return errno ? errno : EACCES;
 
     first = privop_domain_path(path, &flags);
-    if (request->privop == ACE_MEDIATOR_ACCESS_RENAME) {
+    if (request->privop == ACE_PRIVILEGE_ACCESS_RENAME) {
         uint32_t second_flags = flags;
 
         if (!value || !*value || value[0] != '/')
@@ -2468,27 +2503,27 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
            a volume into the host tree is not a rename this layer can express,
            and pretending otherwise would resolve the two ends under different
            rules. */
-        if ((second_flags & ACE_MEDIATOR_FLAG_HOST_PATH) !=
-            (flags & ACE_MEDIATOR_FLAG_HOST_PATH))
+        if ((second_flags & ACE_PRIVILEGE_FLAG_HOST_PATH) !=
+            (flags & ACE_PRIVILEGE_FLAG_HOST_PATH))
             return EXDEV;
     }
 
-    status = ace_mediator_access(access_worker, request->privop, first, second,
+    status = ace_crm(crm, request->privop, first, second,
                                  flags, request->privop_mode, received_fd);
     if (status < 0) {
         /* The channel failed, not the operation.  Drop the worker so the next
            request builds a fresh one rather than talking to a corpse. */
-        ace_mediator_close(access_worker);
-        access_worker = NULL;
+        ace_privilege_connection_close(crm);
+        crm = NULL;
         return EIO;
     }
-    if (status == ACE_MEDIATOR_OK)
+    if (status == ACE_PRIVILEGE_OK)
         return 0;
-    if (status == ACE_MEDIATOR_ESCAPED)
+    if (status == ACE_PRIVILEGE_ESCAPED)
         return ELOOP;
-    if (status == ACE_MEDIATOR_UNAUTHORISED || status == ACE_MEDIATOR_REFUSED)
+    if (status == ACE_PRIVILEGE_UNAUTHORISED || status == ACE_PRIVILEGE_REFUSED)
         return EACCES;
-    if (status == ACE_MEDIATOR_UNSUPPORTED)
+    if (status == ACE_PRIVILEGE_UNSUPPORTED)
         return ENOSYS;
     return errno ? errno : EIO;
 }
@@ -3286,9 +3321,14 @@ static int handle_client(struct broker_connection *connection)
     case AMIGA_BROKER_ATTACH:
         if (connection->anchor >= 0) {
             status = EALREADY;
+        } else if (ace_mode_is_root() && root_shells == 0 &&
+                   start_root_services() != 0) {
+            status = errno ? errno : EACCES;
         } else {
             session->anchors++;
             connection->anchor = (int)(session - sessions);
+            if (ace_mode_is_root())
+                root_shells++;
         }
         break;
 
@@ -3973,6 +4013,8 @@ static void drop_connection(size_t index)
 
         if (session->anchors && !--session->anchors)
             release_session(session);
+        if (ace_mode_is_root() && root_shells && !--root_shells)
+            stop_root_services();
     }
     close(connection->fd);
     connections[index] = connections[--connection_count];
@@ -4096,7 +4138,7 @@ int main(int argc, char **argv)
             fprintf(stderr,
                     "ace-broker: ACE must be started as a normal user; "
                     "privileged operations\nare provided by the ACE "
-                    "mediator.\n");
+                    "fmm.\n");
         else
             fprintf(stderr, "ace-broker: requested mode is unavailable: %s\n",
                     strerror(errno));
@@ -4127,30 +4169,6 @@ int main(int argc, char **argv)
 
     broker_started = time(NULL);
     ace_dos_devices_discover();
-    if (ace_mode_is_device_view()) {
-        /*
-         * The one place this process asks for privilege, and it asks rather
-         * than takes it: the mediator is a separate root process, and this
-         * broker stays the user's own for its whole life.
-         *
-         * Both capabilities at once because both are wanted for the same
-         * reason and by the same decision.  The user authorised ACE, and
-         * splitting that into two questions would be asking twice about one
-         * answer.
-         */
-        mediator = ace_mediator_start(ACE_MEDIATOR_CAP_VOLUME |
-                                      ACE_MEDIATOR_CAP_ACCESS);
-        if (!mediator) {
-            fprintf(stderr, "ace-broker: could not obtain administrator "
-                            "access for the device view: %s\n",
-                    strerror(errno));
-            return 1;
-        }
-        if (ace_dos_devices_prepare_device_view(mediator) != 0) {
-            perror("ace-broker: device view");
-            return 1;
-        }
-    }
     resolve_system_root();
     restore_environment_archive();
 

@@ -1,5 +1,5 @@
 /*
- * The mediator's mount personality.
+ * The fmm's mount personality.
  *
  * Everything here runs as root, so the order of operations in each function
  * is part of the design rather than a matter of taste: a name is validated
@@ -16,7 +16,7 @@
 
 #define _GNU_SOURCE
 
-#include "ace_mediator_volume.h"
+#include "ace_fmm_volume.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -54,7 +54,7 @@ static int namespace_ready;
  * This list lives here rather than being taken from the request, because a
  * filesystem type is a choice of which kernel driver parses untrusted bytes
  * from a disk.  The broker may say what it found; it may not say what the
- * mediator is willing to hand to the kernel.
+ * fmm is willing to hand to the kernel.
  *
  * btrfs is absent on purpose and not by omission: a btrfs mount whose root is
  * a subvolume cannot presently be turned back into the true device root, and
@@ -290,7 +290,7 @@ static int path_is_mountpoint(const char *path)
 /*
  * Where the device roots hang.
  *
- * Inside the mediator's own namespace, so the name is not shared with
+ * Inside the fmm's own namespace, so the name is not shared with
  * anything and does not have to avoid colliding with the rest of the system.
  * It is reported back to the broker rather than agreed in advance, because
  * the side that created it is the side that knows.
@@ -299,11 +299,11 @@ static int ensure_view_root(uid_t served_uid)
 {
     /*
      * ACE_MOUNT_ROOT relocates the user's own mount tree, which is a choice
-     * about tidiness rather than about privilege: the mediator still derives
+     * about tidiness rather than about privilege: the fmm still derives
      * every device path itself, still validates the device, and still names
-     * the leaf.  pkexec scrubs the environment, so a production mediator
+     * the leaf.  pkexec scrubs the environment, so a production fmm
      * never sees this and always uses /run -- it is reachable only by a
-     * mediator launched directly, which is to say by a test.
+     * fmm launched directly, which is to say by a test.
      */
     const char *configured = getenv("ACE_MOUNT_ROOT");
 
@@ -335,7 +335,7 @@ static int ensure_view_root(uid_t served_uid)
     return 0;
 }
 
-const char *ace_mediator_volume_view_root(void)
+const char *ace_fmm_volume_view_root(void)
 {
     return view_root;
 }
@@ -373,17 +373,17 @@ static struct volume_entry *free_entry(void)
 static int init_namespace(int *host_errno)
 {
     if (namespace_ready)
-        return ACE_MEDIATOR_OK;
+        return ACE_PRIVILEGE_OK;
     if (unshare(CLONE_NEWNS) != 0 ||
         mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     namespace_ready = 1;
-    return ACE_MEDIATOR_OK;
+    return ACE_PRIVILEGE_OK;
 }
 
-static int do_mount(const struct ace_mediator_request *request,
+static int do_mount(const struct ace_privilege_request *request,
                     const void *payload, uid_t served_uid, char *reply,
                     size_t reply_size, size_t *reply_length, int *host_errno)
 {
@@ -399,37 +399,37 @@ static int do_mount(const struct ace_mediator_request *request,
 
     if (split_payload(payload, request->payload_length, &kernel_name,
                       &filesystem_type) != 0)
-        return ACE_MEDIATOR_PROTOCOL_ERROR;
+        return ACE_PRIVILEGE_PROTOCOL_ERROR;
     /* Name first, before it is used to build anything. */
     if (!valid_kernel_name(kernel_name) || !valid_type_name(filesystem_type))
-        return ACE_MEDIATOR_ESCAPED;
+        return ACE_PRIVILEGE_ESCAPED;
     if (!supported_filesystem(filesystem_type))
-        return ACE_MEDIATOR_UNSUPPORTED;
+        return ACE_PRIVILEGE_UNSUPPORTED;
     if (!namespace_ready)
-        return ACE_MEDIATOR_REFUSED;
+        return ACE_PRIVILEGE_REFUSED;
 
     /* The device path is derived here and never accepted from the far side.
        That is the whole reason a malformed request cannot ask this process to
        mount something of its choosing. */
     if (snprintf(device_path, sizeof(device_path), "/dev/%s", kernel_name) >=
         (int)sizeof(device_path))
-        return ACE_MEDIATOR_ESCAPED;
+        return ACE_PRIVILEGE_ESCAPED;
     if (stat(device_path, &information) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     if (!S_ISBLK(information.st_mode)) {
         *host_errno = ENOTBLK;
-        return ACE_MEDIATOR_ESCAPED;
+        return ACE_PRIVILEGE_ESCAPED;
     }
 
     if (ensure_view_root(served_uid) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     if (snprintf(target, sizeof(target), "%s/%s", view_root, kernel_name) >=
         (int)sizeof(target))
-        return ACE_MEDIATOR_ESCAPED;
+        return ACE_PRIVILEGE_ESCAPED;
 
     entry = entry_for(kernel_name);
     if (entry && entry->view_path[0]) {
@@ -437,17 +437,17 @@ static int do_mount(const struct ace_mediator_request *request,
            reply does not stack a second mount on the same directory. */
         written = snprintf(reply, reply_size, "%s", entry->view_path);
         if (written < 0 || (size_t)written >= reply_size)
-            return ACE_MEDIATOR_PROTOCOL_ERROR;
+            return ACE_PRIVILEGE_PROTOCOL_ERROR;
         *reply_length = (size_t)written + 1;
-        return ACE_MEDIATOR_OK;
+        return ACE_PRIVILEGE_OK;
     }
     if (make_directory_path(target) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     if (path_is_mountpoint(target)) {
         *host_errno = EBUSY;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
 
     options[0] = '\0';
@@ -478,19 +478,19 @@ static int do_mount(const struct ace_mediator_request *request,
          */
         if (mount(source_mount, target, NULL, MS_BIND, NULL) != 0) {
             *host_errno = errno;
-            return ACE_MEDIATOR_HOST_ERROR;
+            return ACE_PRIVILEGE_HOST_ERROR;
         }
     } else if (mount(device_path, target, filesystem_type, 0,
                      options[0] ? options : NULL) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
 
     entry = entry ? entry : free_entry();
     if (!entry) {
         (void)umount2(target, MNT_DETACH);
         *host_errno = ENOSPC;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     entry->in_use = 1;
     entry->device_id = information.st_rdev;
@@ -499,12 +499,12 @@ static int do_mount(const struct ace_mediator_request *request,
 
     written = snprintf(reply, reply_size, "%s", entry->view_path);
     if (written < 0 || (size_t)written >= reply_size)
-        return ACE_MEDIATOR_PROTOCOL_ERROR;
+        return ACE_PRIVILEGE_PROTOCOL_ERROR;
     *reply_length = (size_t)written + 1;
-    return ACE_MEDIATOR_OK;
+    return ACE_PRIVILEGE_OK;
 }
 
-static int do_unmount(const struct ace_mediator_request *request,
+static int do_unmount(const struct ace_privilege_request *request,
                       const void *payload, int *host_errno)
 {
     const char *bytes = payload;
@@ -512,24 +512,24 @@ static int do_unmount(const struct ace_mediator_request *request,
 
     if (!bytes || request->payload_length == 0 ||
         bytes[request->payload_length - 1] != '\0')
-        return ACE_MEDIATOR_PROTOCOL_ERROR;
+        return ACE_PRIVILEGE_PROTOCOL_ERROR;
     if (!valid_kernel_name(bytes))
-        return ACE_MEDIATOR_ESCAPED;
+        return ACE_PRIVILEGE_ESCAPED;
     /* Named by the device this worker already knows about, never by a path.
        A path would have to be resolved here a second time, and a check and a
        use that resolve separately are a check and a use that can disagree. */
     entry = entry_for(bytes);
     if (!entry || !entry->view_path[0]) {
         *host_errno = ENOENT;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     if (umount2(entry->view_path, MNT_DETACH) != 0) {
         *host_errno = errno;
-        return ACE_MEDIATOR_HOST_ERROR;
+        return ACE_PRIVILEGE_HOST_ERROR;
     }
     entry->view_path[0] = '\0';
     entry->in_use = 0;
-    return ACE_MEDIATOR_OK;
+    return ACE_PRIVILEGE_OK;
 }
 
 static int do_list(char *reply, size_t reply_size, size_t *reply_length)
@@ -545,14 +545,14 @@ static int do_list(char *reply, size_t reply_size, size_t *reply_length)
         written = snprintf(reply + used, reply_size - used, "%s\t%s\n",
                            entry->kernel_name, entry->view_path);
         if (written < 0 || (size_t)written >= reply_size - used)
-            return ACE_MEDIATOR_PROTOCOL_ERROR;
+            return ACE_PRIVILEGE_PROTOCOL_ERROR;
         used += (size_t)written;
     }
     *reply_length = used;
-    return ACE_MEDIATOR_OK;
+    return ACE_PRIVILEGE_OK;
 }
 
-int ace_mediator_volume_dispatch(const struct ace_mediator_request *request,
+int ace_fmm_volume_dispatch(const struct ace_privilege_request *request,
                                  const void *payload, uid_t served_uid,
                                  char *reply, size_t reply_size,
                                  size_t *reply_length, int *host_errno)
@@ -561,40 +561,40 @@ int ace_mediator_volume_dispatch(const struct ace_mediator_request *request,
     *host_errno = 0;
 
     switch (request->operation) {
-    case ACE_MEDIATOR_VOLUME_INIT_NAMESPACE:
+    case ACE_PRIVILEGE_VOLUME_INIT_NAMESPACE:
         return init_namespace(host_errno);
-    case ACE_MEDIATOR_VOLUME_PREPARE_VIEW:
+    case ACE_PRIVILEGE_VOLUME_PREPARE_VIEW:
         /* The namespace and the view root, without mounting anything.  The
            broker drives the individual mounts, one typed request each, so
            that every device that becomes visible did so because it was named
            -- not because a bulk operation swept something in. */
-        if (init_namespace(host_errno) != ACE_MEDIATOR_OK)
-            return ACE_MEDIATOR_HOST_ERROR;
+        if (init_namespace(host_errno) != ACE_PRIVILEGE_OK)
+            return ACE_PRIVILEGE_HOST_ERROR;
         if (ensure_view_root(served_uid) != 0) {
             *host_errno = errno;
-            return ACE_MEDIATOR_HOST_ERROR;
+            return ACE_PRIVILEGE_HOST_ERROR;
         }
         *reply_length = strlen(view_root) + 1;
         if (*reply_length > reply_size) {
             *reply_length = 0;
-            return ACE_MEDIATOR_PROTOCOL_ERROR;
+            return ACE_PRIVILEGE_PROTOCOL_ERROR;
         }
         memcpy(reply, view_root, *reply_length);
-        return ACE_MEDIATOR_OK;
-    case ACE_MEDIATOR_VOLUME_MOUNT:
+        return ACE_PRIVILEGE_OK;
+    case ACE_PRIVILEGE_VOLUME_MOUNT:
         return do_mount(request, payload, served_uid, reply, reply_size,
                         reply_length, host_errno);
-    case ACE_MEDIATOR_VOLUME_UNMOUNT:
+    case ACE_PRIVILEGE_VOLUME_UNMOUNT:
         return do_unmount(request, payload, host_errno);
-    case ACE_MEDIATOR_VOLUME_LIST:
+    case ACE_PRIVILEGE_VOLUME_LIST:
         return do_list(reply, reply_size, reply_length);
     default:
         break;
     }
-    return ACE_MEDIATOR_REFUSED;
+    return ACE_PRIVILEGE_REFUSED;
 }
 
-void ace_mediator_volume_shutdown(void)
+void ace_fmm_volume_shutdown(void)
 {
     /*
      * Reverse order, so a mount that sits under another comes off first.

@@ -174,7 +174,7 @@ int main(int argc, char **argv)
         if (errno == EPERM)
             fprintf(stderr,
                     "ace-user-shell: ACE must be started as a normal user; privileged "
-                    "operations\nare provided by the ACE mediator.\n");
+                    "operations\nare provided by the ACE fmm.\n");
         else
             fprintf(stderr, "ace-user-shell: requested mode is unavailable: %s\n",
                     strerror(errno));

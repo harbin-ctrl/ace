@@ -6,15 +6,15 @@
 /* Discover filesystem-bearing host block devices for the broker's DOS list. */
 void ace_dos_devices_discover(void);
 
-struct ace_mediator;
+struct ace_privilege_connection;
 
-/* Build the device view through the mediator, after discovery.  The mounts
- * are made in the mediator's private namespace, not this process's, and this
+/* Build the device view through the fmm, after discovery.  The mounts
+ * are made in the fmm's private namespace, not this process's, and this
  * process never acquires the privilege to make them itself. */
-int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator);
+int ace_dos_devices_prepare_device_view(struct ace_privilege_connection *fmm);
 
-/* Where the mediator put the device roots, or "" when there is no device
- * view. Paths beneath it are reachable only through the access worker. */
+/* Where the fmm put the device roots, or "" when there is no device
+ * view. Paths beneath it are reachable only through the CRM. */
 const char *ace_dos_devices_view_root(void);
 
 int ace_dos_devices_is_full_root(const char *path);

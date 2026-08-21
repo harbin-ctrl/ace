@@ -1,5 +1,5 @@
 /*
- * The ACE mediator: the only part of ACE that is root.
+ * The ACE fmm: the only part of ACE that is root.
  *
  * It has no HOME, no current directory of consequence, no configuration, no
  * GUI, no D-Bus connection, and no way to be asked to run a program.  Those
@@ -13,16 +13,16 @@
  *
  * This is chunk B of the migration: the channel, the handshake, and the
  * lifetime, with no privileged operation served yet.  The volume and access
- * classes are refused with ACE_MEDIATOR_REFUSED, which is deliberate -- the
+ * classes are refused with ACE_PRIVILEGE_REFUSED, which is deliberate -- the
  * channel that root will speak over should be tested before anything
  * dangerous rides on it.
  */
 
 #define _GNU_SOURCE
 
-#include "ace_mediator_protocol.h"
-#include "ace_mediator_access.h"
-#include "ace_mediator_volume.h"
+#include "ace_privilege_protocol.h"
+#include "ace_crm.h"
+#include "ace_fmm_volume.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -41,7 +41,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-struct mediator_state {
+struct fmm_state {
     int fd;
     uid_t served_uid;
     pid_t broker_pid;
@@ -61,11 +61,11 @@ static long long now_ms(void)
 }
 
 /*
- * Which user this mediator serves.
+ * Which user this fmm serves.
  *
  * pkexec publishes the invoking uid, and that is the authority: it is the
  * identity polkit actually authorised, not something the broker told us.  The
- * fallbacks matter only for a mediator started some other way -- a test, or a
+ * fallbacks matter only for a fmm started some other way -- a test, or a
  * development run -- and in that case serving the uid we are already running
  * as is the honest answer.
  */
@@ -92,20 +92,20 @@ static uid_t resolve_served_uid(void)
  * narrow and worth stating exactly: the peer is a process that could read a
  * name inside a directory only the served user may enter.  It is not, on its
  * own, proof of identity -- SO_PEERCRED below is what supplies that -- but it
- * closes the case of a mediator being pointed at a channel it was not started
+ * closes the case of a fmm being pointed at a channel it was not started
  * for.
  */
 static int nonce_from_path(const char *path, uint8_t *nonce)
 {
     const char *name = strrchr(path, '/');
-    const char *prefix = "mediator-";
+    const char *prefix = "fmm-";
     size_t index;
 
     name = name ? name + 1 : path;
     if (strncmp(name, prefix, strlen(prefix)) != 0)
         return -1;
     name += strlen(prefix);
-    for (index = 0; index < ACE_MEDIATOR_NONCE_LENGTH; index++) {
+    for (index = 0; index < ACE_PRIVILEGE_NONCE_LENGTH; index++) {
         unsigned value;
 
         if (!isxdigit((unsigned char)name[index * 2]) ||
@@ -138,14 +138,14 @@ static int send_record(int fd, const void *header, size_t header_size,
     return sent < 0 ? -1 : 0;
 }
 
-static int reply(struct mediator_state *state, uint64_t request_id,
+static int reply(struct fmm_state *state, uint64_t request_id,
                  int32_t status, int host_errno, const void *payload,
                  uint32_t payload_length)
 {
-    struct ace_mediator_response response;
+    struct ace_privilege_response response;
 
     memset(&response, 0, sizeof(response));
-    response.magic = ACE_MEDIATOR_MAGIC;
+    response.magic = ACE_PRIVILEGE_MAGIC;
     response.request_id = request_id;
     response.status = status;
     response.host_errno = host_errno;
@@ -162,10 +162,10 @@ static int reply(struct mediator_state *state, uint64_t request_id,
  * leaving the receiver to discover it, because "no descriptor" and "a
  * descriptor I failed to notice" must not look alike on a privileged channel.
  */
-static int reply_with_fd(struct mediator_state *state, uint64_t request_id,
+static int reply_with_fd(struct fmm_state *state, uint64_t request_id,
                          int passed_fd, int32_t worker_pid)
 {
-    struct ace_mediator_response response;
+    struct ace_privilege_response response;
     struct iovec io[2];
     struct msghdr message;
     union {
@@ -176,10 +176,10 @@ static int reply_with_fd(struct mediator_state *state, uint64_t request_id,
     ssize_t sent;
 
     memset(&response, 0, sizeof(response));
-    response.magic = ACE_MEDIATOR_MAGIC;
+    response.magic = ACE_PRIVILEGE_MAGIC;
     response.request_id = request_id;
-    response.status = ACE_MEDIATOR_OK;
-    response.flags = ACE_MEDIATOR_FLAG_HAS_FD;
+    response.status = ACE_PRIVILEGE_OK;
+    response.flags = ACE_PRIVILEGE_FLAG_HAS_FD;
     response.payload_length = sizeof(worker_pid);
 
     memset(&message, 0, sizeof(message));
@@ -203,7 +203,7 @@ static int reply_with_fd(struct mediator_state *state, uint64_t request_id,
 }
 
 /*
- * Fork the access worker into this process's mount namespace.
+ * Fork the CRM into this process's mount namespace.
  *
  * Order matters and is the whole point.  The namespace has to exist first, so
  * that the child inherits it and can see the device view; the child then
@@ -212,7 +212,7 @@ static int reply_with_fd(struct mediator_state *state, uint64_t request_id,
  * socketpair -- a second, independent conversation with a process that can
  * open files and cannot mount them.
  */
-static int spawn_access_worker(struct mediator_state *state,
+static int spawn_crm(struct fmm_state *state,
                                uint64_t request_id)
 {
     int pair[2];
@@ -221,7 +221,7 @@ static int spawn_access_worker(struct mediator_state *state,
     /*
      * A namespace is not required.
      *
-     * It was, while the device view was the only thing an access worker could
+     * It was, while the device view was the only thing an CRM could
      * reach: a worker outside the namespace would have been unable to see the
      * one tree it existed for.  Now that protected host paths are the other
      * half of its job, a worker without a namespace is a perfectly good
@@ -233,7 +233,7 @@ static int spawn_access_worker(struct mediator_state *state,
      * escalation only worked for people who had also asked for a device view.
      */
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) {
-        reply(state, request_id, ACE_MEDIATOR_HOST_ERROR, errno, NULL, 0);
+        reply(state, request_id, ACE_PRIVILEGE_HOST_ERROR, errno, NULL, 0);
         return 0;
     }
     child = fork();
@@ -242,7 +242,7 @@ static int spawn_access_worker(struct mediator_state *state,
 
         close(pair[0]);
         close(pair[1]);
-        reply(state, request_id, ACE_MEDIATOR_HOST_ERROR, failure, NULL, 0);
+        reply(state, request_id, ACE_PRIVILEGE_HOST_ERROR, failure, NULL, 0);
         return 0;
     }
     if (child == 0) {
@@ -250,8 +250,8 @@ static int spawn_access_worker(struct mediator_state *state,
         /* The supervisor's channel is not this process's business.  Closing
            it is what makes the isolation structural rather than declared. */
         close(state->fd);
-        ace_mediator_access_serve(pair[1], state->served_uid,
-                                  ace_mediator_volume_view_root());
+        ace_crm_serve(pair[1], state->served_uid,
+                                  ace_fmm_volume_view_root());
         _exit(0);
     }
     close(pair[1]);
@@ -278,50 +278,50 @@ static int spawn_access_worker(struct mediator_state *state,
  * believed what it was told about who it was talking to would be a root
  * process with a user-supplied idea of its own purpose.
  */
-static int perform_handshake(struct mediator_state *state,
+static int perform_handshake(struct fmm_state *state,
                              const uint8_t *expected_nonce)
 {
-    struct ace_mediator_hello hello;
-    struct ace_mediator_hello_reply answer;
+    struct ace_privilege_hello hello;
+    struct ace_privilege_hello_reply answer;
     struct ucred peer;
     socklen_t peer_size = sizeof(peer);
     ssize_t got;
-    int32_t status = ACE_MEDIATOR_OK;
+    int32_t status = ACE_PRIVILEGE_OK;
 
     do {
         got = recv(state->fd, &hello, sizeof(hello), 0);
     } while (got < 0 && errno == EINTR);
     if (got != (ssize_t)sizeof(hello))
         return -1;
-    if (hello.magic != ACE_MEDIATOR_MAGIC ||
-        hello.version != ACE_MEDIATOR_PROTOCOL_VERSION)
-        status = ACE_MEDIATOR_PROTOCOL_ERROR;
+    if (hello.magic != ACE_PRIVILEGE_MAGIC ||
+        hello.version != ACE_PRIVILEGE_PROTOCOL_VERSION)
+        status = ACE_PRIVILEGE_PROTOCOL_ERROR;
     else if (memcmp(hello.nonce, expected_nonce,
-                    ACE_MEDIATOR_NONCE_LENGTH) != 0)
-        status = ACE_MEDIATOR_UNAUTHORISED;
+                    ACE_PRIVILEGE_NONCE_LENGTH) != 0)
+        status = ACE_PRIVILEGE_UNAUTHORISED;
     else if (getsockopt(state->fd, SOL_SOCKET, SO_PEERCRED, &peer,
                         &peer_size) != 0 || peer_size != sizeof(peer))
-        status = ACE_MEDIATOR_PROTOCOL_ERROR;
-    /* The peer must be the user this mediator was authorised for.  Not "some
+        status = ACE_PRIVILEGE_PROTOCOL_ERROR;
+    /* The peer must be the user this fmm was authorised for.  Not "some
        user", and not whoever the message claims to be from. */
     else if (peer.uid != state->served_uid)
-        status = ACE_MEDIATOR_UNAUTHORISED;
+        status = ACE_PRIVILEGE_UNAUTHORISED;
     /* And it must be the process it says it is.  A broker_pid that disagrees
        with the kernel's view of the connection means the message was composed
        somewhere other than the process that sent it. */
     else if (hello.broker_pid != (int32_t)peer.pid)
-        status = ACE_MEDIATOR_UNAUTHORISED;
+        status = ACE_PRIVILEGE_UNAUTHORISED;
 
     memset(&answer, 0, sizeof(answer));
-    answer.magic = ACE_MEDIATOR_MAGIC;
-    answer.version = ACE_MEDIATOR_PROTOCOL_VERSION;
+    answer.magic = ACE_PRIVILEGE_MAGIC;
+    answer.version = ACE_PRIVILEGE_PROTOCOL_VERSION;
     answer.status = status;
-    if (status == ACE_MEDIATOR_OK) {
+    if (status == ACE_PRIVILEGE_OK) {
         /* Grant no more than was asked for, and no more than exists.  A
            capability the broker did not request is one it cannot have
            reasoned about. */
         state->capabilities = hello.requested_capabilities &
-                              (ACE_MEDIATOR_CAP_VOLUME | ACE_MEDIATOR_CAP_ACCESS);
+                              (ACE_PRIVILEGE_CAP_VOLUME | ACE_PRIVILEGE_CAP_ACCESS);
         state->broker_pid = peer.pid;
         answer.granted_capabilities = state->capabilities;
         answer.authorisation_seconds = state->authorisation_seconds;
@@ -331,7 +331,7 @@ static int perform_handshake(struct mediator_state *state,
     }
     if (send_record(state->fd, &answer, sizeof(answer), NULL, 0) != 0)
         return -1;
-    return status == ACE_MEDIATOR_OK ? 0 : -1;
+    return status == ACE_PRIVILEGE_OK ? 0 : -1;
 }
 
 /*
@@ -342,71 +342,71 @@ static int perform_handshake(struct mediator_state *state,
  * examined -- so that a request from the wrong class is refused without this
  * process ever having interpreted a byte of what it carried.
  */
-static int dispatch(struct mediator_state *state,
-                    const struct ace_mediator_request *request,
+static int dispatch(struct fmm_state *state,
+                    const struct ace_privilege_request *request,
                     const void *payload)
 {
-    uint32_t class_of = ACE_MEDIATOR_CLASS_OF(request->operation);
+    uint32_t class_of = ACE_PRIVILEGE_CLASS_OF(request->operation);
 
-    if (request->magic != ACE_MEDIATOR_MAGIC) {
-        reply(state, request->request_id, ACE_MEDIATOR_PROTOCOL_ERROR, 0,
+    if (request->magic != ACE_PRIVILEGE_MAGIC) {
+        reply(state, request->request_id, ACE_PRIVILEGE_PROTOCOL_ERROR, 0,
               NULL, 0);
         return 1;
     }
-    if (request->payload_length > ACE_MEDIATOR_MAX_PAYLOAD) {
-        reply(state, request->request_id, ACE_MEDIATOR_PROTOCOL_ERROR, 0,
+    if (request->payload_length > ACE_PRIVILEGE_MAX_PAYLOAD) {
+        reply(state, request->request_id, ACE_PRIVILEGE_PROTOCOL_ERROR, 0,
               NULL, 0);
         return 1;
     }
-    if (class_of == ACE_MEDIATOR_CLASS_VOLUME &&
-        !(state->capabilities & ACE_MEDIATOR_CAP_VOLUME)) {
-        reply(state, request->request_id, ACE_MEDIATOR_REFUSED, 0, NULL, 0);
+    if (class_of == ACE_PRIVILEGE_CLASS_VOLUME &&
+        !(state->capabilities & ACE_PRIVILEGE_CAP_VOLUME)) {
+        reply(state, request->request_id, ACE_PRIVILEGE_REFUSED, 0, NULL, 0);
         return 0;
     }
-    if (class_of == ACE_MEDIATOR_CLASS_ACCESS &&
-        !(state->capabilities & ACE_MEDIATOR_CAP_ACCESS)) {
-        reply(state, request->request_id, ACE_MEDIATOR_REFUSED, 0, NULL, 0);
+    if (class_of == ACE_PRIVILEGE_CLASS_ACCESS &&
+        !(state->capabilities & ACE_PRIVILEGE_CAP_ACCESS)) {
+        reply(state, request->request_id, ACE_PRIVILEGE_REFUSED, 0, NULL, 0);
         return 0;
     }
 
     switch (request->operation) {
-    case ACE_MEDIATOR_PING:
-        reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
+    case ACE_PRIVILEGE_PING:
+        reply(state, request->request_id, ACE_PRIVILEGE_OK, 0, NULL, 0);
         return 0;
-    case ACE_MEDIATOR_CAPS: {
+    case ACE_PRIVILEGE_CAPS: {
         uint32_t granted = state->capabilities;
 
-        reply(state, request->request_id, ACE_MEDIATOR_OK, 0, &granted,
+        reply(state, request->request_id, ACE_PRIVILEGE_OK, 0, &granted,
               sizeof(granted));
         return 0;
     }
-    case ACE_MEDIATOR_CANCEL:
+    case ACE_PRIVILEGE_CANCEL:
         /* Nothing is ever in flight yet: this build serves one request at a
            time and answers before reading the next.  Answering OK is honest
            -- the named request is not running -- and keeps the broker's
            break path exercised from the beginning rather than bolted on
            beside the first long operation. */
-        reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
+        reply(state, request->request_id, ACE_PRIVILEGE_OK, 0, NULL, 0);
         return 0;
-    case ACE_MEDIATOR_DROP_PRIVILEGE:
+    case ACE_PRIVILEGE_DROP_PRIVILEGE:
         /* The user asked for their privilege back.  Answer first, so they
            are told it happened, then go. */
-        reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
+        reply(state, request->request_id, ACE_PRIVILEGE_OK, 0, NULL, 0);
         return 1;
-    case ACE_MEDIATOR_SPAWN_ACCESS:
-        return spawn_access_worker(state, request->request_id);
-    case ACE_MEDIATOR_SHUTDOWN:
-        reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
+    case ACE_PRIVILEGE_SPAWN_ACCESS:
+        return spawn_crm(state, request->request_id);
+    case ACE_PRIVILEGE_SHUTDOWN:
+        reply(state, request->request_id, ACE_PRIVILEGE_OK, 0, NULL, 0);
         return 1;
     default:
         break;
     }
 
-    if (class_of == ACE_MEDIATOR_CLASS_VOLUME) {
-        char answer[ACE_MEDIATOR_MAX_PAYLOAD];
+    if (class_of == ACE_PRIVILEGE_CLASS_VOLUME) {
+        char answer[ACE_PRIVILEGE_MAX_PAYLOAD];
         size_t answer_length = 0;
         int host_errno = 0;
-        int status = ace_mediator_volume_dispatch(request, payload,
+        int status = ace_fmm_volume_dispatch(request, payload,
                                                   state->served_uid, answer,
                                                   sizeof(answer),
                                                   &answer_length, &host_errno);
@@ -416,22 +416,22 @@ static int dispatch(struct mediator_state *state,
         return 0;
     }
     /* Access operations are contracted but not yet implemented.  Refused
-       rather than silently accepted, so a broker built ahead of its mediator
+       rather than silently accepted, so a broker built ahead of its fmm
        finds out by being told. */
-    if (class_of == ACE_MEDIATOR_CLASS_ACCESS) {
-        reply(state, request->request_id, ACE_MEDIATOR_UNSUPPORTED, ENOSYS,
+    if (class_of == ACE_PRIVILEGE_CLASS_ACCESS) {
+        reply(state, request->request_id, ACE_PRIVILEGE_UNSUPPORTED, ENOSYS,
               NULL, 0);
         return 0;
     }
-    reply(state, request->request_id, ACE_MEDIATOR_REFUSED, 0, NULL, 0);
+    reply(state, request->request_id, ACE_PRIVILEGE_REFUSED, 0, NULL, 0);
     return 0;
 }
 
-static void serve(struct mediator_state *state)
+static void serve(struct fmm_state *state)
 {
     for (;;) {
-        struct ace_mediator_request request;
-        unsigned char payload[ACE_MEDIATOR_MAX_PAYLOAD];
+        struct ace_privilege_request request;
+        unsigned char payload[ACE_PRIVILEGE_MAX_PAYLOAD];
         struct iovec io[2];
         struct msghdr message;
         struct pollfd waiting;
@@ -482,9 +482,9 @@ static void serve(struct mediator_state *state)
 
 int main(int argc, char **argv)
 {
-    struct mediator_state state;
+    struct fmm_state state;
     struct sockaddr_un address;
-    uint8_t expected_nonce[ACE_MEDIATOR_NONCE_LENGTH];
+    uint8_t expected_nonce[ACE_PRIVILEGE_NONCE_LENGTH];
     const char *timeout_text;
 
     if (argc != 2) {
@@ -492,7 +492,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (strlen(argv[1]) >= sizeof(address.sun_path)) {
-        fprintf(stderr, "ace-mediator: channel path too long\n");
+        fprintf(stderr, "ace-fmm: channel path too long\n");
         return 2;
     }
 
@@ -501,7 +501,7 @@ int main(int argc, char **argv)
     state.served_uid = resolve_served_uid();
 
     if (nonce_from_path(argv[1], expected_nonce) != 0) {
-        fprintf(stderr, "ace-mediator: channel name is not a mediator "
+        fprintf(stderr, "ace-fmm: channel name is not a fmm "
                         "rendezvous\n");
         return 2;
     }
@@ -512,7 +512,7 @@ int main(int argc, char **argv)
      * asked again and again to use your own computer is what ACE is trying
      * not to feel like.
      */
-    timeout_text = getenv("ACE_MEDIATOR_TIMEOUT");
+    timeout_text = getenv("ACE_PRIVILEGE_TIMEOUT");
     if (timeout_text && *timeout_text) {
         char *end = NULL;
         unsigned long parsed = strtoul(timeout_text, &end, 10);
@@ -533,14 +533,14 @@ int main(int argc, char **argv)
 
     state.fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
     if (state.fd < 0) {
-        perror("ace-mediator: socket");
+        perror("ace-fmm: socket");
         return 1;
     }
     memset(&address, 0, sizeof(address));
     address.sun_family = AF_UNIX;
     strcpy(address.sun_path, argv[1]);
     if (connect(state.fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-        perror("ace-mediator: connect");
+        perror("ace-fmm: connect");
         close(state.fd);
         return 1;
     }
@@ -548,7 +548,7 @@ int main(int argc, char **argv)
         /* Deliberately terse.  A handshake that failed did so for one of a
            few reasons, none of which a stranger should be helped to tell
            apart. */
-        fprintf(stderr, "ace-mediator: refused\n");
+        fprintf(stderr, "ace-fmm: refused\n");
         close(state.fd);
         return 1;
     }
@@ -557,7 +557,7 @@ int main(int argc, char **argv)
     /* Whichever way we leave -- SHUTDOWN, dropped privilege, a lapsed
        authorisation, or a broker that simply stopped existing -- the mounts
        this process made are its own to take down. */
-    ace_mediator_volume_shutdown();
+    ace_fmm_volume_shutdown();
     close(state.fd);
     return 0;
 }

@@ -2,7 +2,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "dos_devices.h"
-#include "ace_mediator_client.h"
+#include "ace_fmm_client.h"
 #include "ace_modes.h"
 
 #include <blkid/blkid.h>
@@ -632,26 +632,26 @@ void ace_dos_devices_discover(void)
 /*
  * Build the device view by asking, rather than by mounting.
  *
- * Everything privileged here now happens in the mediator, in its own mount
+ * Everything privileged here now happens in the fmm, in its own mount
  * namespace, and this function's whole job is to say which devices were found
  * and to record where they were put.  The broker never learns how to mount
  * anything and never needed to.
  *
  * Note what is not passed: a mountpoint.  The broker names a kernel device
- * and what it believes the filesystem to be; the mediator derives the device
+ * and what it believes the filesystem to be; the fmm derives the device
  * path, checks that it is really a block device, checks the type against its
  * own list, and chooses where it goes.  There is no parameter through which a
  * confused broker could ask for a mount somewhere of its choosing.
  */
-int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator)
+int ace_dos_devices_prepare_device_view(struct ace_privilege_connection *fmm)
 {
-    if (!mediator) {
-        /* Without a mediator there is no privilege anywhere in this session,
+    if (!fmm) {
+        /* Without a fmm there is no privilege anywhere in this session,
            so there is no device view to build.  Reportable, not fatal. */
         errno = EACCES;
         return -1;
     }
-    if (ace_mediator_prepare_view(mediator, device_view_root,
+    if (ace_fmm_prepare_view(fmm, device_view_root,
                                   sizeof(device_view_root)) != 0)
         return -1;
     device_view = 1;
@@ -662,7 +662,7 @@ int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator)
         if (!device->in_use || !supported_filesystem_type(
                 device->filesystem_type))
             continue;
-        if (ace_mediator_mount(mediator, device->kernel_name,
+        if (ace_fmm_mount(fmm, device->kernel_name,
                                device->filesystem_type, view_path,
                                sizeof(view_path)) != 0) {
             /* A filesystem this build will not mount is not a failure of the
@@ -681,7 +681,7 @@ int ace_dos_devices_prepare_device_view(struct ace_mediator *mediator)
     return 0;
 }
 
-/* Where the mediator put the device roots, or "" when there is no device
+/* Where the fmm put the device roots, or "" when there is no device
    view.  The broker needs this to recognise a path that only the access
    worker can open: such a path fails locally with ENOENT, and ENOENT must
    never be what triggers a privileged request. */
@@ -968,7 +968,7 @@ int ace_dos_devices_volume_root_for_path(const char *path, char *result,
 void ace_dos_devices_shutdown(void)
 {
     /* The device-view mounts are not this process's to take down: they live
-     * in the mediator's namespace and go when it does, whether that is an
+     * in the fmm's namespace and go when it does, whether that is an
      * orderly shutdown or the kernel discarding the namespace after the last
      * process in it exits.  Only the mounts this broker made itself, through
      * the ordinary unprivileged path below, are its own to undo. */

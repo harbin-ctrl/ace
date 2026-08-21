@@ -3,7 +3,7 @@
 
 #include "ace_amiga_posix.h"
 
-#include "ace_privops.h"
+#include "ace_crm_retry.h"
 #include "broker_client.h"
 
 /*
@@ -39,7 +39,7 @@ FILE *ace_amiga_posix_fopen(const char *path, const char *mode)
         return NULL;
     /* Routed through the seam so a protected file opens the same way here as
        everywhere else. */
-    return ace_privops_fopen(resolved, mode);
+    return ace_crm_retry_fopen(resolved, mode);
 }
 
 int ace_amiga_posix_open(const char *path, int flags, ...)
@@ -56,7 +56,7 @@ int ace_amiga_posix_open(const char *path, int flags, ...)
     }
     if (host_path(path, resolved) != 0)
         return -1;
-    result = ace_privops_open(resolved, flags, mode);
+    result = ace_crm_retry_open(resolved, flags, mode);
     return result;
 }
 
@@ -112,7 +112,7 @@ int ace_amiga_posix_stat(const char *path, struct stat *information)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return ace_privops_stat(resolved, information, 1);
+    return ace_crm_retry_stat(resolved, information, 1);
 }
 
 int ace_amiga_posix_lstat(const char *path, struct stat *information)
@@ -121,7 +121,7 @@ int ace_amiga_posix_lstat(const char *path, struct stat *information)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return ace_privops_stat(resolved, information, 0);
+    return ace_crm_retry_stat(resolved, information, 0);
 }
 
 int ace_amiga_posix_access(const char *path, int mode)
@@ -139,7 +139,7 @@ int ace_amiga_posix_mkdir(const char *path, mode_t mode)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return ace_privops_mkdir(resolved, mode);
+    return ace_crm_retry_mkdir(resolved, mode);
 }
 
 DIR *ace_amiga_posix_opendir(const char *path)
@@ -148,7 +148,7 @@ DIR *ace_amiga_posix_opendir(const char *path)
 
     if (host_path(path, resolved) != 0)
         return NULL;
-    return ace_privops_opendir(resolved);
+    return ace_crm_retry_opendir(resolved);
 }
 
 int ace_amiga_posix_rename(const char *old_path, const char *new_path)
@@ -159,7 +159,7 @@ int ace_amiga_posix_rename(const char *old_path, const char *new_path)
     if (host_path(old_path, old_resolved) != 0 ||
         host_path(new_path, new_resolved) != 0)
         return -1;
-    return ace_privops_rename(old_resolved, new_resolved);
+    return ace_crm_retry_rename(old_resolved, new_resolved);
 }
 
 int ace_amiga_posix_unlink(const char *path)
@@ -168,7 +168,7 @@ int ace_amiga_posix_unlink(const char *path)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return ace_privops_unlink(resolved);
+    return ace_crm_retry_unlink(resolved);
 }
 
 int ace_amiga_posix_remove(const char *path)
@@ -178,13 +178,13 @@ int ace_amiga_posix_remove(const char *path)
     if (host_path(path, resolved) != 0)
         return -1;
     /* remove() is unlink-or-rmdir, and so is the privileged form: the
-       mediator retries with AT_REMOVEDIR, which is also what AmigaDOS Delete
+       crm retries with AT_REMOVEDIR, which is also what AmigaDOS Delete
        means by one operation. */
     if (remove(resolved) == 0)
         return 0;
     if (errno != EACCES && errno != EPERM)
         return -1;
-    return ace_privops_unlink(resolved);
+    return ace_crm_retry_unlink(resolved);
 }
 
 int ace_amiga_posix_rmdir(const char *path)
@@ -197,7 +197,7 @@ int ace_amiga_posix_rmdir(const char *path)
         return 0;
     if (errno != EACCES && errno != EPERM)
         return -1;
-    return ace_privops_unlink(resolved);
+    return ace_crm_retry_unlink(resolved);
 }
 
 int ace_amiga_posix_chmod(const char *path, mode_t mode)
@@ -206,7 +206,7 @@ int ace_amiga_posix_chmod(const char *path, mode_t mode)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return ace_privops_chmod(resolved, mode);
+    return ace_crm_retry_chmod(resolved, mode);
 }
 
 int ace_amiga_posix_utime(const char *path, const struct utimbuf *times)

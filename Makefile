@@ -24,10 +24,10 @@ override CFLAGS += -MMD -MP -MF $(BUILD)/$(@F).d
 # fold this into the protocol magic; a mismatch is then caught on the first
 # field read rather than after a payload has been misparsed.
 ACE_BROKER_PROTOCOL_VERSION := $(shell sha256sum src/broker_protocol.h | cut -c1-8)
-# The mediator's protocol version follows the same rule, and for a sharper
+# The FMM's protocol version follows the same rule, and for a sharper
 # reason: the peers are a user process and a root one, so a version they
 # disagree about is a privileged process misreading a payload.
-ACE_MEDIATOR_PROTOCOL_VERSION := $(shell sha256sum src/ace_mediator_protocol.h | cut -c1-8)
+ACE_PRIVILEGE_PROTOCOL_VERSION := $(shell sha256sum src/ace_privilege_protocol.h | cut -c1-8)
 
 # ACE_SYS_DIR used to be given to broker.o alone.  Every client now resolves
 # SYS: too, because the broker's socket name is keyed to it, and a client that
@@ -35,7 +35,7 @@ ACE_MEDIATOR_PROTOCOL_VERSION := $(shell sha256sum src/ace_mediator_protocol.h |
 # and never find it.  One definition, given to everything.
 override CFLAGS += -DACE_SYS_DIR='"$(SYSDIR)"' \
                    -DAMIGA_BROKER_PROTOCOL_VERSION=0x$(ACE_BROKER_PROTOCOL_VERSION)u \
-                   -DACE_MEDIATOR_PROTOCOL_VERSION=0x$(ACE_MEDIATOR_PROTOCOL_VERSION)u
+                   -DACE_PRIVILEGE_PROTOCOL_VERSION=0x$(ACE_PRIVILEGE_PROTOCOL_VERSION)u
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS := $(shell pkg-config --libs gtk+-3.0)
 BLKID_CFLAGS := $(shell pkg-config --cflags blkid)
@@ -83,7 +83,7 @@ BUILD := $(CURDIR)/build
 # that shared answer, so it travels with broker_client.o rather than being
 # listed separately in sixty link lines.
 BROKER_CLIENT_OBJS := $(BUILD)/broker_client.o $(BUILD)/broker-identity.o \
-                      $(BUILD)/ace-modes.o $(BUILD)/ace-privops.o
+                      $(BUILD)/ace-modes.o $(BUILD)/ace-crm-retry.o
 AROS_ROOT ?= $(HOME)/aros
 # Third-party source ACE builds but does not own: Regina and Vim live here,
 # each in its own directory. Both are built entirely out of tree -- every
@@ -395,10 +395,10 @@ AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Peek Delete Protect Filenote F
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
-HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste ace-mediator
+HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste ace-fmm
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Peek $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/Ed $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/Wait $(BUILD)/Status $(BUILD)/Break $(BUILD)/ace-broker $(BUILD)/ace-mediator $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Peek $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/Ed $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/Wait $(BUILD)/Status $(BUILD)/Break $(BUILD)/ace-broker $(BUILD)/ace-fmm $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD)/break-probe: tests/break_probe.c $(BUILD)/dos-runtime.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $(filter-out %.h,$^) -o $@
@@ -465,10 +465,10 @@ $(LHA_AROS_SOURCE_STAMP): $(LHA_AROS_ARCHIVE) | $(BUILD)
 	$(TAR) --extract --gzip --file "$<" --strip-components=1 --directory "$(LHA_AROS_DIR)"
 	touch "$@"
 
-$(BUILD)/native_dos.o: src/native_dos.c src/ace_privops.h src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h src/native_console_endpoint.h | $(BUILD)
+$(BUILD)/native_dos.o: src/native_dos.c src/ace_crm_retry.h src/broker_protocol.h src/broker_client.h src/aros_dos_path.h src/aros_console_editor.h src/console_channel.h src/native_console_endpoint.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
-$(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_privops.h src/ace_amiga_posix.h \
+$(BUILD)/ace-amiga-posix.o: src/ace_amiga_posix.c src/ace_crm_retry.h src/ace_amiga_posix.h \
                             src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc -c $< -o $@
 
@@ -764,35 +764,35 @@ $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 
 # The one place in ACE that decides an operation needs privilege.  Every
 # command links it, and none of them contains that decision themselves.
-$(BUILD)/ace-privops.o: src/ace_privops.c src/ace_privops.h src/broker_client.h src/ace_modes.h src/ace_mediator_protocol.h | $(BUILD)
+$(BUILD)/ace-crm-retry.o: src/ace_crm_retry.c src/ace_crm_retry.h src/broker_client.h src/ace_modes.h src/ace_privilege_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h src/ace_modes.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-# The mediator is the only ACE program that is meant to run as root, so it is
+# The FMM is the only ACE program that is meant to run as root, so it is
 # also the only one that links none of the DOS runtime, none of the broker
 # client, and nothing that knows what an Amiga path is.  Its whole dependency
 # list is the protocol header, and that is a property worth being able to see
 # at a glance in the build rules.
-$(BUILD)/ace-mediator.o: src/ace_mediator.c src/ace_mediator_protocol.h | $(BUILD)
+$(BUILD)/ace-fmm.o: src/ace_fmm.c src/ace_privilege_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/ace-mediator-volume.o: src/ace_mediator_volume.c src/ace_mediator_volume.h src/ace_mediator_protocol.h | $(BUILD)
+$(BUILD)/ace-fmm-volume.o: src/ace_fmm_volume.c src/ace_fmm_volume.h src/ace_privilege_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/ace-mediator-access.o: src/ace_mediator_access.c src/ace_mediator_access.h src/ace_mediator_protocol.h | $(BUILD)
+$(BUILD)/ace-crm.o: src/ace_crm.c src/ace_crm.h src/ace_privilege_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/ace-mediator: $(BUILD)/ace-mediator.o $(BUILD)/ace-mediator-volume.o $(BUILD)/ace-mediator-access.o
+$(BUILD)/ace-fmm: $(BUILD)/ace-fmm.o $(BUILD)/ace-fmm-volume.o $(BUILD)/ace-crm.o
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
 # The broker's end of that channel.  Only the broker links it: the shell and
 # the commands do not get a privileged socket of their own.
-$(BUILD)/ace-mediator-client.o: src/ace_mediator_client.c src/ace_mediator_client.h src/ace_mediator_protocol.h | $(BUILD)
+$(BUILD)/ace-fmm-client.o: src/ace_fmm_client.c src/ace_fmm_client.h src/ace_privilege_protocol.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/mediator-channel-probe: tests/mediator_channel_probe.c $(BUILD)/ace-mediator-client.o
+$(BUILD)/fmm-crm-channel-probe: tests/fmm_crm_channel_probe.c $(BUILD)/ace-fmm-client.o
 	$(CC) $(CFLAGS) -Isrc $(filter-out %.h,$^) -o $@
 
 # SYS: is established from ACE_SYS_DIR, which CFLAGS now carries for every
@@ -800,10 +800,10 @@ $(BUILD)/mediator-channel-probe: tests/mediator_channel_probe.c $(BUILD)/ace-med
 # its environment and falls back to its own directory, which for a build tree
 # is where the commands are -- which is exactly what gives a build tree a
 # different SYS:, and therefore a different broker, from an installed copy.
-$(BUILD)/broker.o: src/broker.c src/broker_dictionary.h src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h src/ace_modes.h src/ace_mediator_client.h | $(BUILD)
+$(BUILD)/broker.o: src/broker.c src/broker_dictionary.h src/broker_protocol.h src/dos_devices.h src/clipboard_bridge.h src/ace_modes.h src/ace_fmm_client.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) $(ZLIB_CFLAGS) -Isrc -c $< -o $@
 
-$(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h src/ace_modes.h src/ace_mediator_client.h | $(BUILD)
+$(BUILD)/dos-devices.o: src/dos_devices.c src/dos_devices.h src/ace_modes.h src/ace_fmm_client.h | $(BUILD)
 	$(CC) $(CFLAGS) $(BLKID_CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/broker-identity.o: src/broker_identity.c src/broker_protocol.h src/ace_modes.h | $(BUILD)
@@ -1290,13 +1290,13 @@ $(BUILD)/Why: $(BUILD)/Why.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/n
 $(BUILD)/Prompt: $(BUILD)/Prompt.o $(DOS_RUNTIME_OBJ) $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BUILD)/native_shcommand.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
 
-# The broker is the only ACE program that links the mediator client.  The
+# The broker is the only ACE program that links the FMM client.  The
 # shell and the commands do not get a privileged socket of their own: one
 # semantic authority, one privilege ingress.
 $(BUILD)/ace-broker: $(BUILD)/broker.o $(BUILD)/dos-devices.o \
                      $(BUILD)/broker-identity.o \
                      $(BUILD)/ace-modes.o \
-                     $(BUILD)/ace-mediator-client.o \
+                     $(BUILD)/ace-fmm-client.o \
                      $(BUILD)/clipboard-bridge.o
 	$(CC) $(CFLAGS) $(filter-out %.h,$^) $(BLKID_LIBS) $(ZLIB_LIBS) -o $@
 
@@ -1607,10 +1607,10 @@ install: all tine
 	sed 's|@BINDIR@|$(BINDIR)|g' data/ace.desktop.in > $(BUILD)/ace.desktop
 	$(INSTALL) -m 0644 $(BUILD)/ace.desktop $(DESTDIR)$(APPLICATIONSDIR)/ace.desktop
 	$(INSTALL) -m 0644 assets/ace.png $(DESTDIR)$(ICONDIR)/ace.png
-	sed 's|@BINDIR@|$(BINDIR)|g' data/org.ace.Ace.mediator.policy > \
-	              $(BUILD)/org.ace.Ace.mediator.policy
-	$(INSTALL) -m 0644 $(BUILD)/org.ace.Ace.mediator.policy \
-	              $(DESTDIR)$(POLKIT_ACTIONDIR)/org.ace.Ace.mediator.policy
+	sed 's|@BINDIR@|$(BINDIR)|g' data/org.ace.Ace.fmm.policy > \
+	              $(BUILD)/org.ace.Ace.fmm.policy
+	$(INSTALL) -m 0644 $(BUILD)/org.ace.Ace.fmm.policy \
+	              $(DESTDIR)$(POLKIT_ACTIONDIR)/org.ace.Ace.fmm.policy
 	# Vim, Regina and LhA, after the base install rather than as ordinary
 	# prerequisites of it. Order matters: install-regina checks that
 	# ace-user-shell is already beside the rexx it installs, and as a
@@ -1896,8 +1896,8 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-system-assigns: all
 	sh tests/system_assigns_test.sh
 
-test-mediator-channel: all $(BUILD)/mediator-channel-probe
-	sh tests/mediator_channel_test.sh
+test-fmm-crm-channel: all $(BUILD)/fmm-crm-channel-probe
+	sh tests/fmm_crm_channel_test.sh
 
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
@@ -1942,8 +1942,8 @@ test-modes: all
 test-device-view: all
 	sh tests/device_view_test.sh
 
-test-mediator-broker: all
-	sh tests/mediator_broker_test.sh
+test-fmm-crm-broker: all
+	sh tests/fmm_crm_broker_test.sh
 
 test-privileged-file: all
 	sh tests/privileged_file_test.sh
@@ -1968,7 +1968,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos test-regina-arexx install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-mediator-channel test-dir-break test-peek test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-modes test-device-view test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos test-regina-arexx install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-fmm-crm-channel test-dir-break test-peek test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-modes test-device-view test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@
