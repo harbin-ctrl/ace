@@ -90,7 +90,7 @@ set -e
 printf 'I/a/;TB;TY/b/;X\n' > "$sys_dir/C/with.cmd"
 env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
     ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-ed-args \
-    "$repo_dir/build/ED" FROM SYS:C/from.txt WITH SYS:C/with.cmd TABS 5 \
+    "$repo_dir/build/Ed" FROM SYS:C/from.txt WITH SYS:C/with.cmd TABS 5 \
     > /dev/null 2>&1 || fail 'ED argument compatibility failed'
 printf 'a    b\n\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/from.txt" "$test_dir/expected" ||
@@ -103,7 +103,7 @@ cmp -s "$sys_dir/C/from.txt" "$test_dir/expected" ||
 printf 'I/alpha/\nA/beta/\nX\n' > "$sys_dir/C/new-file.cmd"
 env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
     ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-new-file-corpus \
-    "$repo_dir/build/ED" FROM SYS:C/new-file.txt WITH SYS:C/new-file.cmd \
+    "$repo_dir/build/Ed" FROM SYS:C/new-file.txt WITH SYS:C/new-file.cmd \
     > /dev/null 2>&1 || fail 'ED new-file corpus session failed'
 printf 'alpha\nbeta\n\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/new-file.txt" "$test_dir/expected" ||
@@ -112,7 +112,7 @@ cmp -s "$sys_dir/C/new-file.txt" "$test_dir/expected" ||
 printf 'X\n' > "$sys_dir/C/new-empty.cmd"
 env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
     ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-new-empty-corpus \
-    "$repo_dir/build/ED" FROM SYS:C/new-empty.txt WITH SYS:C/new-empty.cmd \
+    "$repo_dir/build/Ed" FROM SYS:C/new-empty.txt WITH SYS:C/new-empty.cmd \
     > /dev/null 2>&1 || fail 'ED empty-new-file corpus session failed'
 printf '\n' > "$test_dir/expected"
 cmp -s "$sys_dir/C/new-empty.txt" "$test_dir/expected" ||
@@ -121,7 +121,7 @@ cmp -s "$sys_dir/C/new-empty.txt" "$test_dir/expected" ||
 printf 'I/abc/\nU\nX\n' > "$sys_dir/C/undo-insert.cmd"
 env ACE_TINE_BINARY="$repo_dir/tools/tine/tine" \
     ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=tine-undo-insert-corpus \
-    "$repo_dir/build/ED" FROM SYS:C/undo-insert.txt \
+    "$repo_dir/build/Ed" FROM SYS:C/undo-insert.txt \
     WITH SYS:C/undo-insert.cmd > /dev/null 2>&1 ||
     fail 'ED undo-insert corpus session failed'
 printf 'abc\n\n' > "$test_dir/expected"
@@ -134,7 +134,7 @@ missing_log="$test_dir/missing.log"
 timeout 5 script -qefc \
     "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
      ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-missing-test \
-     '$repo_dir/build/ED' FROM SYS:C/missing.txt WITH SYS:C/quit.cmd" \
+     '$repo_dir/build/Ed' FROM SYS:C/missing.txt WITH SYS:C/quit.cmd" \
     "$missing_log" >/dev/null 2>&1 || fail 'missing-file ED session failed'
 grep -a -q 'Creating new file' "$missing_log" ||
     fail 'ED did not report Creating new file'
@@ -146,7 +146,7 @@ binary_log="$test_dir/binary.log"
 timeout 5 script -qefc \
     "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
      ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-binary-test \
-     '$repo_dir/build/ED' SYS:C/binary.dat WITH SYS:C/quit.cmd" \
+     '$repo_dir/build/Ed' SYS:C/binary.dat WITH SYS:C/quit.cmd" \
     "$binary_log" >/dev/null 2>&1 || fail 'binary-file ED session failed'
 grep -a -q 'Binary file' "$binary_log" ||
     fail 'ED did not reject binary input'
@@ -166,7 +166,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-line-limit \
-         '$repo_dir/build/ED' SYS:C/line-limit.txt WITH SYS:C/line-limit.cmd" \
+         '$repo_dir/build/Ed' SYS:C/line-limit.txt WITH SYS:C/line-limit.cmd" \
         "$line_log" >/dev/null 2>&1
 line_status=$?
 set -e
@@ -193,7 +193,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-size-limit \
-         '$repo_dir/build/ED' SYS:C/size-limit.txt WITH SYS:C/size-limit.cmd SIZE 2" \
+         '$repo_dir/build/Ed' SYS:C/size-limit.txt WITH SYS:C/size-limit.cmd SIZE 2" \
         "$size_log" >/dev/null 2>&1
 size_status=$?
 set -e
@@ -218,7 +218,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-status-test \
-         '$repo_dir/build/ED' SYS:C/status.txt WITH SYS:C/status.cmd" \
+         '$repo_dir/build/Ed' SYS:C/status.txt WITH SYS:C/status.cmd" \
         "$status_log" >/dev/null 2>&1
 status_status=$?
 set -e
@@ -228,7 +228,7 @@ grep -a -q 'Right margin.*77' "$status_log" ||
 grep -a -q 'Buffer size.*59960' "$status_log" ||
     fail 'ED status page did not show buffer size 59960'
 
-[ "$("$repo_dir/build/ED" '?')" = \
+[ "$("$repo_dir/build/Ed" '?')" = \
     'FROM/A,SIZE/N,WITH/K,WINDOW/K,TABS/N,WIDTH=COLS/N,HEIGHT=ROWS/N' ] ||
     fail 'ED ? did not print the ED template'
 
@@ -244,7 +244,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-key-map-test \
-         '$repo_dir/build/ED' SYS:C/key-map.txt" \
+         '$repo_dir/build/Ed' SYS:C/key-map.txt" \
         "$test_dir/key-map.log" >/dev/null 2>&1
 key_status=$?
 set -e
@@ -263,7 +263,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-current-test \
-         '$repo_dir/build/ED' SYS:C/undo-current.txt" \
+         '$repo_dir/build/Ed' SYS:C/undo-current.txt" \
         "$test_dir/undo-current.log" >/dev/null 2>&1
 undo_current_status=$?
 set -e
@@ -282,7 +282,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-moved-test \
-         '$repo_dir/build/ED' SYS:C/undo-moved.txt" \
+         '$repo_dir/build/Ed' SYS:C/undo-moved.txt" \
         "$test_dir/undo-moved.log" >/dev/null 2>&1
 undo_moved_status=$?
 set -e
@@ -301,7 +301,7 @@ set +e
     timeout 5 script -qefc \
         "env TERM=xterm ACE_TINE_BINARY='$repo_dir/tools/tine/tine' \
          ACE_BROKER_SOCKET='$socket_path' ACE_SESSION=tine-undo-delete-test \
-         '$repo_dir/build/ED' SYS:C/undo-delete.txt" \
+         '$repo_dir/build/Ed' SYS:C/undo-delete.txt" \
         "$test_dir/undo-delete.log" >/dev/null 2>&1
 undo_delete_status=$?
 set -e
