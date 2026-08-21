@@ -691,6 +691,12 @@ case "$assign_list_output" in
     *"Volumes:"*) ;;
     *) echo "bare Assign did not list assignments" >&2; exit 1 ;;
 esac
+case "$assign_list_output" in
+    *"/dev/"*)
+        echo "bare Assign exposed a Linux block-device path" >&2
+        exit 1
+        ;;
+esac
 
 assign_output=$(printf 'Assign ACE_TEST: :\nAssign ACE_TEST: EXISTS\nCD ACE_TEST:\nCD\nAssign ACE_TEST: LIST\nEndCLI\n' |
     env ACE_BROKER_SOCKET="$socket_path" ACE_SESSION=shell-assign-test \
@@ -719,6 +725,7 @@ recovered_name=$(control name "$repo_dir")
 recovered_pid=$(sed -n '1p' "$socket_path.lock")
 [ "$recovered_pid" != "$broker_pid" ]
 kill -0 "$recovered_pid"
+broker_pid=$recovered_pid
 
 # The escaped spellings are a pure function of the host name, so the fresh
 # broker must produce exactly what the dead one did, and must resolve names it

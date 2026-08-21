@@ -8,12 +8,14 @@
 #include "broker_protocol.h"
 #include "clipboard_bridge.h"
 #include "dos_devices.h"
+#include "ace_modes.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -22,6 +24,7 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/file.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
@@ -75,6 +78,7 @@ struct assign_entry {
     char targets[MAX_ASSIGN_TARGETS][PATH_MAX];
     size_t target_count;
     int type;
+    bool host_backed;
 };
 
 /* A Linux directory entry that cannot be carried safely through an AROS
@@ -467,6 +471,7 @@ static void set_directory_assign(struct broker_session *session,
     assign->target_count = 1;
     strcpy(assign->root, path);
     assign->type = ASSIGN_DIRECTORY;
+    assign->host_backed = true;
 }
 
 /*
@@ -1890,6 +1895,12 @@ static int within_base_filesystem(const char *base, const char *path)
             return 0;
     }
     if (probe_info.st_dev != base_info.st_dev) {
+        /* Device view deliberately has no nested mounts beneath a bindroot.
+         * A different device here can therefore only have been reached by
+         * following a soft link, whose absolute target keeps ordinary Linux
+         * meaning and is represented in ACE by that target device's name. */
+        if (ace_dos_devices_is_full_root(base))
+            return 0;
         /* From this volume's point of view the object is simply not here,
            which is what ERROR_OBJECT_NOT_FOUND says. Reporting a crossing
            would describe a Linux arrangement AmigaDOS has no word for. */
@@ -2099,8 +2110,7 @@ static int resolve_assign_target(struct broker_session *session,
         const char *target = assign->target_count ?
                              assign->targets[index] : assign->root;
 
-        if (assign->type == ASSIGN_LATE ||
-            assign->type == ASSIGN_NONBINDING) {
+        if (!assign->host_backed) {
             if (resolve_path(session, target, candidate, sizeof(candidate),
                              false) != 0)
                 continue;
@@ -2117,13 +2127,28 @@ static int resolve_assign_target(struct broker_session *session,
             return -1;
         }
         if (assign->type == ASSIGN_LATE) {
-            strcpy(assign->root, candidate);
             assign->type = ASSIGN_DIRECTORY;
         }
         return 0;
     }
     errno = ENOENT;
     return -1;
+}
+
+static int canonical_assign_target(struct broker_session *session,
+                                   const char *value, char *logical,
+                                   size_t logical_size, char *host,
+                                   size_t host_size)
+{
+    struct stat information;
+
+    if (resolve_path(session, value, host, host_size, false) != 0 ||
+        stat(host, &information) != 0 || !S_ISDIR(information.st_mode)) {
+        if (!errno)
+            errno = ENOTDIR;
+        return -1;
+    }
+    return name_from_host_with_mappings(host, logical, logical_size);
 }
 
 static int resolve_path(struct broker_session *session, const char *input,
@@ -2756,6 +2781,18 @@ static int handle_client(struct broker_connection *connection)
         send_response(fd, EPROTO, message);
         goto drop;
     }
+    {
+        uint32_t expected_mode =
+            (ace_mode_is_root() ? AMIGA_BROKER_MODE_ROOT : 0) |
+            (ace_mode_is_device_view() ?
+                 AMIGA_BROKER_MODE_DEVICEVIEW : 0);
+
+        if (request.mode != expected_mode ||
+            request.owner_uid != (uint32_t)ace_mode_owner_uid()) {
+            send_response(fd, EXDEV, "broker mode mismatch");
+            goto drop;
+        }
+    }
     /*
      * A value is normally a path, a variable's contents or a list, so PATH_MAX
      * is the right bound and several handlers copy into fixed buffers sized
@@ -2828,16 +2865,18 @@ static int handle_client(struct broker_connection *connection)
     }
 
     case AMIGA_BROKER_ASSIGN: {
-        struct stat information;
         char assign_name[MAX_NAME];
         size_t assign_length = strlen(path);
         struct assign_entry *assign;
-        /* Assign() callers (assign_compat.c) hand in an AmigaDOS path from
-           NameFromLock(), which must go through resolve_path()'s Amiga
-           parsing.  ace-brokerctl's "assign" is a host-facing debug tool --
-           README.md documents "assign WORK: /tmp" with a raw Linux path --
-           so it opts into host_path instead. */
-        bool host_path = (request.flags & AMIGA_BROKER_PATH_HOST) != 0;
+
+        /* Assigns are DOS objects, not aliases for implementation paths.
+         * Store a canonical, volume-qualified DOS target and resolve it on
+         * use so neither mountpoint view nor device view leaks into the
+         * session's logical state. */
+        if (request.flags & AMIGA_BROKER_PATH_HOST) {
+            status = EINVAL;
+            break;
+        }
 
         if (assign_length && path[assign_length - 1] == ':')
             assign_length--;
@@ -2857,14 +2896,16 @@ static int handle_client(struct broker_connection *connection)
         }
         if (request.flags & AMIGA_BROKER_ASSIGN_REMOVE_ITEM) {
             char target[PATH_MAX];
+            char host[PATH_MAX];
 
-            if (!assign || resolve_path(session, value, target,
-                                        sizeof(target), host_path) != 0) {
+            if (!assign || canonical_assign_target(
+                               session, value, target, sizeof(target), host,
+                               sizeof(host)) != 0) {
                 status = errno ? errno : ENOENT;
                 break;
             }
             for (size_t index = 0; index < assign->target_count; index++) {
-                if (strcmp(assign->targets[index], target) == 0) {
+                if (strcasecmp(assign->targets[index], target) == 0) {
                     memmove(&assign->targets[index],
                             &assign->targets[index + 1],
                             (assign->target_count - index - 1) *
@@ -2881,11 +2922,12 @@ static int handle_client(struct broker_connection *connection)
         if (request.flags & (AMIGA_BROKER_ASSIGN_ADD |
                              AMIGA_BROKER_ASSIGN_PREPEND)) {
             char target[PATH_MAX];
+            char host[PATH_MAX];
 
             if (!assign || assign->target_count >= MAX_ASSIGN_TARGETS ||
-                resolve_path(session, value, target, sizeof(target), host_path) != 0 ||
-                stat(target, &information) != 0 ||
-                !S_ISDIR(information.st_mode)) {
+                canonical_assign_target(session, value, target,
+                                        sizeof(target), host,
+                                        sizeof(host)) != 0) {
                 status = errno ? errno : ENOSPC;
                 break;
             }
@@ -2899,6 +2941,7 @@ static int handle_client(struct broker_connection *connection)
             assign->target_count++;
             strcpy(assign->root, assign->targets[0]);
             assign->type = ASSIGN_DIRECTORY;
+            assign->host_backed = false;
             break;
         }
 
@@ -2918,18 +2961,25 @@ static int handle_client(struct broker_connection *connection)
             strcpy(assign->root, value);
             assign->type = (request.flags & AMIGA_BROKER_ASSIGN_PATH) ?
                            ASSIGN_NONBINDING : ASSIGN_LATE;
+            assign->host_backed = false;
             break;
         }
-        if (resolve_path(session, value, result, sizeof(result), host_path) != 0 ||
-            stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
-            status = errno ? errno : ENOENT;
-            break;
+        {
+            char logical[PATH_MAX];
+
+            if (canonical_assign_target(session, value, logical,
+                                        sizeof(logical), result,
+                                        sizeof(result)) != 0) {
+                status = errno ? errno : ENOENT;
+                break;
+            }
+            memset(assign->targets, 0, sizeof(assign->targets));
+            assign->target_count = 1;
+            strcpy(assign->targets[0], logical);
+            strcpy(assign->root, logical);
+            assign->type = ASSIGN_DIRECTORY;
+            assign->host_backed = false;
         }
-        memset(assign->targets, 0, sizeof(assign->targets));
-        assign->target_count = 1;
-        strcpy(assign->targets[0], result);
-        strcpy(assign->root, result);
-        assign->type = ASSIGN_DIRECTORY;
         break;
     }
 
@@ -2939,13 +2989,23 @@ static int handle_client(struct broker_connection *connection)
         result[0] = '\0';
         for (size_t index = 0; index < MAX_ASSIGNS; index++) {
             struct assign_entry *assign = &session->assigns[index];
+            char serialized_root[PATH_MAX];
             int written;
 
             if (!assign->name[0])
                 continue;
+            if (assign->host_backed) {
+                if (name_from_host_with_mappings(assign->root,
+                                                 serialized_root,
+                                                 sizeof(serialized_root)) != 0)
+                    continue;
+            } else {
+                snprintf(serialized_root, sizeof(serialized_root), "%s",
+                         assign->root);
+            }
             written = snprintf(result + used, sizeof(result) - used,
                                "%s\t%d\t%s\n", assign->name, assign->type,
-                               assign->root);
+                               serialized_root);
             if (written < 0 || (size_t)written >= sizeof(result) - used) {
                 status = ENOSPC;
                 break;
@@ -3387,6 +3447,9 @@ static int handle_client(struct broker_connection *connection)
                            "uptime\t%lld\n"
                            "socket\t%s\n"
                            "sys\t%s\n"
+                           "owner-uid\t%lu\n"
+                           "privilege\t%s\n"
+                           "view\t%s\n"
                            "sessions\t%zu\n"
                            "tasks\t%zu\n"
                            "ports\t%zu\n"
@@ -3396,6 +3459,9 @@ static int handle_client(struct broker_connection *connection)
                            executable, (long)getpid(),
                            (long long)(time(NULL) - broker_started),
                            socket_path, system_root,
+                           (unsigned long)ace_mode_owner_uid(),
+                           ace_mode_is_root() ? "root" : "user",
+                           ace_mode_is_device_view() ? "device" : "mount",
                            live_sessions, live_tasks, live_ports,
                            live_port_channels, live_port_messages);
         if (written < 0 || (size_t)written >= sizeof(result)) {
@@ -3764,7 +3830,8 @@ static int acquire_socket_lock(void)
         fprintf(stderr, "broker socket path is too long\n");
         return -1;
     }
-    lock_fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    lock_fd = open(lock_path,
+                   O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (lock_fd < 0) {
         perror("broker lock");
         return -1;
@@ -3809,20 +3876,61 @@ static void stop_server(int signal_number)
 int main(int argc, char **argv)
 {
     struct sockaddr_un address;
+    struct ace_mode_options modes;
+    char **original_argv;
+    int original_argc = argc;
 
+    original_argv = calloc((size_t)argc + 1, sizeof(*original_argv));
+    if (!original_argv)
+        return 1;
+    memcpy(original_argv, argv, ((size_t)argc + 1) * sizeof(*argv));
+    if (ace_mode_parse(&argc, argv, &modes) != 0) {
+        fprintf(stderr, "usage: %s [--root|--user] "
+                        "[--deviceview|--mountview] "
+                        "[socket-path | --print-socket]\n", argv[0]);
+        free(original_argv);
+        return 2;
+    }
     if (argc == 2 && strcmp(argv[1], "--print-socket") == 0) {
         /* So the start/stop scripts do not have to reimplement the naming
            rule in shell and drift away from it. */
+        if (ace_mode_configure_identity(&modes) != 0) {
+            free(original_argv);
+            return 2;
+        }
         printf("%s\n", amiga_broker_socket_path());
+        free(original_argv);
         return 0;
     }
+    if (ace_mode_elevate_if_needed(original_argc, original_argv, &modes) != 0) {
+        fprintf(stderr, "ace-broker: failed to get root: %s\n",
+                strerror(errno));
+        free(original_argv);
+        return 1;
+    }
+    free(original_argv);
+    if (ace_mode_configure(&modes) != 0) {
+        fprintf(stderr, "ace-broker: requested mode is unavailable: %s\n",
+                strerror(errno));
+        return 1;
+    }
     if (argc > 2 || (argc == 2 && argv[1][0] == '\0')) {
-        fprintf(stderr, "usage: %s [socket-path | --print-socket]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--root|--user] "
+                        "[--deviceview|--mountview] "
+                        "[socket-path | --print-socket]\n", argv[0]);
         return 2;
     }
     socket_path = amiga_broker_socket_path();
     if (argc == 2)
         socket_path = argv[1];
+
+    if (ace_mode_is_device_view()) {
+        if (unshare(CLONE_NEWNS) != 0 ||
+            mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
+            perror("ace-broker: private mount namespace");
+            return 1;
+        }
+    }
 
     /*
      * One broker per socket, enforced by the kernel rather than by
@@ -3840,6 +3948,11 @@ int main(int argc, char **argv)
 
     broker_started = time(NULL);
     ace_dos_devices_discover();
+    if (ace_mode_is_device_view() &&
+        ace_dos_devices_prepare_device_view() != 0) {
+        perror("ace-broker: device view");
+        return 1;
+    }
     resolve_system_root();
     restore_environment_archive();
 

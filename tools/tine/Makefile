@@ -11,12 +11,12 @@ DESTDIR   ?= /usr/local
 CCACHE_PREFIX ?= distcc
 export CCACHE_PREFIX
 
-# broker-identity.o travels with broker_client.o: it is where the broker's
-# socket name is worked out, and every client has to reach the same answer the
-# broker did.  ACE's own Makefile keeps the pair in BROKER_CLIENT_OBJS; tine
-# builds separately, so it names both here.
+# broker-identity.o and ace-modes.o travel with broker_client.o: together they
+# determine which mode-specific broker a client reaches. ACE's own Makefile
+# keeps the trio in BROKER_CLIENT_OBJS; tine builds separately, so it names
+# all three here.
 ACE_PATH_OBJS := $(ACE_BUILD)/ace-amiga-posix.o $(ACE_BUILD)/broker_client.o \
-                 $(ACE_BUILD)/broker-identity.o
+                 $(ACE_BUILD)/broker-identity.o $(ACE_BUILD)/ace-modes.o
 
 all: tine
 	strip tine

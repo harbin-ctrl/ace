@@ -16,6 +16,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "broker_protocol.h"
+#include "ace_modes.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -129,12 +130,19 @@ const char *amiga_broker_socket_path(void)
     runtime_dir = getenv("XDG_RUNTIME_DIR");
     if (runtime_dir && *runtime_dir)
         written = snprintf(resolved, sizeof(resolved),
-                           "%s/ace-broker-%016llx-%08x.sock",
-                           runtime_dir, key, version);
+                           "%s/ace-broker-u%lu-%c%c-%016llx-%08x.sock",
+                           runtime_dir,
+                           (unsigned long)ace_mode_owner_uid(),
+                           ace_mode_is_root() ? 'r' : 'u',
+                           ace_mode_is_device_view() ? 'd' : 'm',
+                           key, version);
     if (written < 0 || written >= (int)sizeof(resolved))
         written = snprintf(resolved, sizeof(resolved),
-                           "/tmp/ace-broker-%lu-%016llx-%08x.sock",
-                           (unsigned long)getuid(), key, version);
+                           "/tmp/ace-broker-u%lu-%c%c-%016llx-%08x.sock",
+                           (unsigned long)ace_mode_owner_uid(),
+                           ace_mode_is_root() ? 'r' : 'u',
+                           ace_mode_is_device_view() ? 'd' : 'm',
+                           key, version);
     if (written < 0 || written >= (int)sizeof(resolved))
         resolved[0] = '\0'; /* unusable; callers will fail to connect */
     return resolved;

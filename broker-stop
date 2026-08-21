@@ -13,6 +13,24 @@ else
     ace_runtime_dir=$script_dir
 fi
 broker_binary=$ace_runtime_dir/ace-broker
+mode_args=()
+root_requested=0
+for argument in "$@"; do
+    case $argument in
+        --root)
+            mode_args+=("$argument")
+            root_requested=1
+            ;;
+        --user|--deviceview|--mountview)
+            mode_args+=("$argument")
+            ;;
+        *)
+            printf 'usage: %s [--root|--user] [--deviceview|--mountview]\n' \
+                "${BASH_SOURCE[0]}" >&2
+            if (( sourced )); then return 2; else exit 2; fi
+            ;;
+    esac
+done
 # Ask the binary where it would listen rather than reimplementing the rule.
 # The name encodes the SYS: root and the protocol version, and a shell copy of
 # that would be one more thing to keep in step -- see src/broker_identity.c.
@@ -26,7 +44,8 @@ broker_print_socket()
 {
     local reported
     [[ -x $broker_binary ]] || return 1
-    reported=$(timeout 5 "$broker_binary" --print-socket 2>/dev/null | head -n 1)
+    reported=$(timeout 5 "$broker_binary" "${mode_args[@]}" \
+        --print-socket 2>/dev/null | head -n 1)
     [[ $reported == /* ]] || return 1
     printf '%s\n' "$reported"
 }
@@ -65,7 +84,25 @@ is_broker_pid()
     [[ $candidate =~ ^[0-9]+$ ]] || return 1
     [[ -r /proc/$candidate/cmdline ]] || return 1
     command_line=$(tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null) || return 1
-    [[ $command_line == */ace-broker\ "$broker_socket"* ]]
+    [[ " $command_line " == *" $broker_socket "* ]]
+}
+
+signal_broker()
+{
+    local signal_name=$1
+    local candidate=$2
+
+    kill "-$signal_name" "$candidate" 2>/dev/null && return 0
+    (( root_requested )) || return 1
+    if command -v sudo >/dev/null 2>&1 &&
+       sudo -n kill "-$signal_name" "$candidate" 2>/dev/null; then
+        return 0
+    fi
+    if command -v pkexec >/dev/null 2>&1; then
+        pkexec kill "-$signal_name" "$candidate" 2>/dev/null
+        return $?
+    fi
+    return 1
 }
 
 remember_pid()
@@ -107,9 +144,9 @@ done
 
 broker_was_running=0
 for broker_pid in "${broker_pids[@]}"; do
-    if kill -0 "$broker_pid" 2>/dev/null; then
+    if signal_broker 0 "$broker_pid"; then
         broker_was_running=1
-        kill -TERM "$broker_pid" 2>/dev/null
+        signal_broker TERM "$broker_pid"
     fi
 done
 
@@ -117,7 +154,7 @@ if (( broker_was_running )); then
     for wait_count in {1..50}; do
         broker_is_alive=0
         for broker_pid in "${broker_pids[@]}"; do
-            if kill -0 "$broker_pid" 2>/dev/null; then
+            if signal_broker 0 "$broker_pid"; then
                 broker_is_alive=1
                 break
             fi
@@ -128,7 +165,7 @@ if (( broker_was_running )); then
 
     if (( broker_is_alive )); then
         for broker_pid in "${broker_pids[@]}"; do
-            kill -KILL "$broker_pid" 2>/dev/null
+            signal_broker KILL "$broker_pid"
         done
     fi
 fi

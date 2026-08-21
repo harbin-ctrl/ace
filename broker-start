@@ -13,6 +13,19 @@ else
     ace_runtime_dir=$script_dir
 fi
 broker_binary=$ace_runtime_dir/ace-broker
+mode_args=()
+for argument in "$@"; do
+    case $argument in
+        --root|--user|--deviceview|--mountview)
+            mode_args+=("$argument")
+            ;;
+        *)
+            printf 'usage: %s [--root|--user] [--deviceview|--mountview]\n' \
+                "${BASH_SOURCE[0]}" >&2
+            if (( sourced )); then return 2; else exit 2; fi
+            ;;
+    esac
+done
 # Ask the binary where it would listen rather than reimplementing the rule.
 # The name encodes the SYS: root and the protocol version, and a shell copy of
 # that would be one more thing to keep in step -- see src/broker_identity.c.
@@ -26,7 +39,8 @@ broker_print_socket()
 {
     local reported
     [[ -x $broker_binary ]] || return 1
-    reported=$(timeout 5 "$broker_binary" --print-socket 2>/dev/null | head -n 1)
+    reported=$(timeout 5 "$broker_binary" "${mode_args[@]}" \
+        --print-socket 2>/dev/null | head -n 1)
     [[ $reported == /* ]] || return 1
     printf '%s\n' "$reported"
 }
@@ -52,7 +66,8 @@ start_failed()
     exit 1
 }
 
-# One broker per user. If a broker already holds this socket's lock, leave it
+# One broker per originating user and mode. If a broker already holds this
+# socket's lock, leave it
 # alone: restarting it would throw away the current directories, assigns and
 # variables of every session it is holding, which is what "start" used to do
 # unconditionally on its way past. The lock is the broker's own, so this asks
@@ -71,7 +86,7 @@ if [[ ! -x $broker_binary ]]; then
 fi
 
 umask 077
-nohup "$broker_binary" "$broker_socket" \
+nohup "$broker_binary" "${mode_args[@]}" "$broker_socket" \
     >/dev/null 2>&1 </dev/null &
 broker_pid=$!
 

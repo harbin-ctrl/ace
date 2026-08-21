@@ -1,7 +1,9 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "broker_client.h"
 #include "broker_protocol.h"
+#include "ace_modes.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -12,8 +14,10 @@
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sched.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -267,6 +271,78 @@ static int broker_wait_until_reachable(void)
     return -1;
 }
 
+static int join_broker_mount_namespace(int fd)
+{
+    char namespace_path[PATH_MAX];
+    struct ucred peer;
+    socklen_t peer_size = sizeof(peer);
+    int target_fd = -1;
+    int self_fd = -1;
+    struct stat target_info;
+    struct stat self_info;
+    int outcome = -1;
+
+    if (!ace_mode_is_device_view())
+        return 0;
+    if (!ace_mode_is_root()) {
+        errno = EACCES;
+        return -1;
+    }
+    /* Ask the connected socket who its peer really is. The lock file is a
+     * lifecycle aid, not an authentication mechanism, and in root mode it
+     * may live below a directory writable by the originating user. */
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) != 0 ||
+        peer_size != sizeof(peer) || peer.pid <= 0 || peer.uid != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    if (snprintf(namespace_path, sizeof(namespace_path),
+                 "/proc/%ld/ns/mnt", (long)peer.pid) >=
+        (int)sizeof(namespace_path)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    target_fd = open(namespace_path, O_RDONLY | O_CLOEXEC);
+    self_fd = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
+    if (target_fd < 0 || self_fd < 0 ||
+        fstat(target_fd, &target_info) != 0 ||
+        fstat(self_fd, &self_info) != 0)
+        goto done;
+    if (target_info.st_dev == self_info.st_dev &&
+        target_info.st_ino == self_info.st_ino) {
+        outcome = 0;
+        goto done;
+    }
+    /* Some ACE executables have the Exec host-signal dispatcher running
+     * before main(). Threads share an fs_struct by default, and Linux rejects
+     * a mount-namespace setns() with EINVAL while that sharing remains. Give
+     * this thread its own fs_struct first; the pre-existing dispatcher never
+     * performs pathname I/O, while every subsequently created worker inherits
+     * the device-view namespace entered here. */
+    if (unshare(CLONE_FS) != 0 || setns(target_fd, CLONE_NEWNS) != 0)
+        goto done;
+    outcome = 0;
+done:
+    if (target_fd >= 0)
+        close(target_fd);
+    if (self_fd >= 0)
+        close(self_fd);
+    return outcome;
+}
+
+static int connect_joined_broker(void)
+{
+    int fd = connect_broker();
+
+    if (fd < 0)
+        return -1;
+    if (join_broker_mount_namespace(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 int native_broker_ensure(void)
 {
     char lock_path[PATH_MAX];
@@ -281,7 +357,8 @@ int native_broker_ensure(void)
         errno = ENAMETOOLONG;
         return -1;
     }
-    lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    lock_fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+                   0600);
     if (lock_fd < 0)
         return -1;
     if (flock(lock_fd, LOCK_EX) != 0) {
@@ -314,7 +391,8 @@ int native_broker_ensure(void)
             if (null_fd > STDERR_FILENO)
                 close(null_fd);
         }
-        execl(executable, executable, broker_socket_path(), (char *)NULL);
+        execl(executable, executable, ace_mode_privilege_switch(),
+              ace_mode_view_switch(), broker_socket_path(), (char *)NULL);
         _exit(127);
     }
     if (child < 0 || broker_wait_until_reachable() != 0) {
@@ -607,6 +685,10 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
     request.path_length = (uint32_t)path_length;
     request.value_length = (uint32_t)value_length;
     request.flags = flags;
+    request.mode = (ace_mode_is_root() ? AMIGA_BROKER_MODE_ROOT : 0) |
+                   (ace_mode_is_device_view() ?
+                        AMIGA_BROKER_MODE_DEVICEVIEW : 0);
+    request.owner_uid = (uint32_t)ace_mode_owner_uid();
 
     /* The descriptors ride with the request header, which is the first thing
        written and always non-empty. */
@@ -724,11 +806,14 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
  */
 static int broker_connection(void)
 {
+    int fd;
+
     if (broker_fd >= 0)
         return broker_fd;
-    broker_fd = connect_broker();
-    if (broker_fd < 0)
+    fd = connect_joined_broker();
+    if (fd < 0)
         return -1;
+    broker_fd = fd;
     if (broker_attached) {
         char ignored[1];
 
@@ -840,7 +925,7 @@ int native_broker_task_attach(const char *name,
         errno = EINVAL;
         return -1;
     }
-    task_fd = connect_broker();
+    task_fd = connect_joined_broker();
     if (task_fd < 0)
         return -1;
     char pid[32];
@@ -902,7 +987,7 @@ int native_broker_port_attach(native_broker_port_record_handler handler,
             *channel_id = port_channel_id;
         return 0;
     }
-    port_fd = connect_broker();
+    port_fd = connect_joined_broker();
     if (port_fd < 0)
         return -1;
     snprintf(pid, sizeof(pid), "%ld", (long)getpid());
@@ -1132,7 +1217,7 @@ int native_broker_task_break_foreground(uint32_t signals)
 
     if (native_broker_ensure() != 0)
         return -1;
-    fd = connect_broker();
+    fd = connect_joined_broker();
     if (fd < 0)
         return -1;
     snprintf(mask, sizeof(mask), "%u", signals);

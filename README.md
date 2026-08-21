@@ -15,14 +15,46 @@ Edified Tine. Its submotto is *Back in Tine.*
 
 ```sh
 make
-./build/ace-broker
+./build/ace-broker --user --mountview
 ```
 
-The broker takes an optional socket path; with none it uses one socket per
-user, `$XDG_RUNTIME_DIR/ace-broker.sock` (or `/tmp/ace-broker-<uid>.sock`
-where there is no runtime directory). One broker serves all of a user's ACE
-processes: a second one started on the same socket reports that one is
-already running and exits rather than displacing it.
+The broker takes an optional socket path. With none, the name distinguishes
+the originating user, privilege mode, view mode, SYS: root, and protocol
+version. One broker serves the matching ACE processes: a second one started
+on the same socket reports that one is already running and exits rather than
+displacing it.
+
+ACE has two independent pairs of startup switches:
+
+- `--root` requires full root privilege. When invoked by a user it first tries
+  `sudo`, then `pkexec`, and fails if neither can grant it. `--user` rejects a
+  process already running as root.
+- `--deviceview` exposes the true top of every supported block-backed
+  filesystem through private bind roots and therefore requires root.
+  `--mountview` uses Linux's current mount tree, which is ACE's traditional
+  behavior.
+
+With no switches, a user process selects `--user --mountview`; a root process
+selects `--root --deviceview`. The explicit mates can be combined, notably
+`--root --mountview`. `--root`/`--user` and
+`--deviceview`/`--mountview` are mutually exclusive pairs. Device view
+currently supports ext2, ext3, ext4, and vfat block devices. Btrfs, procfs,
+sysfs, and other synthetic filesystems are not part of this model yet.
+
+In device view the broker creates a private mount namespace, makes the host
+mount tree private, and non-recursively bind-mounts each already-mounted
+supported filesystem at an ACE-managed root. A filesystem that is not mounted
+is mounted there directly. ACE clients join that namespace before they touch
+broker-resolved paths. A normal broker stop detaches the private roots; after
+an abrupt exit Linux destroys the mounts when the last ACE process in that
+namespace exits. The mountpoint directories themselves are harmless and are
+reused on the next start.
+
+Linux absolute symbolic links keep Linux meaning. If a link on `sda2:` names
+`/boot/efi/file` and `/boot/efi` is `sda1:`, `ReadLink()` reports
+`sda1:file`. Assigns likewise retain canonical DOS device paths, never Linux
+mountpoint paths; use `ace-brokerctl name` first when starting from a Linux
+path.
 
 Install the built commands and console runtime into `~/.local/bin`:
 
@@ -111,8 +143,8 @@ set of companions.
 For testing, the project also provides quiet lifecycle commands:
 
 ```sh
-source ./broker-start
-source ./broker-stop
+source ./broker-start --user --mountview
+source ./broker-stop --user --mountview
 ```
 
 When sourced, `broker-start` also prepends `build/` to `PATH`, and
@@ -121,7 +153,8 @@ child script cannot modify its parent shell's environment. Both commands also
 work as ordinary executables for broker lifecycle control, but only the
 source form changes `PATH`.
 
-Both commands honor `ACE_BROKER_SOCKET`; an optional
+Both commands accept the four ACE mode switches and honor
+`ACE_BROKER_SOCKET`; an optional
 `ACE_BROKER_PIDFILE` selects the PID-file location. If the socket
 variable is unset, they use the same default as the DOS client.
 
@@ -130,7 +163,8 @@ In another terminal:
 ```sh
 export ACE_SESSION=my-shell
 ./build/CD .
-./build/ace-brokerctl assign WORK: /tmp
+target=$(./build/ace-brokerctl name /tmp)
+./build/ace-brokerctl assign WORK: "$target"
 ./build/ace-brokerctl doslist
 ./build/MakeDir WORK:ace-test-one WORK:ace-test-two ALL
 ./build/Echo hello from AROS TO WORK:ace-shell-test
@@ -139,6 +173,16 @@ export ACE_SESSION=my-shell
 ./build/PathPart ADD Work: dir2 file.txt
 ./build/Fault 205 212
 printf 'y\n' | ./build/Ask Continue?
+```
+
+`Peek` shows the path translation without opening or changing anything. With
+no switch it resolves an AmigaDOS name to its full Linux path; `HOST` (or
+`LINUX`) asks what AmigaDOS name ACE would assign to a Linux path:
+
+```sh
+./build/Peek SYS:C/Dir
+./build/Peek SYS:C/#?
+./build/Peek /home/erik/a:file HOST
 ```
 
 The native commands also support AmigaDOS template mode. A standalone `?`

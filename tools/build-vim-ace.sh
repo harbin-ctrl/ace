@@ -110,8 +110,10 @@ ace_objects=(
     "$object_dir/ace_vim_editor_stubs.o"
     "$ace_build/ace-vim-runtime.o"
     "$ace_build/broker_client.o"
-    # broker_client.c asks broker_identity.c where this system's socket is.
+    # The broker client asks these two objects which mode-specific socket
+    # belongs to this ACE process.
     "$ace_build/broker-identity.o"
+    "$ace_build/ace-modes.o"
     "$ace_build/native_process.o"
     "$ace_build/native_command.o"
     # native_command.c raises the Amiga break signals through the exec

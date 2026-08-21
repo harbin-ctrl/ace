@@ -6,6 +6,11 @@
 /* Discover filesystem-bearing host block devices for the broker's DOS list. */
 void ace_dos_devices_discover(void);
 
+/* Select and prepare the broker-wide filesystem topology. Device view must
+ * be called after discovery and from a private, privileged mount namespace. */
+int ace_dos_devices_prepare_device_view(void);
+int ace_dos_devices_is_full_root(const char *path);
+
 /* Return 1 for a unique DOS device/volume alias, 0 for none, -1 if ambiguous. */
 int ace_dos_devices_lookup(const char *name);
 

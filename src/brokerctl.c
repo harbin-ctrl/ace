@@ -50,8 +50,7 @@ int main(int argc, char **argv)
         return native_broker_setcwd(result) == 0 ? 0 : 1;
     }
     if (argc == 4 && strcmp(argv[1], "assign") == 0) {
-        if (native_broker_assign_ex(argv[2], argv[3],
-                                    AMIGA_BROKER_PATH_HOST) != 0) {
+        if (native_broker_assign(argv[2], argv[3]) != 0) {
             perror("assign");
             return 1;
         }

@@ -216,6 +216,9 @@ enum amiga_broker_operation {
  * native lock passed to CurrentDir). It must not receive Amiga '/' semantics. */
 #define AMIGA_BROKER_PATH_HOST  0x80000000u
 
+#define AMIGA_BROKER_MODE_ROOT       0x0001u
+#define AMIGA_BROKER_MODE_DEVICEVIEW 0x0002u
+
 #define AMIGA_BROKER_MAX_PAYLOAD 16384u
 
 /* Which of a message's streams travel with it, and in which order the
@@ -239,6 +242,8 @@ struct amiga_broker_request {
     uint32_t path_length;
     uint32_t value_length;
     uint32_t flags;
+    uint32_t mode;
+    uint32_t owner_uid;
 };
 
 struct amiga_broker_response {

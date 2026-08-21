@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <limits.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "broker_client.h"
 #include "broker_protocol.h"
 #include "ace_shell_break.h"
+#include "ace_modes.h"
 #include "native_host.h"
 
 /*
@@ -158,10 +160,35 @@ static void run_startup_scripts(void)
 
 int main(int argc, char **argv)
 {
+    struct ace_mode_options modes;
+    char **original_argv;
+    int original_argc = argc;
     int status;
 
+    original_argv = calloc((size_t)argc + 1, sizeof(*original_argv));
+    if (!original_argv)
+        return 20;
+    memcpy(original_argv, argv, ((size_t)argc + 1) * sizeof(*argv));
+    if (ace_mode_parse(&argc, argv, &modes) != 0 || argc != 1) {
+        fprintf(stderr, "usage: %s [--root|--user] "
+                        "[--deviceview|--mountview]\n", argv[0]);
+        free(original_argv);
+        return 20;
+    }
+    if (ace_mode_elevate_if_needed(original_argc, original_argv, &modes) != 0) {
+        fprintf(stderr, "ace-user-shell: failed to get root: %s\n",
+                strerror(errno));
+        free(original_argv);
+        return 20;
+    }
+    free(original_argv);
+    if (ace_mode_configure(&modes) != 0) {
+        fprintf(stderr, "ace-user-shell: requested mode is unavailable: %s\n",
+                strerror(errno));
+        return 20;
+    }
+
     publish_shell_path();
-    ace_shell_break_init();
     if (native_broker_ensure() != 0) {
         fputs("ace-user-shell: broker unavailable\n", stderr);
         return 20;
@@ -170,6 +197,10 @@ int main(int argc, char **argv)
         fputs("ace-user-shell: broker session attach failed\n", stderr);
         return 20;
     }
+    /* A device-view shell must join the broker's mount namespace before it
+     * creates the break-dispatch thread: Linux does not permit a
+     * multithreaded process to change mount namespaces. */
+    ace_shell_break_init();
     /* Vim's unchanged Amiga backend asks AmigaDOS GetVar("TERM"), rather
        than POSIX getenv(), when FEAT_ARP is present.  The ACE GUI process
        also exports TERM for host-side consumers, but the broker-backed DOS

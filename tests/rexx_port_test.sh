@@ -27,7 +27,13 @@ cleanup()
     for pid in ${background_pids:-}; do
         kill -TERM "$pid" 2>/dev/null || true
     done
-    broker_pid=$(pgrep -f "ace-broker $socket_path" 2>/dev/null || true)
+    broker_pid=
+    if [ -r "$socket_path.lock" ]; then
+        broker_pid=$(sed -n '1p' "$socket_path.lock" 2>/dev/null || true)
+    fi
+    if [ -z "$broker_pid" ]; then
+        broker_pid=$(pgrep -f "ace-broker .*${socket_path}" 2>/dev/null || true)
+    fi
     if [ -n "$broker_pid" ]; then
         kill -TERM $broker_pid 2>/dev/null || true
     fi

@@ -1,21 +1,9 @@
 #!/bin/sh
 set -eu
 
-# Confirms `ace-brokerctl assign NAME PATH` -- the form README.md documents
-# ("ace-brokerctl assign WORK: /tmp") -- actually works. It used to fail
-# silently: broker.c's ASSIGN handler always ran the target through
-# resolve_path() with host_path=false, which parses it as an AmigaDOS path
-# (colon-relative, or relative to the session's Amiga current directory).
-# A raw Linux path like "/tmp" has no colon, so it was looked up as a
-# subdirectory named "tmp" underneath the current Amiga directory -- which
-# does not exist -- and the request failed with ENOENT. brokerctl also never
-# printed anything on failure, so the command just exited 1.
-#
-# Fixed by giving ace-brokerctl's CLI-level assign the AMIGA_BROKER_PATH_HOST
-# flag (host_path=true), which broker.c's ASSIGN handler now honours, and by
-# making brokerctl report the errno on failure. This does not change the
-# real Assign command / assign_compat.c, which already hands broker.c an
-# AmigaDOS path resolved through NameFromLock() and must keep host_path=false.
+# Confirms that brokerctl accepts and retains only logical AmigaDOS assign
+# targets. Linux paths are deliberately not an assign creation interface:
+# they would bind the assign to whichever host view happened to be active.
 
 repo_dir=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 test_dir=$(mktemp -d "$repo_dir/.ace-brokerctl-assign.XXXXXX")
@@ -62,14 +50,15 @@ run_ctl()
 
 target_dir="$test_dir/work"
 mkdir -p "$target_dir"
+target_name=$(run_ctl name "$target_dir")
 
-run_ctl assign WORK: "$target_dir" ||
-    fail "assign WORK: $target_dir exited nonzero"
+run_ctl assign WORK: "$target_name" ||
+    fail "assign WORK: $target_name exited nonzero"
 
 assigns=$(run_ctl assigns)
 case "$assigns" in
-    *"WORK"*"$target_dir"*) ;;
-    *) fail "assigns did not list WORK: -> $target_dir: $assigns" ;;
+    *"WORK"*"$target_name"*) ;;
+    *) fail "assigns did not list WORK: -> $target_name: $assigns" ;;
 esac
 
 resolved=$(run_ctl resolve WORK:)
@@ -78,7 +67,7 @@ resolved=$(run_ctl resolve WORK:)
 
 # A target that does not exist must still fail (and say why), not just the
 # broken "always fails" case above.
-if err=$(run_ctl assign BAD: "$test_dir/no-such-directory" 2>&1); then
+if err=$(run_ctl assign BAD: "${target_name%/*}/no-such-directory" 2>&1); then
     fail "assign to a missing directory unexpectedly succeeded"
 fi
 case "$err" in

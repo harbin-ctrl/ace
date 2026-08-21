@@ -181,14 +181,22 @@ static void load_devices(ULONG flags)
     for (line = strtok_r(serialized, "\n", &save_line);
          line; line = strtok_r(NULL, "\n", &save_line)) {
         char *fields[5] = {0};
-        char *save_field = NULL;
-        int field_count = 0;
-        char *cursor = line;
+        int field_count = 1;
+        char *cursor;
 
-        while (field_count < 5 &&
-               (fields[field_count] = strtok_r(cursor, "\t", &save_field))) {
-            cursor = NULL;
-            field_count++;
+        /* Empty columns are significant. In particular, an unlabeled
+           filesystem is serialized as "...<uuid>\t\t/dev/...". strtok_r()
+           skips that empty label and makes the Linux device path look like
+           an Amiga volume alias. Split the record in place so each tab still
+           advances exactly one field. */
+        fields[0] = line;
+        for (cursor = line; field_count < 5; cursor++) {
+            if (*cursor == '\0')
+                break;
+            if (*cursor != '\t')
+                continue;
+            *cursor = '\0';
+            fields[field_count++] = cursor + 1;
         }
         if (field_count < 1)
             continue;
@@ -221,12 +229,18 @@ static void load_assigns(ULONG flags)
         if (entry && type == DLT_DIRECTORY) {
             struct AssignList **tail = &entry->dol_misc.dol_assign.dol_List;
             struct AssignList *assign = calloc(1, sizeof(*assign));
+            char host_root[PATH_MAX];
 
             if (!assign)
                 continue;
             while (*tail)
                 tail = &(*tail)->al_Next;
-            assign->al_Lock = native_lock_host_path(root);
+            if (native_broker_resolve_path(root, host_root,
+                                           sizeof(host_root)) != 0) {
+                free(assign);
+                continue;
+            }
+            assign->al_Lock = native_lock_host_path(host_root);
             if (!assign->al_Lock) {
                 free(assign);
                 continue;
@@ -244,7 +258,11 @@ static void load_assigns(ULONG flags)
             entry->dol_misc.dol_assign.dol_AssignName =
                 dos_entry_assign_names[dos_entry_count - 1];
         } else {
-            entry->dol_Lock = native_lock_host_path(root);
+            char host_root[PATH_MAX];
+
+            if (native_broker_resolve_path(root, host_root,
+                                           sizeof(host_root)) == 0)
+                entry->dol_Lock = native_lock_host_path(host_root);
         }
     }
 }
