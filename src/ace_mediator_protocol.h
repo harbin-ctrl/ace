@@ -321,6 +321,26 @@ enum ace_mediator_status {
 #define ACE_MEDIATOR_FLAG_EXCLUSIVE 0x0008u
 /* The reply to this request carries a descriptor as ancillary data. */
 #define ACE_MEDIATOR_FLAG_HAS_FD    0x0010u
+/*
+ * Which of the two path domains this request names.
+ *
+ * Set: an absolute host path, for an object the user was refused -- /etc,
+ * /root, and their like.  Clear: a path relative to the device-view root, for
+ * an object that exists only inside the mediator's mount namespace and that
+ * the user could not have opened however the permissions stood.
+ *
+ * They are different questions and they get different resolution rules.  A
+ * device-view path must stay inside its volume, so it is resolved with
+ * RESOLVE_BENEATH and a symlink leading out is an escape.  A host path is
+ * ordinary Linux naming and is resolved with RESOLVE_IN_ROOT, where an
+ * absolute symlink means what it says.  Both refuse magic links, because
+ * neither has any business being redirected through a descriptor table.
+ *
+ * The distinction is in the protocol rather than inferred from a leading
+ * slash, so that a caller states which it means and a malformed path cannot
+ * quietly change domain.
+ */
+#define ACE_MEDIATOR_FLAG_HOST_PATH 0x0020u
 
 /* Length of the per-launch random instance identifier.  Sixteen bytes so
    that guessing it is not a strategy. */

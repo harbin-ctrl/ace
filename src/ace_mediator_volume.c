@@ -612,7 +612,35 @@ void ace_mediator_volume_shutdown(void)
         if (!entry->in_use || !entry->view_path[0])
             continue;
         (void)umount2(entry->view_path, MNT_DETACH);
+        /*
+         * The mount lives in this process's namespace and goes with it, but
+         * the directory it hung on was made in the shared filesystem and
+         * would otherwise be left behind -- an empty root-owned directory per
+         * device, accumulating across sessions in a place nobody looks.
+         *
+         * Best effort: a lazy unmount may not have finished, and a directory
+         * still busy is not worth waiting for.  The next session reuses the
+         * name anyway.
+         */
+        (void)rmdir(entry->view_path);
         entry->view_path[0] = '\0';
         entry->in_use = 0;
+    }
+    if (view_root[0]) {
+        char parent[PATH_MAX];
+        char *slash;
+
+        (void)rmdir(view_root);
+        /* And the directory that held the view root, if this session was the
+           only thing in it. */
+        if (strlen(view_root) < sizeof(parent)) {
+            strcpy(parent, view_root);
+            slash = strrchr(parent, '/');
+            if (slash && slash != parent) {
+                *slash = '\0';
+                (void)rmdir(parent);
+            }
+        }
+        view_root[0] = '\0';
     }
 }

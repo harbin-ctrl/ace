@@ -220,6 +220,51 @@ if unshare -Ur -m true 2>/dev/null; then
         fail "the O_PATH descriptor did not fstat correctly: $out"
 fi
 
+# The elevated path, on machines where root can be taken without a human.
+#
+# Everything above runs the mediator as the current user, which keeps the
+# tests free of passwords but leaves the path that actually carries privilege
+# uncovered.  This runs it for real: a root mediator, a private namespace, an
+# access worker inside it, and both path domains.
+if command -v sudo >/dev/null 2>&1 && sudo -n /usr/bin/true 2>/dev/null &&
+   [ "$(id -u)" -ne 0 ]; then
+    out=$("$probe" elevated "$mediator") || fail "elevated probe failed: $out"
+    printf '%s\n' "$out" | grep -q '^granted=0x3$' ||
+        fail "the elevated mediator granted nothing: $out"
+    printf '%s\n' "$out" | grep -q '^namespace=0$' ||
+        fail "the elevated mediator made no namespace: $out"
+    printf '%s\n' "$out" | grep -q '^worker=ok$' ||
+        fail "no access worker inside the elevated namespace: $out"
+    printf '%s\n' "$out" | grep -q '^escape=2$' ||
+        fail "a device-view escape was not refused: $out"
+
+    # Escalation reaches a real object the user genuinely cannot open.  Both
+    # halves matter: the second is what makes the first mean anything.
+    printf '%s\n' "$out" | grep -q '^shadow=0$' ||
+        fail "the access worker could not open a protected file: $out"
+    printf '%s\n' "$out" | grep -q '^shadow-direct=refused$' ||
+        fail "the test user could open /etc/shadow, so it proves nothing: $out"
+
+    # A file created through the mediator is root-owned, as sudo cp leaves it.
+    printf '%s\n' "$out" | grep -q '^create=0$' ||
+        fail "the access worker could not create a protected file: $out"
+    printf '%s\n' "$out" | grep -q '^owner=root$' ||
+        fail "a file created through the mediator was not root-owned: $out"
+
+    # The operations with no descriptor to hand back.
+    printf '%s\n' "$out" | grep -q '^rename=0$' || fail "rename failed: $out"
+    printf '%s\n' "$out" | grep -q '^unlink=0$' || fail "unlink failed: $out"
+    printf '%s\n' "$out" | grep -q '^mkdir=0$' || fail "mkdir failed: $out"
+    # AmigaDOS Delete removes a directory too, so one DOS operation stays one
+    # operation here.
+    printf '%s\n' "$out" | grep -q '^rmdir=0$' ||
+        fail "Delete did not remove a directory: $out"
+    # A final component that is really a path reference is refused before any
+    # part of it is used.
+    printf '%s\n' "$out" | grep -q '^dotname=7$' ||
+        fail "a directory reference was accepted as a name: $out"
+fi
+
 # A channel name that is not a mediator rendezvous is refused before any
 # connection is attempted.  The nonce is in the name; a name without one was
 # not produced by a broker.

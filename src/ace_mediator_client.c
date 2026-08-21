@@ -706,6 +706,53 @@ int ace_mediator_mount(struct ace_mediator *mediator, const char *kernel_name,
     return 0;
 }
 
+int ace_mediator_access(struct ace_mediator *worker, uint32_t operation,
+                        const char *path, const char *second, uint32_t flags,
+                        uint32_t mode, int *received_fd)
+{
+    struct ace_mediator_request request;
+    struct ace_mediator_response response;
+    char payload[ACE_MEDIATOR_MAX_PAYLOAD];
+    size_t first_length;
+    size_t total;
+
+    if (received_fd)
+        *received_fd = -1;
+    if (!worker || !path || !*path || *path == '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    first_length = strlen(path) + 1;
+    total = first_length;
+    if (second) {
+        if (!*second || *second == '/') {
+            errno = EINVAL;
+            return -1;
+        }
+        total += strlen(second) + 1;
+    }
+    if (total > sizeof(payload)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(payload, path, first_length);
+    if (second)
+        memcpy(payload + first_length, second, strlen(second) + 1);
+
+    memset(&request, 0, sizeof(request));
+    request.operation = operation;
+    request.flags = flags;
+    request.mode = mode;
+    request.first_path_length = second ? (uint32_t)first_length : 0;
+    request.payload_length = (uint32_t)total;
+    if (ace_mediator_request(worker, &request, payload, &response, NULL, 0,
+                             received_fd) != 0)
+        return -1;
+    if (response.status != ACE_MEDIATOR_OK && response.host_errno)
+        errno = response.host_errno;
+    return response.status;
+}
+
 int ace_mediator_ping(struct ace_mediator *mediator)
 {
     struct ace_mediator_request request;

@@ -296,9 +296,18 @@ int main(int argc, char **argv)
         printf("worker-volume=%d\n",
                class_probe(worker, ACE_MEDIATOR_VOLUME_MOUNT));
         /* No view has been prepared, so the worker holds no subtree to
-           resolve inside and declines rather than guessing at one. */
-        printf("worker-rootless=%d\n",
-               class_probe(worker, ACE_MEDIATOR_ACCESS_STAT));
+           resolve inside and declines rather than guessing at one.  A real
+           path, so that what is being refused is the missing root and not a
+           malformed request. */
+        {
+            int probe_fd = -1;
+
+            printf("worker-rootless=%d\n",
+                   access_open(worker, ACE_MEDIATOR_ACCESS_STAT, "anything",
+                               &probe_fd));
+            if (probe_fd >= 0)
+                close(probe_fd);
+        }
 
         snprintf(link, sizeof(link), "/proc/%ld/ns/mnt",
                  (long)ace_mediator_pid(mediator));
@@ -506,6 +515,67 @@ int main(int argc, char **argv)
             printf("escape=%d\n",
                    access_open(worker, ACE_MEDIATOR_ACCESS_OPEN_READ,
                                "../../etc/passwd", &fd));
+
+            /*
+             * The other domain: objects the user was refused rather than
+             * objects they could not see.  /etc/shadow is the standard
+             * example of a file an ordinary process cannot open, so opening
+             * it is the demonstration that escalation reaches real things.
+             */
+            printf("shadow=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_OPEN_READ,
+                                       "etc/shadow", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0, &fd));
+            if (fd >= 0) { close(fd); fd = -1; }
+            /* And that the user genuinely could not. */
+            printf("shadow-direct=%s\n",
+                   open("/etc/shadow", O_RDONLY) < 0 ? "refused" : "opened");
+
+            /* Create, and see who ends up owning it. */
+            printf("create=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_OPEN_WRITE,
+                                       "root/.ace-mediator-probe", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH |
+                                       ACE_MEDIATOR_FLAG_CREATE |
+                                       ACE_MEDIATOR_FLAG_TRUNCATE, 0644, &fd));
+            if (fd >= 0) {
+                struct stat information;
+
+                printf("owner=%s\n",
+                       fstat(fd, &information) == 0 && information.st_uid == 0
+                           ? "root" : "other");
+                close(fd);
+                fd = -1;
+            } else {
+                printf("owner=none\n");
+            }
+            printf("rename=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_RENAME,
+                                       "root/.ace-mediator-probe",
+                                       "root/.ace-mediator-probe2",
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0, NULL));
+            printf("unlink=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_UNLINK,
+                                       "root/.ace-mediator-probe2", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0, NULL));
+            printf("mkdir=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_MKDIR,
+                                       "root/.ace-mediator-probe-dir", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0755,
+                                       NULL));
+            /* Delete removes a directory too, as AmigaDOS Delete does. */
+            printf("rmdir=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_UNLINK,
+                                       "root/.ace-mediator-probe-dir", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0, NULL));
+            /* A final component that is really a path is refused before any
+               of it is used. */
+            printf("dotname=%d\n",
+                   ace_mediator_access(worker, ACE_MEDIATOR_ACCESS_MKDIR,
+                                       "root/..", NULL,
+                                       ACE_MEDIATOR_FLAG_HOST_PATH, 0755,
+                                       NULL));
+
             ace_mediator_close(worker);
         }
         ace_mediator_close(mediator);

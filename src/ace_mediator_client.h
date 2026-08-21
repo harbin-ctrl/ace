@@ -140,6 +140,26 @@ int ace_mediator_mount(struct ace_mediator *mediator, const char *kernel_name,
                        const char *filesystem_type, char *view_path,
                        size_t view_path_size);
 
+/*
+ * One typed operation on one exact object, addressed to the access worker.
+ *
+ * path is relative and never begins with a slash: which domain it is in comes
+ * from flags (ACE_MEDIATOR_FLAG_HOST_PATH for an absolute host object, clear
+ * for one inside the device view), so that a caller states what it means
+ * rather than a leading character deciding for it.
+ *
+ * second is the destination of a rename and NULL for everything else; the two
+ * halves travel together because a rename whose halves were authorised
+ * separately is two operations with a window between them.
+ *
+ * received_fd, when not NULL, takes the descriptor an opening operation
+ * produced.  The caller owns it and must close it.  Returns the ACE status,
+ * or -1 if the channel itself failed.
+ */
+int ace_mediator_access(struct ace_mediator *worker, uint32_t operation,
+                        const char *path, const char *second, uint32_t flags,
+                        uint32_t mode, int *received_fd);
+
 /* Orderly shutdown where possible, then release the handle.  Safe on NULL. */
 void ace_mediator_close(struct ace_mediator *mediator);
 
