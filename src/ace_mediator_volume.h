@@ -31,6 +31,11 @@ int ace_mediator_volume_dispatch(const struct ace_mediator_request *request,
                                  char *reply, size_t reply_size,
                                  size_t *reply_length, int *host_errno);
 
+/* Whether the private mount namespace has been created.  The supervisor asks
+   before forking an access worker: a worker outside the namespace would not
+   see the device view it exists to reach. */
+int namespace_is_ready(void);
+
 /* Unmount everything this worker mounted, in reverse order.  Called on the
    way out, including the way out that a dead broker causes. */
 void ace_mediator_volume_shutdown(void);

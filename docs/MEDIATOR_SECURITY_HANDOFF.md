@@ -35,31 +35,88 @@ when needed.
 
 ## The agreed process model
 
-The conceptual model is one mediator service with two isolated security
-personalities underneath it:
+The model is two privileged processes, both reached through the user's broker:
 
 ```text
-  ace-shell / ace-console       ordinary user
+  ace-shell / ace-console       ordinary user, talks only to the broker
            |
            v
-      ace-broker                ordinary user, owns Amiga/DOS state
+      ace-broker                ordinary user; owns env, cwd, assigns,
+           |                    aliases, path translation, sessions
            |
-           | one authenticated control channel
-           v
-      ace-mediator supervisor   privileged, no GUI, no Amiga session state
-           |
-           +-- volume worker     mount/device-view personality
-           |
-           +-- access workers    one protected DOS operation at a time
+           +---- authenticated once ----> volume mediator   root
+           |                              owns the private mount namespace,
+           |                              the mounts, the device view
+           |                                     |
+           |                                     | forks, inside that namespace
+           |                                     v
+           +---- second channel --------> access worker     root
+                                          one typed file operation at a time,
+                                          returns descriptors
 ```
 
-This is intentionally neither two unrelated public daemons nor one large root
-program. There is one launch, authentication, lifecycle, and broker protocol,
-but the two dangerous responsibilities are separated internally. The first
-implementation may use one root process with strict modules and operation
-namespaces, but the protocol and code structure must allow the workers to be
-separate processes. Splitting the workers is preferred once the protocol is
-stable.
+The workers are separate processes rather than modules in one, and the reason
+is stronger than tidiness. The access worker is forked after the namespace
+exists, so it is inside it; it closes the supervisor's channel on the way in,
+so it holds no route to the volume side. "The access worker must not be able
+to issue volume operations" therefore stops being a check that can be got
+wrong and becomes a connection that does not exist.
+
+One authentication covers both. The user authorised ACE, not a particular
+number of helper processes, and asking a second time for one decision is the
+prompt fatigue this design already refused once. The supervisor forks the
+worker and passes its channel back to the broker over the existing descriptor
+mechanism.
+
+### Why the private namespace survives an unprivileged broker
+
+An earlier version of this document assumed the broker could keep a private
+mount namespace while becoming an ordinary user process. It cannot, and the
+reason is structural rather than a matter of permissions:
+
+```text
+root-owned mount namespace, joined from uid 1000:
+    setns: Operation not permitted (errno 1)
+joined from root:
+    setns: joined
+```
+
+`setns(fd, CLONE_NEWNS)` requires `CAP_SYS_ADMIN` in the user namespace that
+owns the target mount namespace. A namespace created by the root mediator is
+owned by the initial user namespace, where a user process has no such
+capability and no way to acquire one. Today this is invisible only because
+`--root` re-executes the shell, the broker, and every command as root, so
+everything is already inside.
+
+The two-process split dissolves this rather than working around it: nobody
+unprivileged ever needs to enter the namespace, because nobody unprivileged
+ever opens a path inside it. The access worker opens the object and passes
+back a descriptor, and a descriptor does not belong to a namespace. Bulk I/O
+then happens in the user's own process on that descriptor, so a large Copy is
+one request rather than one per byte.
+
+This works only because nothing in ACE reaches the filesystem behind the
+seam, which is true and worth keeping true: ACE commands and LhA are compiled
+with `-Dopen=ace_amiga_posix_open` and its relatives, Vim with
+`-Dopen=ace_vim_open`, and the DOS layer goes through `native_dos.c`. A future
+component that opened a raw host path directly would silently lose the device
+view, and that is the property to protect.
+
+### Consequences that follow from the split
+
+Two escalation triggers, not one. A protected path escalates on
+`EACCES`/`EPERM`, as before. A device-view path is served by the access worker
+*by construction*, because locally it fails with `ENOENT` -- and `ENOENT` must
+never trigger escalation. The broker routes paths beneath the view root
+because the mediator told it where that root is. This is not the forbidden
+list of protected paths: it is one value learned at runtime from the process
+that created it.
+
+`LNX` children lose the device view. They are Linux processes outside the ACE
+seam, so they will not see paths under the view root. Today they inherit it
+because everything is root and inside the namespace. This is consistent with
+`LNX` being an explicit escape hatch rather than an implicit privilege path,
+but it is a behaviour change and is recorded here as one.
 
 ### User shell and console
 
@@ -147,11 +204,13 @@ For unlink, rename, mkdir, and similar operations that cannot be represented by
 an fd, the access worker performs exactly that typed operation and returns a
 precise status.
 
-The access worker should drop mount-management capabilities. It must not be
-able to issue volume-worker operations merely because it is privileged. If the
-worker needs to operate in the volume worker's private namespace, arrange this
-with a controlled namespace/dirfd handoff or launch the worker in that namespace
-with only the capabilities needed for the file operation.
+The access worker cannot issue volume-worker operations, and this is now
+structural rather than enforced. It is a separate process, forked by the
+supervisor after the namespace exists so that it is inside it, and it closes
+the supervisor's channel on the way in. There is no capability bit meaning
+"may not mount" -- there is nothing to mount with and nobody to ask. The class
+check in the worker remains as a stated answer beside the structural one, so
+that a reader of either reaches the same conclusion.
 
 ## Meaning of `--root`
 
@@ -440,17 +499,21 @@ cannot send `SHUTDOWN`. The broker never uses `kill()` on the mediator -- a
 user process holding a signal lever on a privileged one is the arrangement
 this design exists to avoid.
 
-### Chunk C: the volume worker, then de-root the broker
+### Chunk C: the two privileged processes, then de-root the broker
 
-Move namespace creation, `prepare_device_view()`, and the mount and unmount
-lifecycle out of the broker and into the mediator's volume class. Mount
-ownerless filesystems with `uid=` per the decision above. Clients `setns()`
-into the mediator rather than the broker; the existing peer-uid-0 check and
-the `unshare(CLONE_FS)` workaround transfer unchanged, and the reason for that
-workaround is recorded below.
+C1 and C2 are done: the volume worker owns the namespace, the mounts, and the
+device view, and the supervisor forks an access worker inside that namespace
+and hands the broker its channel.
 
-Only once the namespace has moved does the broker become an ordinary user
-process, and a root broker or shell begin to fail by default.
+C3 remains: move `prepare_device_view()`'s work out of `dos_devices.c` so the
+broker drives the mediator instead of mounting anything itself, route
+device-view paths to the access worker, and only then let the broker become an
+ordinary user process, with a root broker or shell failing by default.
+
+Clients no longer `setns()` into anything. `broker_client.c`'s namespace
+joining and its `unshare(CLONE_FS)` workaround are deleted rather than moved
+-- the workaround existed to let user processes enter the broker's namespace,
+and no user process enters a namespace any more.
 
 `make test-device-view` is the regression gate for this chunk and must keep
 passing throughout it, not merely at the end.
@@ -559,7 +622,19 @@ The following user decisions remain in force unless explicitly revisited:
   ACE user, because a filesystem with no owners presented to a single user who
   owns all of it is exactly what an Amiga floppy was;
 * the mediator has no operation that executes anything, and gaining one would
-  turn a `--root` session into a root shell reachable from any ARexx script.
+  turn a `--root` session into a root shell reachable from any ARexx script;
+* the volume worker and the access worker are separate processes, and the
+  access worker's inability to mount anything is structural -- it holds no
+  channel to the volume side. Do not merge them back into one process with a
+  capability mask;
+* no unprivileged ACE process ever enters a mount namespace, because it
+  cannot: `setns(CLONE_NEWNS)` needs `CAP_SYS_ADMIN` in the owning user
+  namespace. Descriptors cross that boundary instead, and they are enough;
+* nothing in ACE may reach the filesystem outside the ACE seam. A component
+  that opens a raw host path directly loses the device view silently, which is
+  the worst way to lose it;
+* `LNX` children do not see the device view, and that is correct: `LNX` is an
+  escape hatch to Linux, and a Linux process gets Linux's view.
 
 The central security/product decision is now:
 

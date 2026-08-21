@@ -501,6 +501,56 @@ int ace_mediator_request(struct ace_mediator *mediator,
     return 0;
 }
 
+struct ace_mediator *ace_mediator_access_worker(struct ace_mediator *volume)
+{
+    struct ace_mediator_request request;
+    struct ace_mediator_response response;
+    struct ace_mediator *worker;
+    int32_t worker_pid = -1;
+    int received = -1;
+
+    memset(&request, 0, sizeof(request));
+    request.operation = ACE_MEDIATOR_SPAWN_ACCESS;
+    if (ace_mediator_request(volume, &request, NULL, &response, &worker_pid,
+                             sizeof(worker_pid), &received) != 0)
+        return NULL;
+    if (response.status != ACE_MEDIATOR_OK) {
+        if (received >= 0)
+            close(received);
+        errno = response.status == ACE_MEDIATOR_REFUSED ? ENOTCONN : EPROTO;
+        return NULL;
+    }
+    /* A success that arrived without its descriptor is not a success.  On a
+       privileged channel, "I meant to send you one" is not a thing to
+       assume. */
+    if (received < 0 || !(response.flags & ACE_MEDIATOR_FLAG_HAS_FD)) {
+        errno = EPROTO;
+        return NULL;
+    }
+    worker = calloc(1, sizeof(*worker));
+    if (!worker) {
+        close(received);
+        return NULL;
+    }
+    worker->fd = received;
+    worker->next_request_id = 1;
+    worker->capabilities = ACE_MEDIATOR_CAP_ACCESS;
+    worker->authorisation_seconds = volume->authorisation_seconds;
+    /* No launched_pid: this process was forked by the mediator, not by us, so
+       it is not ours to wait for.  Its parent reaps it. */
+    worker->launched_pid = -1;
+    /*
+     * Taken from the reply rather than from SO_PEERCRED.  A socketpair
+     * reports the credentials of the process that created it, so asking the
+     * kernel here would name the supervisor and look right while being
+     * useless.  This pid is diagnostic only -- nothing is authorised by it --
+     * so the supervisor's word is the appropriate source.
+     */
+    worker->peer_pid = response.payload_length == sizeof(worker_pid)
+                           ? (pid_t)worker_pid : -1;
+    return worker;
+}
+
 int ace_mediator_ping(struct ace_mediator *mediator)
 {
     struct ace_mediator_request request;

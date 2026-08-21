@@ -103,6 +103,20 @@ int ace_mediator_request(struct ace_mediator *mediator,
                          struct ace_mediator_response *response,
                          void *reply, size_t reply_size, int *received_fd);
 
+/*
+ * Obtain the access worker's channel.
+ *
+ * A second, independent conversation with a second process: one that lives
+ * inside the volume mediator's mount namespace and can therefore open the
+ * device view, and that holds no route back to the volume side.  Ask for it
+ * after the namespace exists, because a worker forked before that would be in
+ * the ordinary view and would not see the thing it exists to reach.
+ *
+ * The returned handle is closed with ace_mediator_close() like any other, and
+ * closing it does not disturb the volume channel it came from.
+ */
+struct ace_mediator *ace_mediator_access_worker(struct ace_mediator *volume);
+
 /* Orderly shutdown where possible, then release the handle.  Safe on NULL. */
 void ace_mediator_close(struct ace_mediator *mediator);
 

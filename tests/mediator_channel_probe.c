@@ -229,6 +229,89 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(mode, "access") == 0) {
+        /*
+         * The two personalities as two processes.
+         *
+         * What is being demonstrated is not that the access worker declines
+         * volume work -- it does, and says so -- but that it is a different
+         * process, inside the same mount namespace, holding no channel to the
+         * volume side.  The refusal is the stated answer; the separate pid
+         * and the shared namespace are the structural one.
+         */
+        struct ace_mediator *worker;
+        struct ace_mediator_request request;
+        struct ace_mediator_response response;
+        char volume_ns[64];
+        char access_ns[64];
+        char link[128];
+        ssize_t length;
+
+        mediator = start(program, ACE_MEDIATOR_CAP_VOLUME |
+                                  ACE_MEDIATOR_CAP_ACCESS);
+        if (!mediator) {
+            printf("start failed: %s\n", strerror(errno));
+            return 1;
+        }
+        memset(&request, 0, sizeof(request));
+        request.operation = ACE_MEDIATOR_VOLUME_INIT_NAMESPACE;
+        if (ace_mediator_request(mediator, &request, NULL, &response, NULL, 0,
+                                 NULL) != 0)
+            return 1;
+        printf("namespace=%d\n", response.status);
+
+        worker = ace_mediator_access_worker(mediator);
+        if (!worker) {
+            printf("spawn=failed\n");
+            ace_mediator_close(mediator);
+            return 0;
+        }
+        printf("spawn=ok\n");
+        printf("separate=%s\n",
+               ace_mediator_pid(worker) != ace_mediator_pid(mediator) &&
+               ace_mediator_pid(worker) > 0 ? "yes" : "no");
+        printf("worker-ping=%s\n",
+               ace_mediator_ping(worker) == 0 ? "ok" : "failed");
+        /* The volume class, asked of a process that has no volume side. */
+        printf("worker-volume=%d\n",
+               class_probe(worker, ACE_MEDIATOR_VOLUME_MOUNT));
+        printf("worker-access=%d\n",
+               class_probe(worker, ACE_MEDIATOR_ACCESS_STAT));
+
+        snprintf(link, sizeof(link), "/proc/%ld/ns/mnt",
+                 (long)ace_mediator_pid(mediator));
+        length = readlink(link, volume_ns, sizeof(volume_ns) - 1);
+        if (length > 0)
+            volume_ns[length] = '\0';
+        snprintf(link, sizeof(link), "/proc/%ld/ns/mnt",
+                 (long)ace_mediator_pid(worker));
+        length = readlink(link, access_ns, sizeof(access_ns) - 1);
+        if (length > 0)
+            access_ns[length] = '\0';
+        printf("same-namespace=%s\n",
+               strcmp(volume_ns, access_ns) == 0 ? "yes" : "no");
+        /* And that it is genuinely a private one: this process -- standing in
+           for the unprivileged broker -- is outside it.  Without this the
+           check above would pass just as well if nobody had unshared
+           anything. */
+        {
+            char own_ns[64];
+
+            length = readlink("/proc/self/ns/mnt", own_ns, sizeof(own_ns) - 1);
+            if (length > 0)
+                own_ns[length] = '\0';
+            printf("private=%s\n",
+                   strcmp(own_ns, access_ns) == 0 ? "no" : "yes");
+        }
+
+        ace_mediator_close(worker);
+        /* Closing the worker must not disturb the channel it came from. */
+        printf("volume-alive=%s\n",
+               ace_mediator_ping(mediator) == 0 ? "ok" : "failed");
+        ace_mediator_close(mediator);
+        return 0;
+    }
+
     if (strcmp(mode, "abandon") == 0) {
         /*
          * The case a crashed broker produces: nobody sends SHUTDOWN, nobody

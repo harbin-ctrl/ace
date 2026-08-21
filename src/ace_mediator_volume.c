@@ -312,6 +312,11 @@ static int ensure_view_root(uid_t served_uid)
     return 0;
 }
 
+int namespace_is_ready(void)
+{
+    return namespace_ready;
+}
+
 static struct volume_entry *entry_for(const char *kernel_name)
 {
     for (size_t index = 0; index < VOLUME_MAX_DEVICES; index++)

@@ -147,6 +147,40 @@ else
     printf 'namespace creation not covered\n'
 fi
 
+# The two personalities are two processes.  Without a namespace there is
+# nothing for an access worker to be inside, so asking for one is refused
+# rather than answered with a lesser thing.
+out=$("$probe" access "$mediator") || fail "access probe failed: $out"
+printf '%s\n' "$out" | grep -q '^spawn=failed$' ||
+    fail "an access worker was spawned with no namespace to put it in: $out"
+
+if unshare -Ur -m true 2>/dev/null; then
+    out=$(unshare -Ur -m "$probe" access "$mediator") ||
+        fail "access probe failed in a user namespace: $out"
+    printf '%s\n' "$out" | grep -q '^spawn=ok$' ||
+        fail "the access worker did not start: $out"
+    # A different process, not a second branch in the same one.
+    printf '%s\n' "$out" | grep -q '^separate=yes$' ||
+        fail "the access worker is not a separate process: $out"
+    # Inside the volume worker's namespace, which is the only way it can see
+    # the device view at all.
+    printf '%s\n' "$out" | grep -q '^same-namespace=yes$' ||
+        fail "the access worker is outside the mount namespace: $out"
+    # And that namespace is private: the unprivileged side is outside it.
+    printf '%s\n' "$out" | grep -q '^private=yes$' ||
+        fail "the mount namespace is not private: $out"
+    printf '%s\n' "$out" | grep -q '^worker-ping=ok$' ||
+        fail "the access worker did not answer: $out"
+    # It holds no channel to the volume side, and says so as well.
+    printf '%s\n' "$out" | grep -q '^worker-volume=1$' ||
+        fail "the access worker did not refuse a volume operation: $out"
+    printf '%s\n' "$out" | grep -q '^worker-access=6$' ||
+        fail "the access class did not report itself unbuilt: $out"
+    # Closing one channel must not disturb the other.
+    printf '%s\n' "$out" | grep -q '^volume-alive=ok$' ||
+        fail "closing the access worker broke the volume channel: $out"
+fi
+
 # A channel name that is not a mediator rendezvous is refused before any
 # connection is attempted.  The nonce is in the name; a name without one was
 # not produced by a broker.

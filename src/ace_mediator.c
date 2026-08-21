@@ -21,6 +21,7 @@
 #define _GNU_SOURCE
 
 #include "ace_mediator_protocol.h"
+#include "ace_mediator_access.h"
 #include "ace_mediator_volume.h"
 
 #include <ctype.h>
@@ -154,6 +155,115 @@ static int reply(struct mediator_state *state, uint64_t request_id,
 }
 
 /*
+ * Reply carrying one descriptor.
+ *
+ * SCM_RIGHTS has to ride along with real data, so the response header is the
+ * data it accompanies.  The flag says a descriptor is present rather than
+ * leaving the receiver to discover it, because "no descriptor" and "a
+ * descriptor I failed to notice" must not look alike on a privileged channel.
+ */
+static int reply_with_fd(struct mediator_state *state, uint64_t request_id,
+                         int passed_fd, int32_t worker_pid)
+{
+    struct ace_mediator_response response;
+    struct iovec io[2];
+    struct msghdr message;
+    union {
+        char bytes[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align;
+    } control;
+    struct cmsghdr *entry;
+    ssize_t sent;
+
+    memset(&response, 0, sizeof(response));
+    response.magic = ACE_MEDIATOR_MAGIC;
+    response.request_id = request_id;
+    response.status = ACE_MEDIATOR_OK;
+    response.flags = ACE_MEDIATOR_FLAG_HAS_FD;
+    response.payload_length = sizeof(worker_pid);
+
+    memset(&message, 0, sizeof(message));
+    io[0].iov_base = &response;
+    io[0].iov_len = sizeof(response);
+    io[1].iov_base = &worker_pid;
+    io[1].iov_len = sizeof(worker_pid);
+    message.msg_iov = io;
+    message.msg_iovlen = 2;
+    message.msg_control = control.bytes;
+    message.msg_controllen = sizeof(control.bytes);
+    entry = CMSG_FIRSTHDR(&message);
+    entry->cmsg_level = SOL_SOCKET;
+    entry->cmsg_type = SCM_RIGHTS;
+    entry->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(entry), &passed_fd, sizeof(passed_fd));
+    do {
+        sent = sendmsg(state->fd, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    return sent < 0 ? -1 : 0;
+}
+
+/*
+ * Fork the access worker into this process's mount namespace.
+ *
+ * Order matters and is the whole point.  The namespace has to exist first, so
+ * that the child inherits it and can see the device view; the child then
+ * closes the supervisor's own channel, so that it holds no way to reach the
+ * volume side.  What comes back to the broker is one end of a fresh
+ * socketpair -- a second, independent conversation with a process that can
+ * open files and cannot mount them.
+ */
+static int spawn_access_worker(struct mediator_state *state,
+                               uint64_t request_id)
+{
+    int pair[2];
+    pid_t child;
+
+    if (!namespace_is_ready()) {
+        /* Without a namespace the worker would be in the same view as
+           everybody else, which is not wrong but is not what was asked for.
+           Say so rather than quietly handing back a lesser thing. */
+        reply(state, request_id, ACE_MEDIATOR_REFUSED, 0, NULL, 0);
+        return 0;
+    }
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) {
+        reply(state, request_id, ACE_MEDIATOR_HOST_ERROR, errno, NULL, 0);
+        return 0;
+    }
+    child = fork();
+    if (child < 0) {
+        int failure = errno;
+
+        close(pair[0]);
+        close(pair[1]);
+        reply(state, request_id, ACE_MEDIATOR_HOST_ERROR, failure, NULL, 0);
+        return 0;
+    }
+    if (child == 0) {
+        close(pair[0]);
+        /* The supervisor's channel is not this process's business.  Closing
+           it is what makes the isolation structural rather than declared. */
+        close(state->fd);
+        ace_mediator_access_serve(pair[1], state->served_uid);
+        _exit(0);
+    }
+    close(pair[1]);
+    /*
+     * The child's pid travels in the payload rather than being read from the
+     * socket's peer credentials, because a socketpair reports the credentials
+     * of whoever created it -- this process -- and not of the child that ends
+     * up using it.  Asking the kernel there would return the supervisor and
+     * look like a correct answer.
+     */
+    if (reply_with_fd(state, request_id, pair[0], (int32_t)child) != 0) {
+        close(pair[0]);
+        return 1;
+    }
+    /* The broker owns it now. */
+    close(pair[0]);
+    return 0;
+}
+
+/*
  * The handshake, from the privileged side.
  *
  * Every check here is one this process makes for itself.  A root process that
@@ -275,6 +385,8 @@ static int dispatch(struct mediator_state *state,
            are told it happened, then go. */
         reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
         return 1;
+    case ACE_MEDIATOR_SPAWN_ACCESS:
+        return spawn_access_worker(state, request->request_id);
     case ACE_MEDIATOR_SHUTDOWN:
         reply(state, request->request_id, ACE_MEDIATOR_OK, 0, NULL, 0);
         return 1;

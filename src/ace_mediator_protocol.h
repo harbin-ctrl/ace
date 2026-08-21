@@ -173,6 +173,31 @@ enum ace_mediator_operation {
        exit.  Never the only path -- the mediator also exits on channel EOF,
        because a broker that crashed cannot send anything at all. */
     ACE_MEDIATOR_SHUTDOWN = 0x0006,
+    /*
+     * Ask the supervisor for an access worker, and get its channel back as a
+     * descriptor.
+     *
+     * This is what makes the two personalities two processes rather than two
+     * branches in one.  The access worker is forked after the mount namespace
+     * exists, so it is inside it and can open the device view; it closes the
+     * supervisor's own channel on the way in, so it holds no route to the
+     * volume side at all.  "The access worker cannot issue volume operations"
+     * therefore stops being a check that could be got wrong and becomes a
+     * connection that does not exist.
+     *
+     * It also solves the problem that made a private namespace look
+     * impossible once the broker stopped being root.  setns() into a
+     * root-owned mount namespace needs CAP_SYS_ADMIN in the user namespace
+     * that owns it, so an unprivileged broker can never enter one -- but it
+     * never needs to.  The worker opens the object inside the namespace and
+     * passes back a descriptor, and a descriptor does not belong to a
+     * namespace.  Nobody unprivileged enters; everybody unprivileged reads.
+     *
+     * One authentication covers both processes: the user authorised ACE, not
+     * a particular number of helpers, and asking twice for one decision is
+     * the prompt fatigue this design already refused once.
+     */
+    ACE_MEDIATOR_SPAWN_ACCESS = 0x0007,
 
     /*
      * Volume class.  The mount namespace, the device view, and the mounts
