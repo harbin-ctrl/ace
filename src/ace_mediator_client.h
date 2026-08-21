@@ -1,0 +1,109 @@
+#ifndef ACE_MEDIATOR_CLIENT_H
+#define ACE_MEDIATOR_CLIENT_H
+
+#include "ace_mediator_protocol.h"
+
+#include <stddef.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+/*
+ * The broker's side of the mediator channel.
+ *
+ * Only the broker links this.  The shell, the console, and the commands do
+ * not get a privileged socket of their own: one semantic authority and one
+ * privilege ingress, so that "may this happen" has exactly one place to be
+ * answered and exactly one place to be got wrong.
+ */
+
+struct ace_mediator;
+
+/*
+ * Launch the mediator and complete the handshake.
+ *
+ * Lazy by design.  Starting ACE with --root is permission to ask, not an
+ * instruction to authenticate now, so the first call is expected to happen
+ * when an operation has already been refused to the user -- not at startup,
+ * where it would present an authentication prompt to somebody who has not yet
+ * done anything that needs one.
+ *
+ * Returns NULL on any failure, with errno set.  A failure here is reportable
+ * and not fatal: an ACE session whose mediator will not start is an ordinary
+ * unprivileged session, which is exactly what it would have been without
+ * --root.
+ */
+struct ace_mediator *ace_mediator_start(uint32_t wanted_capabilities);
+
+/*
+ * The same, with the two things a test needs to vary.
+ *
+ * expected_uid is the uid the connecting peer must have.  Production passes
+ * 0, and passing anything else is only meaningful for a test that runs the
+ * mediator unelevated as itself.  It is a parameter rather than an
+ * environment variable on purpose: an env-var backdoor that relaxes a
+ * privilege check is a backdoor whether or not it was meant as one, and it
+ * would ship.  A parameter can only be reached by code that was linked
+ * against it.
+ *
+ * program overrides which executable is launched, or NULL for the mediator
+ * installed beside this one.  elevate selects pkexec; a test that is already
+ * root, or that is only exercising the protocol, passes 0.
+ */
+struct ace_mediator *ace_mediator_start_as(uint32_t wanted_capabilities,
+                                           uid_t expected_uid,
+                                           const char *program, int elevate);
+
+/* What the mediator actually granted, which may be less than was asked. */
+uint32_t ace_mediator_capabilities(const struct ace_mediator *mediator);
+
+/* Seconds until authorisation lapses, or 0 for "until the session ends". */
+uint32_t ace_mediator_authorisation_seconds(const struct ace_mediator *mediator);
+
+/* The mediator's pid.  Clients setns() to its mount namespace once the volume
+   worker owns one, which is why this is exposed at all. */
+pid_t ace_mediator_pid(const struct ace_mediator *mediator);
+
+/* Round-trip liveness check.  Returns 0 if the mediator answered. */
+int ace_mediator_ping(struct ace_mediator *mediator);
+
+/*
+ * Ask the mediator to give up privilege and exit, at the user's request,
+ * without ending the ACE session.  The handle is spent afterwards and must
+ * still be freed with ace_mediator_close().
+ */
+int ace_mediator_drop_privilege(struct ace_mediator *mediator);
+
+/*
+ * Cancel an outstanding request by id.
+ *
+ * Never kill().  A user process holding a signal lever on a privileged one is
+ * the arrangement this whole design exists to avoid, so a break is a message
+ * like any other.
+ */
+int ace_mediator_cancel(struct ace_mediator *mediator, uint64_t request_id);
+
+/*
+ * One typed request and its reply.
+ *
+ * request->magic and request->request_id are filled in here; a caller that
+ * chose its own ids would eventually reuse one that was still outstanding,
+ * and CANCEL would then name two things.
+ *
+ * reply receives up to reply_size bytes of payload.  received_fd, when not
+ * NULL, receives a descriptor if the reply carried one, or -1.  The caller
+ * owns it and must close it.
+ *
+ * Returns 0 when the exchange completed, which is not the same as the
+ * operation succeeding: check response->status for that.  Returns -1 when the
+ * channel itself failed.
+ */
+int ace_mediator_request(struct ace_mediator *mediator,
+                         struct ace_mediator_request *request,
+                         const void *payload,
+                         struct ace_mediator_response *response,
+                         void *reply, size_t reply_size, int *received_fd);
+
+/* Orderly shutdown where possible, then release the handle.  Safe on NULL. */
+void ace_mediator_close(struct ace_mediator *mediator);
+
+#endif

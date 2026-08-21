@@ -393,10 +393,10 @@ AMIGA_COMMANDS := Echo CD Path PathPart Which Dir Delete Protect Filenote Fault 
 # The host side: a launcher, the console, the shell the console starts, and
 # the broker with its control tool. These are entry points into ACE rather
 # than commands within it, and they are not in SYS:C.
-HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste
+HOST_BINS := ace-shell ace-user-shell ace-console ace-broker ace-brokerctl acepaste ace-mediator
 INSTALL_BINS := $(AMIGA_COMMANDS) $(HOST_BINS)
 
-all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/Wait $(BUILD)/Status $(BUILD)/Break $(BUILD)/ace-broker $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
+all: $(BUILD)/Echo $(BUILD)/CD $(BUILD)/Path $(BUILD)/PathPart $(BUILD)/Which $(BUILD)/Dir $(BUILD)/Delete $(BUILD)/Protect $(BUILD)/Filenote $(BUILD)/Fault $(BUILD)/Ask $(BUILD)/Get $(BUILD)/Getenv $(BUILD)/Set $(BUILD)/Unset $(BUILD)/Alias $(BUILD)/Unalias $(BUILD)/Beep $(BUILD)/FailAt $(BUILD)/Why $(BUILD)/Prompt $(BUILD)/Clip $(BUILD)/Cut $(BUILD)/MakeDir $(BUILD)/MakeLink $(BUILD)/Join $(BUILD)/Eval $(BUILD)/Edit $(BUILD)/ED $(BUILD)/Info $(BUILD)/Copy $(BUILD)/List $(BUILD)/Sort $(BUILD)/Search $(BUILD)/Touch $(BUILD)/EndCLI $(BUILD)/Assign $(BUILD)/Relabel $(BUILD)/Type $(BUILD)/Rename $(BUILD)/Stack $(BUILD)/Run $(BUILD)/LNX $(BUILD)/LhA $(BUILD)/ace-shell $(BUILD)/ace-user-shell $(BUILD)/ace-console $(BUILD)/NewCLI $(BUILD)/If $(BUILD)/Else $(BUILD)/EndIf $(BUILD)/EndSkip $(BUILD)/Lab $(BUILD)/Quit $(BUILD)/Skip $(BUILD)/Execute $(BUILD)/Setenv $(BUILD)/Unsetenv $(BUILD)/Wait $(BUILD)/Status $(BUILD)/Break $(BUILD)/ace-broker $(BUILD)/ace-mediator $(BUILD)/ace-brokerctl $(BUILD)/acepaste $(BUILD)/ace-amiga-posix.o $(BUILD)/exec_compat.o $(BUILD)/exec_compat_bindings.o $(BUILD)/aros-con-handler.o $(BUILD)/aros-con-support.o $(BUILD)/aros-exec-runtime.o $(BUILD)/aros-console-editor.o $(BUILD)/aros-boopsi-runtime.o $(AROS_BOOPSI_OBJS)
 
 $(BUILD)/break-probe: tests/break_probe.c $(BUILD)/dos-runtime.o $(BUILD)/native_dos.o $(BUILD)/native_command.o $(BROKER_CLIENT_OBJS)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Isrc $(filter-out %.h,$^) -o $@
@@ -759,6 +759,25 @@ $(BUILD)/LNX.o: $(INSTALL_LNX_SRC) | $(BUILD)
 
 $(BUILD)/broker_client.o: src/broker_client.c src/broker_protocol.h src/broker_client.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+# The mediator is the only ACE program that is meant to run as root, so it is
+# also the only one that links none of the DOS runtime, none of the broker
+# client, and nothing that knows what an Amiga path is.  Its whole dependency
+# list is the protocol header, and that is a property worth being able to see
+# at a glance in the build rules.
+$(BUILD)/ace-mediator.o: src/ace_mediator.c src/ace_mediator_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/ace-mediator: $(BUILD)/ace-mediator.o
+	$(CC) $(CFLAGS) $(filter-out %.h,$^) -o $@
+
+# The broker's end of that channel.  Only the broker links it: the shell and
+# the commands do not get a privileged socket of their own.
+$(BUILD)/ace-mediator-client.o: src/ace_mediator_client.c src/ace_mediator_client.h src/ace_mediator_protocol.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/mediator-channel-probe: tests/mediator_channel_probe.c $(BUILD)/ace-mediator-client.o
+	$(CC) $(CFLAGS) -Isrc $(filter-out %.h,$^) -o $@
 
 # SYS: is established from ACE_SYS_DIR, which CFLAGS now carries for every
 # object.  An uninstalled build finds neither that path nor an ACE_SYS_DIR in
@@ -1842,6 +1861,9 @@ $(BUILD)/dos-comment-test: tests/dos_comment_test.c $(DOS_RUNTIME_OBJ) \
 test-system-assigns: all
 	sh tests/system_assigns_test.sh
 
+test-mediator-channel: all $(BUILD)/mediator-channel-probe
+	sh tests/mediator_channel_test.sh
+
 test-filesystem-translation: all $(BUILD)/dos-comment-test
 	sh tests/filesystem_translation_test.sh
 
@@ -1896,7 +1918,7 @@ test-tine: all tine
 	python3 tests/tine_console_query_test.py
 	python3 tests/tine_screen_trace_test.py
 
-.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos test-regina-arexx install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-dir-break test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
+.PHONY: all clean clean-vim clean-regina clean-lha install tine lha lha-fetch regina rexxmast test-broker-port-channel test-broker-port-message test-broker-port-abandon test-rexx-port test-rexxmast test-arexx-demos test-regina-arexx install-vim install-regina install-lha vim test-console-device test-console-channel test-console-spec test-console-device-bridge test-filesystem-translation test-mediator-channel test-dir-break test-lha test-file-commands test-relabel test-info test-edit test-dir-sort test-dir-exall-scale test-dir-softlink test-brokerctl-assign test-assign-missing-target test-tine test-system-assigns test-aros-exec-runtime test-create-new-proc test-iffparse-clipboard test-acepaste test-clipboard-client test-aros-console-editor test-native-input test-native-console-handle test-exec-compat test-boopsi test-graphics test-prompt-newline test-shell-return-code
 AROS_CLIP_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Clip.c
 $(BUILD)/Clip.o: $(AROS_CLIP_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -Wno-sign-compare -I$(COMPAT) $(AROS_SHCOMMAND_CFLAGS) -c $< -o $@

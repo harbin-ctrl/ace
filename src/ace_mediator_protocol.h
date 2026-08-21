@@ -118,9 +118,19 @@ enum ace_mediator_operation {
      * or interrupt something already in flight.
      */
 
-    /* First message on the channel.  Carries the instance nonce back to the
-       mediator, which is how the mediator knows this peer is the broker it
-       was launched for and not whoever else found the socket first. */
+    /*
+     * First message on the channel, sent by the broker once it has accepted
+     * the mediator's connection.
+     *
+     * The mediator connects outward rather than inheriting a socketpair,
+     * because pkexec will not carry a descriptor across the exec.  So the
+     * broker listens, and the direction of every check follows from that:
+     * the broker knows its peer is root from SO_PEERCRED, and the mediator
+     * knows its peer is the broker it was launched for because this message
+     * carries the nonce the mediator was started with.  Neither side takes
+     * the other's word for anything, and neither trusts the socket's path --
+     * a path is a rendezvous, not an authentication.
+     */
     ACE_MEDIATOR_HELLO = 0x0001,
     /* Which classes this mediator will actually serve, negotiated rather
        than assumed, so a newer broker talking to an older mediator finds out
