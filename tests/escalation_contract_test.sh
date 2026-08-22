@@ -125,7 +125,27 @@ ace()
 }
 
 name_of() { ace "$1" "$repo_dir/build/ace-brokerctl" name "$2"; }
-privileged_processes() { pgrep -u 0 -x ace-fmm 2>/dev/null | wc -l; }
+# Only the workers this test caused.
+#
+# Identified by the binary they were launched from, not by name alone: an ACE
+# the user happens to have open runs the installed one, and a test that
+# counted every root ace-fmm on the machine would be measuring that session
+# too.  These tests assert things like "nothing privileged is running yet",
+# which is a statement about this test's session and cannot be made about the
+# machine.
+#
+# argv[0] rather than a -f match, because the sudo that launches a worker
+# carries the same path on its own command line and is not itself a worker.
+test_fmm_processes()
+{
+    for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+        set -- $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        [ "${1:-}" = "$repo_dir/build/ace-fmm" ] && printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+privileged_processes() { test_fmm_processes | wc -l; }
 
 start_broker --root || fail 'the authorised broker did not start'
 

@@ -51,6 +51,27 @@ fail()
     exit 1
 }
 
+# Only the workers this test caused.
+#
+# Identified by the binary they were launched from, not by name alone: an ACE
+# the user happens to have open runs the installed one, and a test that
+# counted every root ace-fmm on the machine would be measuring that session
+# too.  These tests assert things like "nothing privileged is running yet",
+# which is a statement about this test's session and cannot be made about the
+# machine.
+#
+# argv[0] rather than a -f match, because the sudo that launches a worker
+# carries the same path on its own command line and is not itself a worker.
+test_fmm_processes()
+{
+    for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+        set -- $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        [ "${1:-}" = "$repo_dir/build/ace-fmm" ] && printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+
 broker="$repo_dir/build/ace-broker"
 ctl="$repo_dir/build/ace-brokerctl"
 
@@ -76,9 +97,18 @@ ace_ctl()
         ACE_MODE_VIEW=device ACE_MODE_OWNER_UID="$owner_uid" "$ctl" "$@"
 }
 
+# Only the workers this test caused.
+#
+# A privileged worker is identified by the binary it was launched from, not by
+# its name: an ACE the user happens to have open runs the installed one, and a
+# test that counted every root ace-fmm on the machine would be measuring that
+# session as well as its own.  These tests assert things like "nothing
+# privileged is running yet", which is a statement about this test's session
+# and cannot be made about the machine.
+
 # Nothing privileged has happened yet, and so nothing privileged is running.
 # Elevation is lazy: --root says a session may ask, not that it has.
-pgrep -u 0 -x ace-fmm >/dev/null 2>&1 &&
+[ -n "$(test_fmm_processes)" ] &&
     fail 'a root fmm was started before anything needed one'
 
 # Ask for something the user cannot do, which is what starts the fmm.
@@ -94,7 +124,7 @@ ACE_BROKER_SOCKET="$socket_path" ACE_MODE_PRIVILEGE=root \
     fail 'the session could not reach the protected file'
 
 # The privilege is somewhere else, and is real.
-fmm_pid=$(pgrep -u 0 -x ace-fmm 2>/dev/null | head -1 || true)
+fmm_pid=$(test_fmm_processes | head -1 || true)
 [ -n "$fmm_pid" ] || fail 'no root fmm was started'
 fmm_uid=$(stat -c %u "/proc/$fmm_pid")
 [ "$fmm_uid" = "0" ] || fail "the fmm is not root (uid $fmm_uid)"
@@ -103,10 +133,10 @@ fmm_uid=$(stat -c %u "/proc/$fmm_pid")
 # authenticated peer and performs no privileged operation itself: the mounts
 # and the file opens belong to workers it forked, which is what makes a
 # compromised file worker unable to mount anything.
-fmm_count=$(pgrep -u 0 -x ace-fmm 2>/dev/null | wc -l)
+fmm_count=$(test_fmm_processes | wc -l)
 [ "$fmm_count" -ge 2 ] ||
     fail "the fmm is a single process ($fmm_count); the workers were not split out"
-for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+for pid in $(test_fmm_processes); do
     [ "$pid" = "$fmm_pid" ] && continue
     parent=$(sudo -n awk '{print $4}' "/proc/$pid/stat")
     [ "$parent" = "$fmm_pid" ] ||
@@ -126,7 +156,7 @@ sockets_held()
 held=$(sockets_held "$fmm_pid")
 [ "$held" = "2" ] ||
     fail "the supervisor holds $held channels, not the broker's and the volume worker's"
-for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+for pid in $(test_fmm_processes); do
     [ "$pid" = "$fmm_pid" ] && continue
     held=$(sockets_held "$pid")
     [ "$held" = "1" ] ||
@@ -146,7 +176,7 @@ fmm_ns=$(sudo -n readlink "/proc/$fmm_pid/ns/mnt")
 # had each unshared for themselves would hold two private views of the disks
 # that looked identical and were not -- and the file worker's would be the one
 # without the device the volume worker mounted.
-for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+for pid in $(test_fmm_processes); do
     worker_ns=$(sudo -n readlink "/proc/$pid/ns/mnt")
     [ "$worker_ns" = "$fmm_ns" ] ||
         fail "root fmm $pid is in its own mount namespace, not the session's"
@@ -181,7 +211,7 @@ gone=0
 for _ in $(seq 1 400); do
     # Every one of them, not just the supervisor: a worker that outlived its
     # supervisor would be a root process with a channel and no owner.
-    if ! pgrep -u 0 -x ace-fmm >/dev/null 2>&1; then
+    if ! [ -n "$(test_fmm_processes)" ]; then
         gone=1
         break
     fi

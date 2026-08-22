@@ -47,6 +47,27 @@ fail()
     exit 1
 }
 
+# Only the workers this test caused.
+#
+# Identified by the binary they were launched from, not by name alone: an ACE
+# the user happens to have open runs the installed one, and a test that
+# counted every root ace-fmm on the machine would be measuring that session
+# too.  These tests assert things like "nothing privileged is running yet",
+# which is a statement about this test's session and cannot be made about the
+# machine.
+#
+# argv[0] rather than a -f match, because the sudo that launches a worker
+# carries the same path on its own command line and is not itself a worker.
+test_fmm_processes()
+{
+    for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+        set -- $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        [ "${1:-}" = "$repo_dir/build/ace-fmm" ] && printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+
 # A file in a directory the user can traverse, but which the user cannot read.
 sudo -n sh -c "printf 'top-secret\n' > $secret && chmod 600 $secret" ||
     fail 'could not create the protected file'
@@ -105,7 +126,7 @@ output=$(ace root "$repo_dir/build/Type" "$name" 2>&1) ||
     fail "Type returned the wrong contents: $output"
 
 # The fmm is what made that possible, and it is a root process.
-fmm_pid=$(pgrep -u 0 -x ace-fmm 2>/dev/null | head -1 || true)
+fmm_pid=$(test_fmm_processes | head -1 || true)
 [ -n "$fmm_pid" ] ||
     fail 'the file was read without a root fmm, which should be impossible'
 
@@ -127,7 +148,7 @@ if ace user "$repo_dir/build/Type" "$name" >/dev/null 2>&1; then
 fi
 # And no fmm was started for it: --root is the permission, and without it
 # nothing should be asking for one.
-if pgrep -u 0 -x ace-fmm >/dev/null 2>&1; then
+if [ -n "$(test_fmm_processes)" ]; then
     fail 'an unauthorised session started a root fmm'
 fi
 stop_broker

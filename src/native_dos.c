@@ -805,8 +805,48 @@ static int native_fill_fib(const char *path, const char *name, int follow,
             set_native_broker_error();
             return -1;
         }
+        /*
+         * What comes back is volume-qualified -- "rootfs:home/pi/x" -- and
+         * what belongs in a FileInfoBlock is the entry's own name.  The colon
+         * separates the volume from the path exactly as a slash separates one
+         * component from the next, so both are separators when looking for
+         * the last component; taking only the slash left every entry that had
+         * no slash after the colon wearing a volume name.
+         *
+         * Two of those, and the second is the one that matters:
+         *
+         *   - an entry directly inside a volume root listed as "RAM:dbus",
+         *     because "RAM:dbus" has no slash to split on;
+         *   - an entry with a filesystem mounted on it listed as that
+         *     filesystem, "DEVTMPFS:", because asking which volume owns a
+         *     mountpoint's path answers with the mounted one.
+         *
+         * The second answer is a mountpoint wearing a volume's name, and
+         * AmigaDOS has no word for a mountpoint at all.  A volume is one
+         * filesystem and every name on it belongs to that filesystem: a
+         * directory with something mounted over it is just a directory on the
+         * volume that holds it, named by the entry that volume actually has.
+         * That name is what the caller already knows and passes in -- from
+         * readdir() for a scan, from the path for a lock -- and it is the only
+         * one that is a fact about this volume rather than about another one.
+         * Whatever is mounted there is a separate volume, reached by its own
+         * name and by no other route.
+         */
         last = strrchr(mapped_path, '/');
+        if (!last)
+            last = strchr(mapped_path, ':');
         fib_name = last ? last + 1 : mapped_path;
+        if (!*fib_name && name && *name)
+            fib_name = name;
+        if (!*fib_name) {
+            /* The volume's own root.  Examine names it by the volume, without
+               the colon that would make it a path rather than a name. */
+            char *colon = strchr(mapped_path, ':');
+
+            if (colon)
+                *colon = '\0';
+            fib_name = mapped_path;
+        }
     }
     memset(fib, 0, sizeof(*fib));
     fib->fib_DirEntryType = S_ISLNK(information.st_mode) ? ST_SOFTLINK :

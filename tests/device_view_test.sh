@@ -80,6 +80,27 @@ fail()
     exit 1
 }
 
+# Only the workers this test caused.
+#
+# Identified by the binary they were launched from, not by name alone: an ACE
+# the user happens to have open runs the installed one, and a test that
+# counted every root ace-fmm on the machine would be measuring that session
+# too.  These tests assert things like "nothing privileged is running yet",
+# which is a statement about this test's session and cannot be made about the
+# machine.
+#
+# argv[0] rather than a -f match, because the sudo that launches a worker
+# carries the same path on its own command line and is not itself a worker.
+test_fmm_processes()
+{
+    for pid in $(pgrep -u 0 -x ace-fmm 2>/dev/null); do
+        set -- $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        [ "${1:-}" = "$repo_dir/build/ace-fmm" ] && printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+
 # The broker is the user's own process, here as everywhere.  An earlier
 # version of this test started it under sudo; that stopped being possible when
 # running any part of ACE as root became a refusal, and the test skipped on
@@ -108,7 +129,7 @@ ctl() { ace "$repo_dir/build/ace-brokerctl" "$@"; }
 ace "$repo_dir/build/Type" "$(ctl name "$secret")" >/dev/null 2>&1 ||
     fail 'the session could not reach a protected file'
 
-fmm_pid=$(pgrep -u 0 -x ace-fmm 2>/dev/null | head -1 || true)
+fmm_pid=$(test_fmm_processes | head -1 || true)
 [ -n "$fmm_pid" ] || fail 'no fmm is running, so there is no device view'
 
 root_alias=$(ctl name / | sed 's/:.*//')
