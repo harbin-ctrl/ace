@@ -757,7 +757,7 @@ int ace_fmm_mount(struct ace_privilege_connection *fmm, const char *kernel_name,
 
 int ace_crm(struct ace_privilege_connection *worker, uint32_t operation,
                         const char *path, const char *second, uint32_t flags,
-                        uint32_t mode, int *received_fd)
+                        uint32_t mode, int64_t when, int *received_fd)
 {
     struct ace_privilege_request request;
     struct ace_privilege_response response;
@@ -792,6 +792,7 @@ int ace_crm(struct ace_privilege_connection *worker, uint32_t operation,
     request.operation = operation;
     request.flags = flags;
     request.mode = mode;
+    request.modification_time = when;
     request.first_path_length = second ? (uint32_t)first_length : 0;
     request.payload_length = (uint32_t)total;
     if (ace_privilege_connection_request(worker, &request, payload, &response, NULL, 0,

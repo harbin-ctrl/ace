@@ -153,6 +153,20 @@ static int split_payload(const void *payload, size_t length,
     return 0;
 }
 
+/*
+ * The view tree's directories are traversable by everyone, and that is
+ * deliberate.
+ *
+ * The broker resolves paths beneath these directories, and the broker is an
+ * ordinary user process: a mode that shut it out would not protect anything,
+ * it would only stop ACE naming the objects it is allowed to ask for.  What
+ * protects the contents is that they are mounts in a namespace no user
+ * process is in -- from outside, every one of these directories is empty, no
+ * matter who looks.  0700 here would be a lock on an empty room, fitted to
+ * the one door the household uses.
+ */
+#define VIEW_DIRECTORY_MODE 0755
+
 static int make_directory_path(const char *path)
 {
     char work[PATH_MAX];
@@ -168,7 +182,7 @@ static int make_directory_path(const char *path)
         if (*cursor != '/')
             continue;
         *cursor = '\0';
-        if (mkdir(work, 0700) != 0 && errno != EEXIST)
+        if (mkdir(work, VIEW_DIRECTORY_MODE) != 0 && errno != EEXIST)
             return -1;
         if (stat(work, &information) != 0 || !S_ISDIR(information.st_mode)) {
             errno = ENOTDIR;
@@ -176,7 +190,7 @@ static int make_directory_path(const char *path)
         }
         *cursor = '/';
     }
-    if (mkdir(work, 0700) != 0 && errno != EEXIST)
+    if (mkdir(work, VIEW_DIRECTORY_MODE) != 0 && errno != EEXIST)
         return -1;
     return 0;
 }

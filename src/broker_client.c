@@ -834,7 +834,7 @@ static int broker_request_bytes(uint32_t operation,
  */
 static int privop_exchange(int fd, uint32_t privop, const char *path,
                            const char *second, uint32_t flags, uint32_t mode,
-                           int *received_fd)
+                           int64_t when, int *received_fd)
 {
     const char *session = broker_session();
     size_t session_length = strlen(session);
@@ -852,6 +852,7 @@ static int privop_exchange(int fd, uint32_t privop, const char *path,
     request.path_length = (uint32_t)path_length;
     request.value_length = (uint32_t)second_length;
     request.flags = flags;
+    request.privop_time = when;
     /* The session's privilege and view, as every request carries: the broker
        refuses a client that believes it is in a different session. */
     request.mode = (ace_mode_is_root() ? AMIGA_BROKER_MODE_ROOT : 0) |
@@ -902,7 +903,8 @@ static int privop_exchange(int fd, uint32_t privop, const char *path,
 }
 
 int native_broker_privop(uint32_t privop, const char *path, const char *second,
-                         uint32_t flags, uint32_t mode, int *received_fd)
+                         uint32_t flags, uint32_t mode, int64_t when,
+                         int *received_fd)
 {
     if (received_fd)
         *received_fd = -1;
@@ -920,7 +922,7 @@ int native_broker_privop(uint32_t privop, const char *path, const char *second,
         }
         if (fd < 0)
             return -1;
-        outcome = privop_exchange(fd, privop, path, second, flags, mode,
+        outcome = privop_exchange(fd, privop, path, second, flags, mode, when,
                                   received_fd);
         if (outcome == 0)
             return 0;

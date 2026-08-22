@@ -525,7 +525,8 @@ int main(int argc, char **argv)
             printf("shadow=%d\n",
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_OPEN_READ,
                                        "etc/shadow", NULL,
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, &fd));
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, 0,
+                                       &fd));
             if (fd >= 0) { close(fd); fd = -1; }
             /* And that the user genuinely could not. */
             printf("shadow-direct=%s\n",
@@ -537,7 +538,8 @@ int main(int argc, char **argv)
                                        "root/.ace-fmm-probe", NULL,
                                        ACE_PRIVILEGE_FLAG_HOST_PATH |
                                        ACE_PRIVILEGE_FLAG_CREATE |
-                                       ACE_PRIVILEGE_FLAG_TRUNCATE, 0644, &fd));
+                                       ACE_PRIVILEGE_FLAG_TRUNCATE, 0644, 0,
+                                       &fd));
             if (fd >= 0) {
                 struct stat information;
 
@@ -553,27 +555,30 @@ int main(int argc, char **argv)
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_RENAME,
                                        "root/.ace-fmm-probe",
                                        "root/.ace-fmm-probe2",
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, NULL));
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, 0,
+                                       NULL));
             printf("unlink=%d\n",
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_UNLINK,
                                        "root/.ace-fmm-probe2", NULL,
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, NULL));
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, 0,
+                                       NULL));
             printf("mkdir=%d\n",
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_MKDIR,
                                        "root/.ace-fmm-probe-dir", NULL,
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0755,
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0755, 0,
                                        NULL));
             /* Delete removes a directory too, as AmigaDOS Delete does. */
             printf("rmdir=%d\n",
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_UNLINK,
                                        "root/.ace-fmm-probe-dir", NULL,
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, NULL));
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0, 0,
+                                       NULL));
             /* A final component that is really a path is refused before any
                of it is used. */
             printf("dotname=%d\n",
                    ace_crm(worker, ACE_PRIVILEGE_ACCESS_MKDIR,
                                        "root/..", NULL,
-                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0755,
+                                       ACE_PRIVILEGE_FLAG_HOST_PATH, 0755, 0,
                                        NULL));
 
             ace_privilege_connection_close(worker);

@@ -1936,7 +1936,24 @@ static int within_base_filesystem(const char *base, const char *path)
     while (stat(probe, &probe_info) != 0) {
         char *slash;
 
-        if (errno != ENOENT && errno != ENOTDIR)
+        /*
+         * A refusal is not a crossing.
+         *
+         * This walk exists to catch a path that has silently left its volume,
+         * and it answers that by comparing devices.  When the broker is not
+         * allowed to look, it has not found a crossing -- it has found out
+         * that it cannot tell, and refusing the name on that basis would end
+         * the operation here, before the seam that exists to retry it with
+         * privilege.  A directory the user cannot enter is exactly where an
+         * authorised session is supposed to be able to work.
+         *
+         * Nothing is granted by continuing.  The name is still only a name:
+         * the unprivileged attempt that follows is bounded by the same
+         * permissions that refused this stat, and the privileged one resolves
+         * under the worker's own beneath-this-root constraint.
+         */
+        if (errno != ENOENT && errno != ENOTDIR && errno != EACCES &&
+            errno != EPERM)
             return -1;
         slash = strrchr(probe, '/');
         if (!slash || slash == probe)
@@ -2282,14 +2299,41 @@ static int resolve_path(struct broker_session *session, const char *input,
                                                      result_size);
             }
             switch (ace_dos_devices_lookup(assign_name)) {
-            case 1:
+            case 1: {
+                char covered[PATH_MAX];
+                int failure;
+
                 if (ace_dos_devices_root(assign_name, base, sizeof(base)) != 0)
                     return -1;
                 relative = colon + 1;
                 while (*relative == '/')
                     relative++;
-                return normalize_mapped_path_beneath(base, relative, result,
-                                                     result_size);
+                if (normalize_mapped_path_beneath(base, relative, result,
+                                                  result_size) == 0)
+                    return 0;
+                /*
+                 * Missing from the host's tree is not always missing from the
+                 * device.  Something mounted over a directory hides what is
+                 * underneath, and what is underneath is still this volume's:
+                 * AmigaDOS has no word for a mount covering a directory, so
+                 * the object simply has to be there.  The view holds this
+                 * device mounted once with nothing nested inside it, which is
+                 * the only place the covered object can be seen.
+                 *
+                 * Tried second, never first.  A path that resolved on the
+                 * host resolves there, and stays an ordinary path the user
+                 * can open without asking anyone.
+                 */
+                failure = errno;
+                if (failure == ENOENT &&
+                    ace_dos_devices_device_view_root(assign_name, covered,
+                                                     sizeof(covered)) == 0 &&
+                    strcmp(covered, base) != 0)
+                    return normalize_mapped_path_beneath(covered, relative,
+                                                         result, result_size);
+                errno = failure;
+                return -1;
+            }
             case -1:
                 errno = EEXIST;
                 return -1;
@@ -2509,7 +2553,8 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
     }
 
     status = ace_crm(crm, request->privop, first, second,
-                                 flags, request->privop_mode, received_fd);
+                                 flags, request->privop_mode,
+                                 request->privop_time, received_fd);
     if (status < 0) {
         /* The channel failed, not the operation.  Drop the worker so the next
            request builds a fresh one rather than talking to a corpse. */

@@ -19,6 +19,11 @@ const char *ace_dos_devices_view_root(void);
 
 int ace_dos_devices_is_full_root(const char *path);
 
+/* One device's root inside the view, for retrying a path the host's own mount
+   tree covers up.  Fails when the device has no view root. */
+int ace_dos_devices_device_view_root(const char *name, char *result,
+                                     size_t result_size);
+
 /* Return 1 for a unique DOS device/volume alias, 0 for none, -1 if ambiguous. */
 int ace_dos_devices_lookup(const char *name);
 

@@ -271,7 +271,19 @@ enum ace_privilege_operation {
     ACE_PRIVILEGE_ACCESS_RENAME = 0x0206,
     ACE_PRIVILEGE_ACCESS_MKDIR = 0x0207,
     /* AmigaDOS protection bits, translated at the seam rather than here. */
-    ACE_PRIVILEGE_ACCESS_SET_PROTECTION = 0x0208
+    ACE_PRIVILEGE_ACCESS_SET_PROTECTION = 0x0208,
+    /*
+     * The modification time of one exact object, for SetFileDate.
+     *
+     * Here for the same reason the others are: it is a thing an ordinary
+     * AmigaDOS command does -- Touch, and Copy asked to keep dates -- and a
+     * command that could read a protected file but not stamp one would make
+     * the boundary depend on which call a command happened to use rather than
+     * on what it was allowed to touch.  The access time is set from the same
+     * value: AmigaDOS keeps one date per object and inventing a second one
+     * here would be this layer making up a fact about the file.
+     */
+    ACE_PRIVILEGE_ACCESS_SET_DATE = 0x0209
 };
 
 /*
@@ -424,6 +436,10 @@ struct ace_privilege_request {
        length of the first.  Zero for every operation that takes one path. */
     uint32_t first_path_length;
     uint32_t payload_length;
+    /* For SET_DATE: seconds since the epoch.  Its own field rather than a
+       reuse of mode, which is a mode everywhere else and would have to be
+       read as two different things depending on the opcode. */
+    int64_t modification_time;
 };
 
 struct ace_privilege_response {

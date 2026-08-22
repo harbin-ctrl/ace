@@ -215,17 +215,25 @@ int ace_amiga_posix_utime(const char *path, const struct utimbuf *times)
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return utime(resolved, times);
+    return ace_crm_retry_utime(resolved, times);
 }
 
 int ace_amiga_posix_utimes(const char *path,
                            const struct timeval times[2])
 {
     char resolved[PATH_MAX];
+    struct utimbuf converted;
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return utimes(resolved, times);
+    if (!times)
+        return ace_crm_retry_utime(resolved, NULL);
+    /* Down to seconds, which is as much as the seam carries and as much as
+       AmigaDOS has ever meant by a file's date.  The alternative is a
+       privileged path that quietly keeps less than the unprivileged one. */
+    converted.actime = times[0].tv_sec;
+    converted.modtime = times[1].tv_sec;
+    return ace_crm_retry_utime(resolved, &converted);
 }
 
 int ace_amiga_posix_symlink(const char *target, const char *link_path)

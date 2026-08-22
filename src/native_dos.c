@@ -590,7 +590,7 @@ BOOL SetFileDate(CONST_STRPTR name, const struct DateStamp *date)
         return DOSFALSE;
     }
     times.actime = information.st_atime;
-    if (utime(resolved, &times) != 0) {
+    if (ace_crm_retry_utime(resolved, &times) != 0) {
         set_native_broker_error();
         return DOSFALSE;
     }
@@ -2540,17 +2540,17 @@ LONG DeleteFile(CONST_STRPTR name)
         set_native_broker_error();
         return DOSFALSE;
     }
-    /* One AmigaDOS call removes either kind of object, where Unix splits
-       them. A directory reaches unlink() as EISDIR on Linux (POSIX also
-       allows EPERM), and an empty one is then rmdir()'s job; a directory
-       that still has children stays refused, which is what makes Delete
-       recurse into it before trying again. */
+    /* One AmigaDOS call removes either kind of object.  Which system call
+       that takes is the seam's business, on both the unprivileged and the
+       privileged side; a directory that still has children stays refused,
+       which is what makes Delete recurse into it before trying again.
+       Retrying here would run unprivileged after a privileged attempt had
+       already failed, and would report that second refusal instead of the
+       real one. */
     if (ace_crm_retry_unlink(resolved) == 0) {
         ace_clipboard_store_deleted_path(resolved);
         return DOSTRUE;
     }
-    if ((errno == EISDIR || errno == EPERM) && rmdir(resolved) == 0)
-        return DOSTRUE;
     set_native_broker_error();
     /* Refused for want of permission, which for a removal is what AmigaDOS
        calls delete protection -- the state Delete FORCE exists to clear.

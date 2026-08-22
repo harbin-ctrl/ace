@@ -287,6 +287,11 @@ struct amiga_broker_request {
        privileged request look like a mode mismatch and be refused with
        EXDEV -- a failure that pointed at the wrong thing entirely. */
     uint32_t privop_mode;
+    /* For a privileged date change: the modification time, in seconds since
+       the epoch.  Sixty-four bits and signed, because a `mode` is the wrong
+       shape for a date twice over -- it is too narrow to survive 2038, and
+       AmigaDOS dates can sit either side of the epoch. */
+    int64_t privop_time;
 };
 
 /* The response carries a descriptor as ancillary data.  Stated in a flag

@@ -22,7 +22,9 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+#include <utime.h>
 
 static int last_was_privileged;
 
@@ -148,7 +150,7 @@ int ace_crm_retry_open(const char *path, int flags, mode_t mode)
                              NULL,
                              open_flags_to_crm(flags) |
                                  update_flag(flags),
-                             (uint32_t)(mode & 07777), &received) != 0)
+                             (uint32_t)(mode & 07777), 0, &received) != 0)
         return -1;
     last_was_privileged = 1;
     return received;
@@ -241,7 +243,7 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
      * kernel's business and a copy of it in a protocol is a copy that can
      * disagree with the one the caller compiled against.
      */
-    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL, 0, 0,
+    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL, 0, 0, 0,
                              &received) != 0)
         return -1;
     if (received < 0) {
@@ -266,8 +268,8 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
 /* The operations with no descriptor to hand back.  Same shape as the others:
    try, and escalate only a permission refusal. */
 static int named_operation(uint32_t privop, const char *path,
-                           const char *second, uint32_t mode, int local_result,
-                           int force)
+                           const char *second, uint32_t mode, int64_t when,
+                           int local_result, int force)
 {
     int failure;
 
@@ -287,10 +289,43 @@ static int named_operation(uint32_t privop, const char *path,
         errno = EACCES;
         return -1;
     }
-    if (native_broker_privop(privop, path, second, 0, mode, NULL) != 0)
+    if (native_broker_privop(privop, path, second, 0, mode, when, NULL) != 0)
         return -1;
     last_was_privileged = 1;
     return 0;
+}
+
+/*
+ * Remove either kind of object, which is what one AmigaDOS Delete does.
+ *
+ * Linux splits the two calls and reports the difference rather than acting on
+ * it, so the choice is made here -- on the unprivileged path as well as the
+ * privileged one, where the worker already does exactly this.  Keeping both
+ * sides of the seam agreed on what "remove" means is what lets the caller
+ * stop caring: it asks once, and the answer it gets back is about the object,
+ * not about which system call was tried on the way.
+ */
+static int remove_either_kind(const char *path)
+{
+    int failure;
+
+    if (unlink(path) == 0)
+        return 0;
+    failure = errno;
+    if (failure != EISDIR && failure != EPERM) {
+        errno = failure;
+        return -1;
+    }
+    if (rmdir(path) == 0)
+        return 0;
+    /* ENOTDIR means it was a file after all and rmdir was the wrong question,
+       so unlink's answer is the real one.  Anything else is the directory
+       speaking -- ENOTEMPTY above all, which is what makes Delete recurse
+       before trying again -- and must not be overwritten by it. */
+    if (errno != ENOTDIR)
+        failure = errno;
+    errno = failure;
+    return -1;
 }
 
 int ace_crm_retry_unlink(const char *path)
@@ -301,9 +336,9 @@ int ace_crm_retry_unlink(const char *path)
         return -1;
     }
     if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, -1, 1);
-    return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0,
-                           unlink(path), 0);
+        return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, 0, -1, 1);
+    return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, 0,
+                           remove_either_kind(path), 0);
 }
 
 int ace_crm_retry_rename(const char *from, const char *to)
@@ -314,8 +349,8 @@ int ace_crm_retry_rename(const char *from, const char *to)
         return -1;
     }
     if (needs_crm_regardless(from) || needs_crm_regardless(to))
-        return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, -1, 1);
-    return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0,
+        return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, 0, -1, 1);
+    return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, 0,
                            rename(from, to), 0);
 }
 
@@ -328,9 +363,9 @@ int ace_crm_retry_mkdir(const char *path, mode_t mode)
     }
     if (needs_crm_regardless(path))
         return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
-                               (uint32_t)(mode & 07777), -1, 1);
+                               (uint32_t)(mode & 07777), 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
-                           (uint32_t)(mode & 07777), mkdir(path, mode), 0);
+                           (uint32_t)(mode & 07777), 0, mkdir(path, mode), 0);
 }
 
 int ace_crm_retry_chmod(const char *path, mode_t mode)
@@ -342,9 +377,36 @@ int ace_crm_retry_chmod(const char *path, mode_t mode)
     }
     if (needs_crm_regardless(path))
         return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
-                               (uint32_t)(mode & 07777), -1, 1);
+                               (uint32_t)(mode & 07777), 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
-                           (uint32_t)(mode & 07777), chmod(path, mode), 0);
+                           (uint32_t)(mode & 07777), 0, chmod(path, mode), 0);
+}
+
+/*
+ * Stamp one object with one date, escalating a refusal like everything else.
+ *
+ * utimensat() rather than utime(): the same call the worker makes, so the two
+ * sides of the seam are doing the same thing to the same object and only the
+ * identity performing it differs.  A caller with no times means "now", which
+ * is what Touch asks for.
+ */
+int ace_crm_retry_utime(const char *path, const struct utimbuf *times)
+{
+    int64_t when;
+    int local;
+
+    last_was_privileged = 0;
+    if (!path) {
+        errno = EINVAL;
+        return -1;
+    }
+    when = times ? (int64_t)times->modtime : (int64_t)time(NULL);
+    if (needs_crm_regardless(path))
+        return named_operation(ACE_PRIVILEGE_ACCESS_SET_DATE, path, NULL, 0,
+                               when, -1, 1);
+    local = utime(path, times);
+    return named_operation(ACE_PRIVILEGE_ACCESS_SET_DATE, path, NULL, 0, when,
+                           local, 0);
 }
 
 int ace_crm_retry_last_was_privileged(void)

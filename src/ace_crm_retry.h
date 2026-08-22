@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <utime.h>
 
 /*
  * The shared seam between an ACE file operation and the host.
@@ -25,11 +26,21 @@
  * every other failure is an answer, not a reason to become root -- a
  * misspelled filename must not raise an authentication prompt.
  *
- * The exception is the device view, whose paths exist only inside the
- * crm's mount namespace and so fail locally with ENOENT no matter what
- * the permissions say.  Those are routed by where they are rather than by how
- * they failed, using a view root learned once from the broker.  That is one
- * runtime value from the process that created it, not a policy.
+ * There is one exception, and it is as narrow as it can be made.  A few
+ * objects exist only inside the crm's mount namespace -- a device the host
+ * has not mounted, or a directory covered by something mounted over it -- and
+ * for those a local attempt does not fail on permission grounds, it fails
+ * with ENOENT, because from here they genuinely are not there.  There is no
+ * user-mode try to base the decision on, so those are routed by position,
+ * using a view root learned once from the broker.
+ *
+ * What keeps that from swallowing the rule: the broker hands out such a path
+ * only when the host's own mount tree cannot name the object.  Everything the
+ * user could open themselves arrives here as an ordinary path and is tried as
+ * one, in an authorised session exactly as in any other.  If that ever stops
+ * being true the symptom is unmistakable and worth naming here, because it is
+ * what this design exists to prevent: files the user owns quietly being read
+ * and written by root, and new ones coming out root-owned.
  *
  * These take host paths.  AmigaDOS-to-host translation has already happened
  * by the time anything reaches here.
@@ -58,6 +69,10 @@ int ace_crm_retry_unlink(const char *path);
 int ace_crm_retry_rename(const char *from, const char *to);
 int ace_crm_retry_mkdir(const char *path, mode_t mode);
 int ace_crm_retry_chmod(const char *path, mode_t mode);
+
+/* Set an object's date, escalating a permission refusal.  NULL times means
+   now, as utime() does. */
+int ace_crm_retry_utime(const char *path, const struct utimbuf *times);
 
 /*
  * Whether the last successful ace_crm_retry call needed the crm.

@@ -251,9 +251,10 @@ that a reader of either reaches the same conclusion.
 
 Without `--root`, ACE performs ordinary user operations and reports the
 permission failure immediately. With `--root`, the shared DOS layer may retry a
-denied operation through the access FMM/CRM service. Authorization is lazy: starting
-ACE with `--root` does not make the shell root and should not necessarily prompt
-immediately.
+denied operation through the access FMM/CRM service. Authorization is lazy in the
+strong sense: starting ACE with `--root` does not make the shell root, does not
+prompt, and does not start a privileged process at all. Nothing exists on the
+root side of the boundary until something the user tried has been refused.
 
 Example:
 
@@ -306,6 +307,30 @@ The common layer should attempt the operation as the user first. Only
 `EROFS`, invalid names, I/O errors, and other ordinary failures must not be
 silently converted into root requests.
 
+Neither the AmigaDOS path nor the host path takes any part in that decision.
+The set of objects that need privilege is whatever the kernel refuses, which is
+always right and never drifts; a list of protected places would be a second,
+worse answer to a question the kernel is already answering. Two consequences
+are worth stating because they are the ways this has actually gone wrong:
+
+* **Naming is not access.** Translating a path must not require the broker to
+  be able to stat it. A directory the user cannot enter is exactly where an
+  authorised session is supposed to be able to work, and a resolver that
+  refused such a name would end the operation before it ever reached the seam
+  that exists to retry it. See `within_base_filesystem()` in `src/broker.c`.
+* **The device view is not a route for ordinary files.** Its paths live in a
+  namespace no user process is in, so anything resolved there can only be
+  opened by the access worker, as root. The broker therefore resolves through
+  the host's own mount whenever the host can name the object, and reaches for
+  the view only when it cannot -- a device the host has not mounted, or a
+  directory covered by something mounted over it. Routing a whole mounted
+  device through the view would make every file on it a privileged operation:
+  every read done as root, every new file root-owned, and nothing about it
+  visible to the user. See `ace_dos_devices_root()` in `src/dos_devices.c`.
+
+`tests/escalation_contract_test.sh` holds all of this in place from outside, by
+counting privileged processes: an authorised session that has been refused
+nothing must be running none.
 
 This lets commands remain unchanged:
 

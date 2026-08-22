@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -395,6 +396,18 @@ static int perform_named(int channel,
            object. */
         outcome = fchmodat(parent, name, (mode_t)(request->mode & 07777), 0);
         break;
+    case ACE_PRIVILEGE_ACCESS_SET_DATE: {
+        struct timespec when[2];
+
+        /* Both stamps from the one value the request carried.  AmigaDOS keeps
+           a single date per object; splitting it into two here would mean
+           this worker deciding an access time nobody asked it for. */
+        when[0].tv_sec = (time_t)request->modification_time;
+        when[0].tv_nsec = 0;
+        when[1] = when[0];
+        outcome = utimensat(parent, name, when, 0);
+        break;
+    }
     default:
         close(parent);
         return send_reply(channel, request->request_id,
@@ -425,6 +438,7 @@ static int perform(int channel, const struct ace_privilege_request *request,
     case ACE_PRIVILEGE_ACCESS_UNLINK:
     case ACE_PRIVILEGE_ACCESS_MKDIR:
     case ACE_PRIVILEGE_ACCESS_SET_PROTECTION:
+    case ACE_PRIVILEGE_ACCESS_SET_DATE:
         return perform_named(channel, request, relative);
     default:
         break;

@@ -158,7 +158,7 @@ int ace_fmm_mount(struct ace_privilege_connection *fmm, const char *kernel_name,
  */
 int ace_crm(struct ace_privilege_connection *worker, uint32_t operation,
                         const char *path, const char *second, uint32_t flags,
-                        uint32_t mode, int *received_fd);
+                        uint32_t mode, int64_t when, int *received_fd);
 
 /* Orderly shutdown where possible, then release the handle.  Safe on NULL. */
 void ace_privilege_connection_close(struct ace_privilege_connection *fmm);

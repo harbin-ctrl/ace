@@ -132,7 +132,8 @@ int native_broker_task_list(char *result, size_t result_size);
  * the broker's decision, because that is where path translation lives.
  */
 int native_broker_privop(uint32_t privop, const char *path, const char *second,
-                         uint32_t flags, uint32_t mode, int *received_fd);
+                         uint32_t flags, uint32_t mode, int64_t when,
+                         int *received_fd);
 
 /* Where the FMM/CRM service put the device roots, or empty for a session without a
    device view.  Paths beneath it exist only in the FMM/CRM service's namespace. */

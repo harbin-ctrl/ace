@@ -690,6 +690,40 @@ const char *ace_dos_devices_view_root(void)
     return device_view_root;
 }
 
+/*
+ * This one device's root inside the view, or failure when it has none.
+ *
+ * Wanted for exactly one case: an object that is really on this device but is
+ * covered on the host by something mounted over it.  The view holds each
+ * device mounted once, with nothing nested inside, so the covered object is
+ * visible there and nowhere else.  Reached only after the ordinary host path
+ * has been tried and reported the object missing.
+ */
+int ace_dos_devices_device_view_root(const char *name, char *result,
+                                     size_t result_size)
+{
+    if (!device_view || !name || !result || result_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
+        struct ace_dos_device *device = &devices[index];
+
+        if (!device->in_use || !device_alias_matches(device, name))
+            continue;
+        if (!device->view_path[0])
+            break;
+        if (snprintf(result, result_size, "%s", device->view_path) >=
+            (int)result_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        return 0;
+    }
+    errno = ENOENT;
+    return -1;
+}
+
 int ace_dos_devices_lookup(const char *name)
 {
     int matches = 0;
@@ -734,12 +768,34 @@ int ace_dos_devices_root(const char *name, char *result, size_t result_size)
     if (device_view) {
         if (stat(match->device_path, &device_info) == 0 &&
             S_ISBLK(device_info.st_mode)) {
-            if (!supported_filesystem_type(match->filesystem_type) ||
-                !match->view_path[0]) {
+            /*
+             * The host's own mount first, when there is one.
+             *
+             * The device view is a private namespace, and no user process is
+             * in it: a path resolved there can only be opened by asking the
+             * access worker, as root.  Routing a device the host has already
+             * mounted through it would make every ordinary file on that
+             * device a privileged operation -- every read done as root, every
+             * file created root-owned -- for no gain, because the user could
+             * open all of them perfectly well themselves.  An authorisation
+             * is permission to ask when refused, not an instruction to stop
+             * trying.
+             *
+             * So the view root is what is left when the host cannot express
+             * the object: a device the host has not mounted at all.  The
+             * other case -- an object hidden beneath a nested mount -- is
+             * handled where the failure shows up, by retrying the resolution
+             * beneath this device's view root.
+             */
+            if (match->mount_path[0])
+                selected_root = match->mount_path;
+            else if (supported_filesystem_type(match->filesystem_type) &&
+                     match->view_path[0])
+                selected_root = match->view_path;
+            else {
                 errno = ENOTSUP;
                 return -1;
             }
-            selected_root = match->view_path;
         } else {
             /* Device view changes only block-backed filesystems for now.
              * RAM: (one device per tmpfs) and the other synthetic devices
