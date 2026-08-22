@@ -128,13 +128,22 @@ run Delete SYS:C/a-socket >/dev/null 2>&1 ||
 # filename.  Resolving it against the current directory instead invented
 # files: "Copy x TO NIL:" made a drawer called "NIL:" and put a real copy of x
 # in it, and every unimplemented device did the same thing quietly.
-for absent in NIL: ABC: DF0: FOO:bar; do
+for absent in ABC: DF0: FOO:bar; do
     out=$(run Type "$absent" 2>&1 || true)
     case "$out" in
         *"not mounted"*) ;;
         *) fail "$absent was not reported as an unmounted device: $out" ;;
     esac
 done
+# NIL: is implemented, so it answers rather than being absent: writes are
+# thrown away and a read is immediately at end of file, which is what AmigaOS
+# had it do and what /dev/null does behind it.
+out=$(run Type NIL: 2>&1) || fail "NIL: could not be read: $out"
+[ -z "$out" ] || fail "NIL: read back something: $out"
+run Copy SYS:C/a-file TO NIL: >/dev/null 2>&1 ||
+    fail 'a copy to NIL: was refused'
+[ ! -e "NIL:" ] || fail 'copying to NIL: created a drawer called NIL:'
+
 out=$(run Copy SYS:C/a-file TO ABC: 2>&1 || true)
 [ ! -e "$sys_dir/C/ABC:" ] && [ ! -e "ABC:" ] ||
     fail 'Copy to an unmounted device invented something to copy into'

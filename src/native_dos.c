@@ -2503,6 +2503,38 @@ BPTR Open(CONST_STRPTR name, LONG mode)
                  strcmp(name, "*") == 0))
         return native_console_open(name);
 
+    /*
+     * NIL:, which AmigaOS had natively alongside CON:, RAW:, SER: and PRT:.
+     * Writes to it are thrown away and a read of it is immediately at end of
+     * file, which is what /dev/null is, so that is what stands behind it.
+     *
+     * Handled here, before any resolution, for the same reason CON: and PIPE:
+     * are: it is a device, not a name in a drawer.  That is not a technicality
+     * -- it is the whole reason the two are different things.  Resolving it as
+     * a path is what used to make a drawer called "NIL:" and copy real files
+     * into it.
+     *
+     * Opening /dev/null directly rather than through the seam is deliberate
+     * twice over.  The seam would refuse it, correctly: a character device is
+     * not a file to be read, and nothing that walks a filesystem should be
+     * able to open one.  And the refusal does not apply here, because nothing
+     * walked a filesystem to get here -- the user named a device and this is
+     * the device, not an entry that happens to resemble it.
+     *
+     * Anything after the colon is ignored, as it is on an Amiga: NIL: takes no
+     * path, because there is nothing there to have a path into.
+     */
+    if (name && strncasecmp(name, "NIL:", 4) == 0) {
+        file = fopen("/dev/null", access);
+
+        if (!file) {
+            set_native_broker_error();
+            return (BPTR)NULL;
+        }
+        native_ioerr = 0;
+        return (BPTR)file;
+    }
+
     if (native_named_device_path(name)) {
         struct DevProc *device;
 
@@ -3095,6 +3127,7 @@ BOOL IsFileSystem(CONST_STRPTR device_name)
     if (!device_name || strcasecmp(device_name, "CON:") == 0 ||
         strcasecmp(device_name, "RAW:") == 0 ||
         strcasecmp(device_name, "CONSOLE:") == 0 ||
+        strcasecmp(device_name, "NIL:") == 0 ||
         strcmp(device_name, "*") == 0) {
         native_ioerr = ERROR_OBJECT_NOT_FOUND;
         return DOSFALSE;
