@@ -1307,6 +1307,20 @@ int native_broker_resolve_path(const char *path, char *result, size_t result_siz
     return broker_request(AMIGA_BROKER_RESOLVE, path, NULL, 0, result, result_size);
 }
 
+/*
+ * The same resolution, by a caller that means to open what comes back.
+ *
+ * Separate from the plain form rather than a mode of it, because most callers
+ * are not opening anything and must not inherit the refusal: a name is still
+ * a name whatever kind of object wears it.
+ */
+int native_broker_resolve_path_for_open(const char *path, char *result,
+                                        size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_RESOLVE, path, NULL,
+                          AMIGA_BROKER_FLAG_FOR_OPEN, result, result_size);
+}
+
 int native_broker_resolve_beneath(const char *base, const char *relative,
                                   char *result, size_t result_size)
 {

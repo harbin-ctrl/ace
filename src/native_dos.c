@@ -849,8 +849,24 @@ static int native_fill_fib(const char *path, const char *name, int follow,
         }
     }
     memset(fib, 0, sizeof(*fib));
+    /*
+     * A pipe is not foreign: ST_PIPEFILE is AmigaDOS's own word for one, and
+     * saying so costs nothing, because the convention every reader follows is
+     * that a negative type is a file of some kind.  A program that knows the
+     * type learns something true; one that does not still sees a file.
+     *
+     * Character and block devices and Unix sockets get no such answer,
+     * because AmigaDOS has none to give.  It has devices in plenty -- NIL:,
+     * SER:, PRT:, CON: -- but a device there is an entry in the DOS device
+     * list, opened by its own name, never a name sitting inside a drawer.  A
+     * node is a filesystem entry impersonating a device, which is a category
+     * AmigaDOS does not have, so it is listed as the file it superficially
+     * resembles and refused when something tries to open it.  See Open().
+     */
     fib->fib_DirEntryType = S_ISLNK(information.st_mode) ? ST_SOFTLINK :
-                            (S_ISDIR(information.st_mode) ? ST_USERDIR : ST_FILE);
+                            S_ISDIR(information.st_mode) ? ST_USERDIR :
+                            S_ISFIFO(information.st_mode) ? ST_PIPEFILE :
+                            ST_FILE;
     fib->fib_EntryType = fib->fib_DirEntryType;
     if (strlen(fib_name) >= sizeof(fib->fib_FileName)) {
         native_ioerr = ERROR_LINE_TOO_LONG;
@@ -1682,6 +1698,23 @@ static int native_resolve_path_for_access(CONST_STRPTR name, char *result,
     return 0;
 }
 
+/*
+ * Resolution by a caller that is about to open the result.
+ *
+ * Shares the fallback below with the plain form and differs only in telling
+ * the broker what it means to do, so that an object which cannot be read as a
+ * file is refused before anything tries.
+ */
+static int native_resolve_path_for_open(CONST_STRPTR name, char *result,
+                                        size_t result_size)
+{
+    if (native_broker_resolve_path_for_open(name, result, result_size) == 0)
+        return 0;
+    if (errno == ENXIO)
+        return -1;
+    return native_resolve_path_for_access(name, result, result_size);
+}
+
 static int native_device_base(struct DevProc *device, char *result,
                               size_t result_size)
 {
@@ -2480,10 +2513,17 @@ BPTR Open(CONST_STRPTR name, LONG mode)
            it.  Resolve it directly first.  This is especially important for
            a fresh root/device-view session: Open("C:") must see the drawer
            as a directory so Shell.c can apply its implicit-CD behavior. */
-        if (native_broker_resolve_path(name, resolved, sizeof(resolved)) == 0) {
+        if (native_broker_resolve_path_for_open(name, resolved,
+                                               sizeof(resolved)) == 0) {
             errno = 0;
             file = ace_crm_retry_fopen(resolved, access);
             open_errno = errno;
+        } else if (errno == ENXIO) {
+            /* Not a file to be read, and the broker said so without opening
+               anything.  Nothing further to try: another candidate for the
+               same name would be the same object. */
+            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+            return NULL;
         }
 
         device = file ? NULL : ace_aros_GetDeviceProc(name, NULL);
@@ -2507,10 +2547,12 @@ BPTR Open(CONST_STRPTR name, LONG mode)
         else
             native_ioerr = open_errno == ENOENT || open_errno == 0 ?
                            ERROR_OBJECT_NOT_FOUND : open_errno;
-    } else if (native_resolve_path_for_access(name, resolved,
-                                              sizeof(resolved)) != 0) {
+    } else if (native_resolve_path_for_open(name, resolved,
+                                           sizeof(resolved)) != 0) {
         native_ioerr = errno == ENOENT || errno == 0 ?
                        ERROR_OBJECT_NOT_FOUND : errno;
+        if (errno == ENXIO)
+            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
         return NULL;
     } else {
         errno = 0;
@@ -3304,6 +3346,11 @@ static void set_native_broker_error(void)
     case ENOTEMPTY:   native_ioerr = ERROR_DIRECTORY_NOT_EMPTY; break;
     case EEXIST:      native_ioerr = ERROR_OBJECT_EXISTS; break;
     case ENOTDIR:     native_ioerr = ERROR_OBJECT_WRONG_TYPE; break;
+    /* Something that is not a file being asked to behave as one: a device
+       node, a socket, a FIFO.  Linux answers ENXIO when one of these is
+       opened, and the broker answers it in advance rather than letting the
+       open happen at all. */
+    case ENXIO:       native_ioerr = ERROR_OBJECT_WRONG_TYPE; break;
     case EROFS:       native_ioerr = ERROR_DISK_WRITE_PROTECTED; break;
     case ENOSPC:      native_ioerr = ERROR_DISK_FULL; break;
     case ENAMETOOLONG: native_ioerr = ERROR_INVALID_COMPONENT_NAME; break;

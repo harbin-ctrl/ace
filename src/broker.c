@@ -2168,6 +2168,39 @@ static int normalize_amiga_path(struct broker_session *session,
 static int resolve_path(struct broker_session *session, const char *input,
                         char *result, size_t result_size, bool host_path);
 
+/*
+ * Whether the caller may open what it just asked to have resolved.
+ *
+ * Answered here, before anything is opened, because for these objects the
+ * attempt is the damage.  A FIFO with no writer blocks in open() and the
+ * block ignores SIGINT, so Ctrl-C cannot end it and the shell is wedged until
+ * something kills it.  A character device opens instantly and then never
+ * ends: Type runs forever and Copy fills the disk it is writing to.  A socket
+ * cannot be opened at all and says so with an errno nobody can read.
+ *
+ * The entry itself stays entirely real.  Only a caller that said it was about
+ * to open gets this answer, so Lock(), Examine(), Rename() and Delete() go on
+ * working on it exactly as they do on anything else -- which they must, since
+ * the object is there and is named.
+ *
+ * ENXIO is what Linux itself answers when a socket or an absent device is
+ * opened, and the DOS seam turns it into ERROR_OBJECT_WRONG_TYPE: AmigaDOS's
+ * own sentence for "not the kind of object you can do that to".  A stat that
+ * fails is not an answer, so it does not produce one -- the object may simply
+ * be somewhere this process cannot look, and the open that follows will
+ * escalate and find out.
+ */
+static int refuse_unopenable_object(const char *path)
+{
+    struct stat information;
+
+    if (stat(path, &information) != 0)
+        return 0;
+    if (S_ISREG(information.st_mode) || S_ISDIR(information.st_mode))
+        return 0;
+    return ENXIO;
+}
+
 static int resolve_assign_target(struct broker_session *session,
                                  struct assign_entry *assign,
                                  char *result, size_t result_size)
@@ -3105,6 +3138,8 @@ static int handle_client(struct broker_connection *connection)
     case AMIGA_BROKER_RESOLVE:
         if (resolve_path(session, path, result, sizeof(result), false) != 0)
             status = errno;
+        else if (request.flags & AMIGA_BROKER_FLAG_FOR_OPEN)
+            status = refuse_unopenable_object(result);
         break;
 
     case AMIGA_BROKER_RESOLVE_BENEATH:

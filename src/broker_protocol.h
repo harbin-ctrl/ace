@@ -266,6 +266,21 @@ enum amiga_broker_operation {
 #define AMIGA_BROKER_PORT_HAS_STDOUT  0x0002u
 #define AMIGA_BROKER_PORT_MAX_FDS     2u
 
+/*
+ * Request flags.
+ *
+ * AMIGA_BROKER_FLAG_FOR_OPEN says what the resolved name is about to be used
+ * for, and it exists because the answer differs.  A character device, a
+ * socket or a FIFO is a real entry with a real name: it can be examined,
+ * renamed and deleted like anything else, and Lock() and DeleteFile() must go
+ * on working.  What cannot be done is reading it as a file, and finding that
+ * out by trying is what has to be avoided -- opening a FIFO with no writer
+ * blocks uninterruptibly, and opening a character device succeeds and never
+ * ends.  So the caller says it means to open, and the broker answers before
+ * anything is opened.
+ */
+#define AMIGA_BROKER_FLAG_FOR_OPEN 0x00000001u
+
 struct amiga_broker_request {
     uint32_t magic;
     uint32_t operation;

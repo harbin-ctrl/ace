@@ -27,6 +27,12 @@ int native_broker_attach(void);
  */
 void native_broker_reset_after_fork(void);
 int native_broker_resolve_path(const char *path, char *result, size_t result_size);
+
+/* The same, for a caller about to open the result.  Answers ENXIO for an
+   object that is not a file to be read -- a device node, a socket, a FIFO --
+   so that nothing has to discover it by opening one. */
+int native_broker_resolve_path_for_open(const char *path, char *result,
+                                        size_t result_size);
 int native_broker_resolve_beneath(const char *base, const char *relative,
                                   char *result, size_t result_size);
 int native_broker_name_from_host(const char *path, char *result,
