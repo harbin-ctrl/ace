@@ -2750,13 +2750,6 @@ LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name)
         set_native_broker_error();
         return DOSFALSE;
     }
-    /* Temporary root-rename diagnostic.  The AROS command has already shown
-       its DOS-level calls; record ACE's resulting host spellings before any
-       crm decision, and deliberately leave the filesystem unchanged. */
-    Printf("ACE Rename(%s, %s) resolves to (%s, %s) [not executed]\n",
-           old_name, new_name, old_path, new_path);
-    native_ioerr = 0;
-    return DOSTRUE;
     if (ace_crm_retry_rename(old_path, new_path) != 0) {
         native_ioerr = errno == EXDEV ? ERROR_RENAME_ACROSS_DEVICES : errno;
         if (errno == ENOENT)

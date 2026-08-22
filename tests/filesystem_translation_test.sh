@@ -125,7 +125,39 @@ cleanup()
           "$mapping_test_dir" \
           2>/dev/null || true
 }
-trap cleanup EXIT HUP INT TERM
+# Failure reporting.
+#
+# This file is a long run of assertions under "set -e", which means a check
+# that fails ends the script by simply stopping -- no message, no line, exit
+# 1.  Finding out which of seven hundred lines it was meant running the whole
+# thing again under "sh -x" and reading backwards from the cleanup trap.
+#
+# assert() gives the ones that had no message of their own a message: the
+# expression that failed, printed as written.  It also remembers the last
+# check that passed, so a failure somewhere else -- a command that returned
+# non-zero on its own, which "set -e" treats identically -- can still say
+# where in the run it happened.
+last_passed='(nothing yet)'
+assert()
+{
+    if "$@"; then
+        last_passed="$*"
+        return 0
+    fi
+    printf 'filesystem translation test: FAILED: %s\n' "$*" >&2
+    return 1
+}
+
+on_exit()
+{
+    status=$?
+    cleanup
+    [ "$status" -eq 0 ] && return 0
+    printf 'filesystem translation test: exited %s after: %s\n' \
+        "$status" "$last_passed" >&2
+    return 0
+}
+trap on_exit EXIT HUP INT TERM
 
 control()
 {
@@ -136,12 +168,12 @@ control()
 # There is deliberately no broker startup here. The first client request must
 # start the companion broker through native_broker_ensure().
 root_name=$(control name "$repo_dir")
-[ -S "$socket_path" ]
-[ "$(control resolve "$root_name")" = "$repo_dir" ]
+assert [ -S "$socket_path" ]
+assert [ "$(control resolve "$root_name")" = "$repo_dir" ]
 
 volume_name=${root_name%%:*}:
 volume_root=$(control resolve "$volume_name")
-[ "$(control resolve :)" = "$volume_root" ]
+assert [ "$(control resolve :)" = "$volume_root" ]
 
 # AmigaDOS uses each leading slash as a parent traversal: / is the parent and
 # // is the grandparent. Internal double slashes mean parent after the
@@ -149,15 +181,15 @@ volume_root=$(control resolve "$volume_name")
 # Its current directory spelling is empty; . and .. are ordinary AmigaDOS
 # names represented by the otherwise-illegal Linux components : and ::.
 control cd "$root_name"
-[ "$(control resolve /)" = "$(dirname "$repo_dir")" ]
-[ "$(control resolve //)" = "$(dirname "$(dirname "$repo_dir")")" ]
-[ "$(control resolve ///)" = "$(dirname "$(dirname "$(dirname "$repo_dir")")")" ]
+assert [ "$(control resolve /)" = "$(dirname "$repo_dir")" ]
+assert [ "$(control resolve //)" = "$(dirname "$(dirname "$repo_dir")")" ]
+assert [ "$(control resolve ///)" = "$(dirname "$(dirname "$(dirname "$repo_dir")")")" ]
 mapped_dot=$(control name "$mapping_dot_dir")
 mapped_dotdot=$(control name "$mapping_dotdot_dir")
-[ "${mapped_dot##*/}" = . ]
-[ "${mapped_dotdot##*/}" = .. ]
-[ "$(control resolve "$mapped_dot")" = "$mapping_dot_dir" ]
-[ "$(control resolve "$mapped_dotdot")" = "$mapping_dotdot_dir" ]
+assert [ "${mapped_dot##*/}" = . ]
+assert [ "${mapped_dotdot##*/}" = .. ]
+assert [ "$(control resolve "$mapped_dot")" = "$mapping_dot_dir" ]
+assert [ "$(control resolve "$mapped_dotdot")" = "$mapping_dotdot_dir" ]
 
 # The reverse direction is equally important: creating the two AmigaDOS
 # names creates their fixed Linux spellings, rather than generic ^ mappings.
@@ -166,8 +198,8 @@ dot_create_output=$(printf 'MakeDir %s/.\nMakeDir %s/..\nEndCLI\n' \
     "$dot_create_parent_name" "$dot_create_parent_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=filesystem-dot-create-test "$repo_dir/build/ace-user-shell")
-[ -d "$mapping_dot_create_dir" ]
-[ -d "$mapping_dotdot_create_dir" ]
+assert [ -d "$mapping_dot_create_dir" ]
+assert [ -d "$mapping_dotdot_create_dir" ]
 case "$dot_create_output" in
     *"Error"*|*"error"*) echo "could not create mapped dot names" >&2; exit 1 ;;
 esac
@@ -214,7 +246,7 @@ if [ "${imitator##*/}" = "Hi^HJKGQZLSMUXHI6DUAA" ]; then
     echo "a name imitating an escape was not escaped" >&2
     exit 1
 fi
-[ "$(control resolve "$imitator")" = "$(realpath "$mapping_test_dir/Hi^HJKGQZLSMUXHI6DUAA")" ]
+assert [ "$(control resolve "$imitator")" = "$(realpath "$mapping_test_dir/Hi^HJKGQZLSMUXHI6DUAA")" ]
 
 # Linux names that are not safe AROS components are spelled <header>^<base32>.
 # The spelling is a pure function of the host name -- no broker state -- so it
@@ -233,7 +265,7 @@ mapped_colon=$(control name "$mapping_colon_dir")
 mapped_colon_component=${mapped_colon##*/}
 only_base32 "${mapped_colon_component#*^}" ||
     { echo "unsafe component was not given a visible mapping: $mapped_colon" >&2; exit 1; }
-[ "$(control resolve "$mapped_colon")" = "$(realpath "$mapping_colon_dir")" ]
+assert [ "$(control resolve "$mapped_colon")" = "$(realpath "$mapping_colon_dir")" ]
 # A name too long to spell as a literal escape gets one more chance: the
 # tail component_split_point() chose to keep -- the same split the literal
 # form already tried -- is compressed with whichever of two engines does
@@ -244,14 +276,14 @@ mapped_long=$(control name "$mapping_long_dir") ||
 mapped_long_component=${mapped_long##*/}
 [ "${#mapped_long_component}" -le 107 ] ||
     { echo "compressed component exceeds the AROS FileInfoBlock limit: $mapped_long_component" >&2; exit 1; }
-[ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
+assert [ "$(control resolve "$mapped_long")" = "$(realpath "$mapping_long_dir")" ]
 
 mapped_deflate=$(control name "$mapping_deflate_dir") ||
     { echo "a DEFLATE-compressible over-length name was refused" >&2; exit 1; }
 mapped_deflate_component=${mapped_deflate##*/}
 [ "${#mapped_deflate_component}" -le 107 ] ||
     { echo "DEFLATE-compressed component exceeds the AROS FileInfoBlock limit: $mapped_deflate_component" >&2; exit 1; }
-[ "$(control resolve "$mapped_deflate")" = "$(realpath "$mapping_deflate_dir")" ]
+assert [ "$(control resolve "$mapped_deflate")" = "$(realpath "$mapping_deflate_dir")" ]
 
 # Not every over-length name can be rescued this way, and the fallback is to
 # fail rather than guess: 106 base32 characters carry 530 bits, a name may be
@@ -270,18 +302,18 @@ fi
 # escape so both entries remain addressable from ACE.
 case_primary_name=$(control name "$case_collision_primary")
 case_secondary_name=$(control name "$case_collision_secondary")
-[ "${case_primary_name##*/}" = "CaseCollision" ]
+assert [ "${case_primary_name##*/}" = "CaseCollision" ]
 case "${case_secondary_name##*/}" in
     *^*) only_base32 "${case_secondary_name##*^}" ||
         { echo "case-colliding mapping is not base32: $case_secondary_name" >&2; exit 1; } ;;
     *) echo "case-colliding component was not given a visible mapping: $case_secondary_name" >&2; exit 1 ;;
 esac
-[ "$(control resolve "$case_primary_name")" = "$(realpath "$case_collision_primary")" ]
-[ "$(control resolve "$case_secondary_name")" = "$(realpath "$case_collision_secondary")" ]
+assert [ "$(control resolve "$case_primary_name")" = "$(realpath "$case_collision_primary")" ]
+assert [ "$(control resolve "$case_secondary_name")" = "$(realpath "$case_collision_secondary")" ]
 # An ordinary case-insensitive path names the primary entry, never whichever
 # entry Linux happened to return first.
 case_ordinary_name=${case_primary_name%/*}/CASECOLLISION
-[ "$(control resolve "$case_ordinary_name")" = "$(realpath "$case_collision_primary")" ]
+assert [ "$(control resolve "$case_ordinary_name")" = "$(realpath "$case_collision_primary")" ]
 case_collision_dir_name=$(control name "$case_collision_dir")
 case_listing=$(printf 'DIR %s\nEndCLI\n' "$case_collision_dir_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
@@ -426,8 +458,8 @@ rename_output=$(printf 'Rename %s AS=%s QUIET\nEndCLI\n' \
     "$rename_source_name" "$rename_target_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=shell-rename-test "$repo_dir/build/ace-user-shell")
-[ -e "$rename_target" ]
-[ ! -e "$rename_source" ]
+assert [ -e "$rename_target" ]
+assert [ ! -e "$rename_source" ]
 case "$rename_output" in
     *"required argument missing"*|*"object not found"*)
         echo "Rename failed through the AROS command seam" >&2
@@ -439,8 +471,8 @@ rename_question_output=$(printf 'Rename ?\nFROM=%s AS=%s QUIET\nEndCLI\n' \
     "$rename_question_source_name" "$rename_parent_name/rename-question-target" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=shell-rename-question-test "$repo_dir/build/ace-user-shell")
-[ -e "$rename_question_target" ]
-[ ! -e "$rename_question_source" ]
+assert [ -e "$rename_question_target" ]
+assert [ ! -e "$rename_question_source" ]
 case "$rename_question_output" in
     *"required argument missing"*|*"object not found"*)
         echo "Rename '?' did not read its second argument line" >&2
@@ -476,7 +508,7 @@ for attempt in $(seq 1 100); do
     fi
     sleep 0.01
 done
-[ "$run_completed" -eq 1 ]
+assert [ "$run_completed" -eq 1 ]
 case "$run_output" in
     *"Run:"*"object not found"*)
         echo "Run could not launch the ACE command" >&2
@@ -494,7 +526,7 @@ delete_output=$(printf 'Delete %s/#?.txt\nDelete %s ALL\nEndCLI\n' \
     "$delete_dir_name" "$delete_dir_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=shell-delete-test "$repo_dir/build/ace-user-shell")
-[ ! -e "$delete_dir" ]
+assert [ ! -e "$delete_dir" ]
 case "$delete_output" in
     *"Not Deleted"*)
         echo "Delete could not remove a pattern match or a directory tree" >&2
@@ -510,7 +542,7 @@ protect_output=$(printf 'Protect %s d SUB\nDelete %s\nEndCLI\n' \
     "$delete_protected_name" "$delete_protected_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=shell-protect-test "$repo_dir/build/ace-user-shell")
-[ -e "$delete_protected" ]
+assert [ -e "$delete_protected" ]
 case "$protect_output" in
     *"protected from deletion"*) ;;
     *)
@@ -521,7 +553,7 @@ esac
 force_output=$(printf 'Delete %s FORCE\nEndCLI\n' "$delete_protected_name" |
     env PATH="$repo_dir/build:$PATH" ACE_BROKER_SOCKET="$socket_path" \
         ACE_SESSION=shell-force-test "$repo_dir/build/ace-user-shell")
-[ ! -e "$delete_protected" ]
+assert [ ! -e "$delete_protected" ]
 case "$force_output" in
     *"Not Deleted"*)
         echo "Delete FORCE did not clear the protection it was given" >&2
@@ -721,9 +753,9 @@ for attempt in $(seq 1 100); do
     sleep 0.01
 done
 recovered_name=$(control name "$repo_dir")
-[ "$recovered_name" = "$root_name" ]
+assert [ "$recovered_name" = "$root_name" ]
 recovered_pid=$(sed -n '1p' "$socket_path.lock")
-[ "$recovered_pid" != "$broker_pid" ]
+assert [ "$recovered_pid" != "$broker_pid" ]
 kill -0 "$recovered_pid"
 broker_pid=$recovered_pid
 
