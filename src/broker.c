@@ -2296,14 +2296,43 @@ static int resolve_path(struct broker_session *session, const char *input,
        makes the rule apply consistently to Lock(), Open(), MakeDir(), and
        every other DOS operation that accepts a path. */
     if (colon == input) {
+        char volume_name[PATH_MAX];
+        char covered[PATH_MAX];
+        int failure;
+
         if (ace_dos_devices_volume_root_for_path(session->cwd, base,
                                                  sizeof(base)) != 0)
             return -1;
         relative = colon + 1;
         while (*relative == '/')
             relative++;
-                return normalize_mapped_path_beneath(base, relative, result,
-                                                     result_size);
+        if (normalize_mapped_path_beneath(base, relative, result,
+                                          result_size) == 0)
+            return 0;
+
+        /* This is the same volume-relative question as "VOLUME:path".
+           The first lookup is necessarily as the user; if a nested Linux
+           mount covers the named directory, retry it through this volume's
+           CRM-provided device view.  Returning directly from this branch
+           used to skip that second step, making ":dev" fail while plain
+           "dev" from the volume root succeeded. */
+        failure = errno;
+        if (failure == ENOENT &&
+            ace_dos_devices_name_from_path(base, volume_name,
+                                            sizeof(volume_name)) == 0) {
+            char *name_end = strchr(volume_name, ':');
+
+            if (name_end) {
+                *name_end = '\0';
+                if (ace_dos_devices_device_view_root(volume_name, covered,
+                                                      sizeof(covered)) == 0 &&
+                    strcmp(covered, base) != 0)
+                    return normalize_mapped_path_beneath(covered, relative,
+                                                         result, result_size);
+            }
+        }
+        errno = failure;
+        return -1;
     }
 
     if (colon && colon != input) {

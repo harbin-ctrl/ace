@@ -156,6 +156,16 @@ case "$hidden" in
     *) fail "the covered directory did not resolve into the device view: $hidden" ;;
 esac
 
+# A leading colon is the root of the current volume.  It must therefore ask
+# exactly the same question as the explicit volume name, including the CRM
+# retry required for a directory covered by another Linux mount.
+ace "$repo_dir/build/CD" "$root_alias:home" ||
+    fail "could not enter $root_alias:home before leading-colon lookup"
+leading_hidden=$(ctl resolve ":${covered#/}") ||
+    fail "the leading-colon path :${covered#/} did not resolve"
+[ "$leading_hidden" = "$hidden" ] ||
+    fail "leading colon reached $leading_hidden, not $hidden"
+
 # An explicit volume prefix and a relative path from that volume ask the same
 # question.  In particular, the ordinary host mount must not make
 # "CD rootfs:" followed by "CD dev" lose the underlying directory that the
