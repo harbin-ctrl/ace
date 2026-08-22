@@ -36,6 +36,7 @@
 
 #include <aros/shcommands.h>
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -149,6 +150,59 @@ enum
     NOOFINTERARGS
 };
 
+/*
+ * What to call the directory in a message.
+ *
+ * Dir's own argument, when it was given one.  When it was not, the argument
+ * is the empty string -- AmigaDOS's spelling of "here" -- and printing that
+ * produces "Could not get information for" with nothing after it.  That is
+ * the one case where the reader most needs to be told which directory was
+ * meant, since they did not name it either.
+ *
+ * Inherited rather than introduced: the same line is in AROS's own Dir.c.
+ *
+ * The current directory is read and put straight back.  ACE's CurrentDir()
+ * treats a BNULL argument as a query and changes nothing, but the restore is
+ * written anyway so this does not depend on that: on AmigaDOS proper the
+ * first call really does clear it.
+ *
+ * Falls back to the argument as given.  A message with a word missing is
+ * still better than no message, and this is already the error path.
+ */
+/*
+ * The object the walk actually failed on, when that was not the one named.
+ *
+ * ALL descends, so the thing that could not be opened is routinely several
+ * levels below the argument -- and the argument is what the message printed,
+ * which sends the reader to look at a directory that was fine.  Recorded at
+ * the point of failure, where the name is still in hand; an outer frame
+ * cannot say what an inner one could not open.
+ */
+static char failed_object[512];
+
+static void record_failure(CONST_STRPTR dir)
+{
+    if (failed_object[0])
+        return;   /* The innermost failure is the informative one. */
+    if (dir && *dir)
+        snprintf(failed_object, sizeof(failed_object), "%s", dir);
+}
+
+static CONST_STRPTR reported_name(CONST_STRPTR dir, STRPTR buffer, LONG size)
+{
+    BPTR lock;
+
+    if (failed_object[0])
+        return failed_object;
+    if (dir && *dir)
+        return dir;
+    lock = CurrentDir(BNULL);
+    CurrentDir(lock);
+    if (lock && NameFromLock(lock, buffer, size))
+        return buffer;
+    return dir;
+}
+
 AROS_SH6(Dir, 50.10,
         AROS_SHA(CONST_STRPTR, ,DIR  ,    , NULL),
         AROS_SHA(CONST_STRPTR, ,OPT  , /K , NULL),
@@ -169,8 +223,12 @@ AROS_SH6(Dir, 50.10,
     BOOL         inter = SHArg(INTER);
 
     LONG iswild;
+    char here[512];
 
     g_indent = 0;
+    /* Reset rather than relying on a fresh process: a resident or in-process
+       Dir would otherwise report the previous run's failure. */
+    failed_object[0] = '\0';
 
     UtilityBase = (struct UtilityBase *)OpenLibrary("utility.library", 37);
     if (!UtilityBase)
@@ -248,11 +306,13 @@ AROS_SH6(Dir, 50.10,
              * the directory named on the command line. */
             break;
         case ERROR_OBJECT_WRONG_TYPE:
-            Printf("%s is not a directory\n", (IPTR)dir);
+            Printf("%s is not a directory\n",
+                   (IPTR)reported_name(dir, here, (LONG)sizeof(here)));
             ioerr = ERROR_DIR_NOT_FOUND;
             break;
         default:
-            Printf("Could not get information for %s\n", (IPTR)dir);
+            Printf("Could not get information for %s\n",
+                   (IPTR)reported_name(dir, here, (LONG)sizeof(here)));
         }
         PrintFault(ioerr, NULL);
     }
@@ -588,6 +648,8 @@ LONG doDir(CONST_STRPTR dir, BOOL all, BOOL doDirs, BOOL doFiles, BOOL inter)
     dirs.num = files.num = 0;
 
     lock = Lock(dir, SHARED_LOCK);
+    if (lock == BNULL)
+        record_failure(dir);
 
     if (lock != BNULL)
     {

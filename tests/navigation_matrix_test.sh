@@ -178,19 +178,20 @@ mv "$manifest.made" "$manifest"
 #
 # Mounted before the broker starts, so the filesystem is in the device list
 # the view is built from.
-# The last user-owned drawer, not the first: the first is where the ownership
-# check below creates things, and a drawer with another filesystem mounted over
-# it is not a place that check can look -- ACE would correctly create in the
-# directory underneath, which the host cannot see.
-nested_mount=
-nested_candidate=$(awk '$1=="D" && $3=="user" {print $2}' "$manifest" | tail -1)
-first_user_dir=$(awk '$1=="D" && $3=="user" {print $2; exit}' "$manifest")
-[ "$nested_candidate" = "$first_user_dir" ] && nested_candidate=
-if [ -n "$nested_candidate" ] &&
-   sudo -n mount -t tmpfs -o size=1M ace-nav-nested \
-        "$tree_root/$nested_candidate" 2>/dev/null; then
-    nested_mount=$nested_candidate
+# Its own drawer, not one drawn from the manifest.  Borrowing a random one
+# made this whole section seed-dependent -- a seed with too few user-owned
+# drawers skipped it -- and the check that a nested mount does not break the
+# walk is the one this file exists to keep, so it does not get to be optional.
+# Kept out of the manifest as well, so the generated CD matrix and the
+# ownership check below never pick it: a drawer with another filesystem over
+# it is not a place either of those can reason about.
+nested_mount=nested-mount-point
+mkdir -p "$tree_root/$nested_mount" || fail 'could not make the nested mount point'
+if sudo -n mount -t tmpfs -o size=1M ace-nav-nested \
+        "$tree_root/$nested_mount" 2>/dev/null; then
     sudo -n mkdir -p "$tree_root/$nested_mount/only-inside-the-mount"
+else
+    nested_mount=
 fi
 
 closed_dir=$(awk '$1=="D" && $3=="root" && $4=="700" {print $2; exit}' "$manifest")
