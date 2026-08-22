@@ -136,6 +136,8 @@ int ace_fmm_prepare_view(struct ace_privilege_connection *fmm, char *root,
  * checks the device, checks the type against its own list, and chooses the
  * mountpoint itself.
  */
+int ace_fmm_bind(struct ace_privilege_connection *fmm, dev_t device_id,
+                 char *view_path, size_t view_path_size);
 int ace_fmm_mount(struct ace_privilege_connection *fmm, const char *kernel_name,
                        const char *filesystem_type, char *view_path,
                        size_t view_path_size);

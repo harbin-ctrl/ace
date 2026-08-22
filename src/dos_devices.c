@@ -659,18 +659,50 @@ int ace_dos_devices_prepare_device_view(struct ace_privilege_connection *fmm)
         struct ace_dos_device *device = &devices[index];
         char view_path[PATH_MAX];
 
-        if (!device->in_use || !supported_filesystem_type(
-                device->filesystem_type))
+        if (!device->in_use)
             continue;
-        if (ace_fmm_mount(fmm, device->kernel_name,
-                               device->filesystem_type, view_path,
-                               sizeof(view_path)) != 0) {
-            /* A filesystem this build will not mount is not a failure of the
-               view -- it is a device that does not appear in it.  Anything
-               else is a real failure and stops here. */
-            if (errno == ENOTSUP)
-                continue;
-            return -1;
+        /*
+         * Every filesystem gets a view, not only the block-backed ones.
+         *
+         * A device view that covered vfat and ext alone was not showing the
+         * session each filesystem independently, it was showing some of them:
+         * a tmpfs has no /dev node for MOUNT to name, so /run never had a
+         * view of its own, and the directories systemd's per-unit credential
+         * mounts obscure on it -- /run/credentials/<unit> -- had nowhere to
+         * be seen.  The listing showed those names, because enumeration reads
+         * the host directory, and resolution then refused them as belonging
+         * to another volume.  Dir ALL, List ALL and Copy ALL all walked into
+         * it, and being told that a name just printed does not exist is the
+         * worst way to learn about a mount boundary.
+         *
+         * Block devices keep MOUNT, which can mount one that the host has not
+         * mounted at all.  Everything else is bound from where it already is,
+         * by device id.
+         */
+        if (supported_filesystem_type(device->filesystem_type)) {
+            if (ace_fmm_mount(fmm, device->kernel_name,
+                                   device->filesystem_type, view_path,
+                                   sizeof(view_path)) != 0) {
+                /* A filesystem this build will not mount is not a failure of
+                   the view -- it is a device that does not appear in it.
+                   Anything else is a real failure and stops here. */
+                if (errno == ENOTSUP)
+                    continue;
+                return -1;
+            }
+        } else if (device->device_id == 0 || !device->mount_path[0]) {
+            /* Nothing mounted, so nothing to show independently. */
+            continue;
+        } else if (ace_fmm_bind(fmm, device->device_id, view_path,
+                                sizeof(view_path)) != 0) {
+            /* Never fatal.  A filesystem that cannot be shown on its own is
+               one the session does not get to see independently, and the
+               other twenty-seven are still worth having; failing here would
+               cost the whole device view -- and, because the view is built
+               when the first --root shell attaches, the shell as well.  That
+               is what one uncooperative autofs mount did while this was being
+               written. */
+            continue;
         }
         if (strlen(view_path) >= sizeof(device->view_path)) {
             errno = ENAMETOOLONG;

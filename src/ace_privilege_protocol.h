@@ -232,6 +232,20 @@ enum ace_privilege_operation {
     /* What is mounted, for the broker's DOS device list and for diagnostics
        that should not have to read /proc to answer. */
     ACE_PRIVILEGE_VOLUME_LIST = 0x0105,
+    /* Give one filesystem a view of its own, named by its device id rather
+       than by a block device.  MOUNT can only speak about something with a
+       /dev node behind it, which leaves every tmpfs, and with it every
+       directory a nested mount obscures on one -- /run/credentials/... being
+       the case that showed it -- with nowhere to be seen.  A device view that
+       covers only some of the filesystems is not a device view: a session
+       that asked to see the disks independently asked about all of them.
+
+       The payload is "major:minor" and nothing else.  The worker finds that
+       device in its own /proc/self/mountinfo and binds the mount it finds
+       there, so the property MOUNT has is kept exactly: the broker names a
+       filesystem, never a place, and there is no parameter through which a
+       confused broker could ask for a mount of its choosing. */
+    ACE_PRIVILEGE_VOLUME_BIND = 0x0106,
 
     /*
      * Access class.  Exactly one protected object operation per request.

@@ -63,6 +63,8 @@ cleanup()
             sleep 0.01
         done
     fi
+    [ -n "${nested_mount:-}" ] &&
+        sudo -n umount "$tree_root/$nested_mount" 2>/dev/null || true
     sudo -n rm -rf "$tree_root" 2>/dev/null || true
     rm -rf "$work"
 }
@@ -162,6 +164,34 @@ while read -r kind path owner mode; do
     printf '%s %s %s %s\n' "$kind" "$path" "$owner" "$mode"
 done < "$manifest" > "$manifest.made"
 mv "$manifest.made" "$manifest"
+
+# A nested mount inside the tree, which is the arrangement that broke.
+#
+# A Linux mount standing on one of this volume's directories makes that
+# directory two things at once: an entry the parent lists, and -- to anything
+# that resolves a name -- an object on a different filesystem.  ACE showed the
+# name and then refused it, so Dir ALL, List ALL and Copy ALL each walked into
+# a name they had just printed and were told it did not exist.  What must
+# happen instead is what a device view is for: the mount point resolves to the
+# empty directory underneath, because in this volume's own view nothing is
+# standing on it.
+#
+# Mounted before the broker starts, so the filesystem is in the device list
+# the view is built from.
+# The last user-owned drawer, not the first: the first is where the ownership
+# check below creates things, and a drawer with another filesystem mounted over
+# it is not a place that check can look -- ACE would correctly create in the
+# directory underneath, which the host cannot see.
+nested_mount=
+nested_candidate=$(awk '$1=="D" && $3=="user" {print $2}' "$manifest" | tail -1)
+first_user_dir=$(awk '$1=="D" && $3=="user" {print $2; exit}' "$manifest")
+[ "$nested_candidate" = "$first_user_dir" ] && nested_candidate=
+if [ -n "$nested_candidate" ] &&
+   sudo -n mount -t tmpfs -o size=1M ace-nav-nested \
+        "$tree_root/$nested_candidate" 2>/dev/null; then
+    nested_mount=$nested_candidate
+    sudo -n mkdir -p "$tree_root/$nested_mount/only-inside-the-mount"
+fi
 
 closed_dir=$(awk '$1=="D" && $3=="root" && $4=="700" {print $2; exit}' "$manifest")
 secret_file=$(awk '$1=="F" && $3=="root" && $4=="600" {print $2; exit}' "$manifest")
@@ -470,6 +500,70 @@ for relative in $tree_files; do
     [ "$got" = "$relative" ] ||
         check_failed "root: $relative read back as [$got]"
 done
+
+# --------------------------------------------------------------------------
+# The nested mount, reached every way, and a recursive walk over the whole
+# tree that has to finish.
+#
+# "Dir ALL" is the case that reported this: AROS's Dir treats a subdirectory
+# it cannot enter as fatal and abandons the entire listing, so one mount point
+# truncated everything after it.  The walk completing, with no error text
+# anywhere in it, is the assertion -- not merely that the mount point can be
+# entered.
+# --------------------------------------------------------------------------
+if [ -n "$nested_mount" ]; then
+    nested_here="$tree_volume:$tree_prefix/$nested_mount"
+
+    walk_script="$work/walk.script"
+    printf 'FailAt 100\n' > "$walk_script"
+    printf 'Echo "@@cd"\n' >> "$walk_script"
+    printf 'CD %s\n' "$nested_here" >> "$walk_script"
+    printf 'CD\n' >> "$walk_script"
+    printf 'Echo "@@dirall"\n' >> "$walk_script"
+    printf 'Dir %s:%s ALL\n' "$tree_volume" "$tree_prefix" >> "$walk_script"
+    printf 'Echo "@@listall"\n' >> "$walk_script"
+    printf 'List %s:%s ALL\n' "$tree_volume" "$tree_prefix" >> "$walk_script"
+    printf 'Echo "@@end"\n' >> "$walk_script"
+    run_shell walk "$walk_script" > "$work/walk.out" 2>&1
+
+    # 1. The mount point resolves, and to itself rather than to the volume it
+    #    is standing on.
+    checks=$((checks + 1))
+    got=$(awk '/^@@cd$/{grab=1;next} /^@@/{grab=0} grab && NF {last=$0} END{print last}' \
+        "$work/walk.out")
+    [ "$got" = "$nested_here" ] ||
+        check_failed "root: CD to the nested mount point reached [$got], wanted [$nested_here]"
+
+    # 2. What is inside the mount belongs to the mount, not to this volume.
+    #    This volume's view of that directory is the empty one underneath.
+    checks=$((checks + 1))
+    inside=$(awk '/^@@cd$/{grab=1;next} /^@@/{grab=0} grab' "$work/walk.out")
+    case "$inside" in
+        *only-inside-the-mount*)
+            check_failed "root: this volume showed the contents of the filesystem mounted over it" ;;
+    esac
+
+    # 3. Both recursive walks finish, and neither says anything about a name
+    #    it has just printed.
+    for section in dirall listall; do
+        checks=$((checks + 1))
+        body=$(awk -v want="@@$section" '$0==want{grab=1;next} /^@@/{grab=0} grab' \
+            "$work/walk.out")
+        case "$body" in
+            *"not found"*|*"Could not get information"*|*"object is not"*)
+                check_failed "root: a recursive $section over a tree with a nested mount reported: $(printf '%s' "$body" | grep -iE 'not found|could not|object is not' | head -1)" ;;
+        esac
+        checks=$((checks + 1))
+        [ -n "$body" ] ||
+            check_failed "root: a recursive $section printed nothing at all"
+    done
+
+    # 4. And the walk really did reach the end, rather than stopping quietly
+    #    partway.
+    checks=$((checks + 1))
+    grep -q '^@@end$' "$work/walk.out" ||
+        check_failed 'root: the recursive walks did not run to completion'
+fi
 
 # --------------------------------------------------------------------------
 # What the authorised session leaves behind.

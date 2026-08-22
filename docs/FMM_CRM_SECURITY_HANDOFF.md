@@ -130,13 +130,28 @@ view, and that is the property to protect.
 
 ### Consequences that follow from the split
 
-Two escalation triggers, not one. A protected path escalates on
-`EACCES`/`EPERM`, as before. A device-view path is served by the CRM
-*by construction*, because locally it fails with `ENOENT` -- and `ENOENT` must
-never trigger escalation. The broker routes paths beneath the view root
-because the FMM/CRM service told it where that root is. This is not the forbidden
-list of protected paths: it is one value learned at runtime from the process
-that created it.
+One escalation trigger, and it is not the path. An earlier version of this
+document had two: `EACCES`/`EPERM` for a protected object, and a prefix match
+against the view root for a device-view path, on the grounds that such a path
+fails locally with `ENOENT` and `ENOENT` must never escalate. The second one
+was a mistake, and `src/ace_crm_retry.c` no longer has it. Deciding that an
+operation needs privilege by comparing its pathname to a stored string is
+guessing, it skipped the unprivileged attempt entirely, and the special case
+existed only to work around the narrowness of the first trigger.
+
+The seam now attempts every operation as the user and retries *any* failure
+through the CRM in a `--root` session. The device-view case then needs no
+special handling at all: such a path fails locally like anything else and the
+retry serves it. What must survive is the answer -- when the privileged
+attempt also fails, `report_failure()` keeps the caller's own errno if the
+reply described the channel rather than the object, so a mistyped name still
+says "not found" rather than `EIO`.
+
+The one place a view-root prefix comparison remains is
+`privop_domain_path()` in the broker, and it is not a privilege decision: by
+then a failure has already summoned the CRM, and the comparison only chooses
+which root the CRM resolves beneath -- `RESOLVE_BENEATH` for a volume,
+`RESOLVE_IN_ROOT` for the host. That is containment.
 
 `LNX` children lose the device view. They are Linux processes outside the ACE
 seam, so they will not see paths under the view root. Today they inherit it
@@ -195,7 +210,7 @@ process model above.
 
 The volume worker owns the privileged device/view responsibilities:
 
-* discover supported block-backed filesystems;
+* discover the mounted filesystems, block-backed or not;
 * build and maintain the ACE private mount namespace;
 * create ACE-managed bindroots;
 * mount supported filesystems on demand;
@@ -302,10 +317,16 @@ Most AROS/Amiga commands use common DOS APIs such as:
 * protection/metadata functions;
 * the ACE POSIX wrapper used by embedded Vim and related components.
 
-The common layer should attempt the operation as the user first. Only
-`EACCES`/`EPERM`-type results should trigger a FMM/CRM service request. `ENOENT`,
-`EROFS`, invalid names, I/O errors, and other ordinary failures must not be
-silently converted into root requests.
+The common layer attempts the operation as the user first, and retries a
+failure -- any failure -- through the FMM/CRM service in a `--root` session.
+An earlier draft narrowed this to `EACCES`/`EPERM`, which forced a second,
+path-based trigger to exist for objects that fail with `ENOENT` because they
+are somewhere this process cannot see. Retrying everything removes the need
+for that trigger, and so removes the guessing.
+
+What must not happen is the failure being *replaced*: an ordinary `ENOENT`
+that the privileged attempt also could not fix still reaches the user as
+"not found", never as a fact about the channel that carried it.
 
 Neither the AmigaDOS path nor the host path takes any part in that decision.
 The set of objects that need privilege is whatever the kernel refuses, which is
@@ -404,8 +425,8 @@ to borrow one from.
 
 This is safe only because authorization is not execution as root. The shell,
 the commands, and the broker remain the user's own processes; the shared seam
-attempts every operation as the user first and reaches the FMM/CRM service only on a
-genuine `EACCES`/`EPERM`. So the session-long authorization does not make
+attempts every operation as the user first and reaches the FMM/CRM service only
+once that attempt has failed. So the session-long authorization does not make
 everything the user touches root-owned -- which is precisely what the current
 `ace_mode_elevate_if_needed()` re-exec does today, including in the user's own
 home. The two decisions depend on each other and must not be separated.
@@ -589,7 +610,8 @@ rather than passing.
 
 Mostly done. `src/ace_crm_retry.[ch]` is the single place in ACE that decides an
 operation needs privilege: it does the ordinary thing first as the ordinary
-user, and only a genuine `EACCES`/`EPERM` becomes a request. `native_dos.c`
+user, and a failure -- whatever it was -- becomes a request. Nothing in that
+file looks at the path. `native_dos.c`
 and `ace_amiga_posix.c` both route through it, which covers ACE's own commands
 and the unmodified third-party code compiled with the `-Dopen=` redefinitions.
 
@@ -630,8 +652,8 @@ operations, so they do not escalate.
 
 Shared wrappers for `open`, `stat`, directory enumeration, `unlink`, `rename`,
 `mkdir`, and protection changes. Attempt as the user; fall back to the
-FMM/CRM service only on `EACCES`/`EPERM`. `ENOENT`, `EROFS`, invalid names, and I/O
-errors must never become privilege requests.
+FMM/CRM service when that attempt fails, whatever it failed with. The path
+takes no part in the decision.
 
 Prefer opening in the worker and passing the descriptor back over the existing
 `SCM_RIGHTS` machinery the broker protocol already has, so the privileged part
@@ -715,7 +737,21 @@ The following user decisions remain in force unless explicitly revisited:
 * Linux absolute symlinks retain Linux meaning and translate to the target ACE
   device when they cross filesystems;
 * assigns are created from logical device locations, never raw Linux paths;
-* block-backed volumes are the current device-view scope;
+* the device view covers every filesystem, not only the block-backed ones.
+  This reverses an earlier scope decision, and the reason it was wrong is
+  worth keeping: a view that held only vfat and ext gave `/run` no view of its
+  own, so the directories systemd's per-unit credential mounts obscure on it
+  had nowhere to be seen -- while enumeration, which reads the host directory,
+  listed them anyway. ACE showed a name and then said it did not exist, and
+  `Dir ALL`, `List ALL` and `Copy ALL` each walked into one. A session that
+  asked to see the filesystems independently asked about all of them.
+  A block device is still mounted from its device node, because the host may
+  not have mounted it at all; everything else is bind-mounted, non-recursively,
+  from wherever it already is, and named to the worker by device id so that
+  the broker still names a filesystem rather than a place. A filesystem that
+  cannot be shown on its own -- one whose only mountpoint is itself covered,
+  as autofs under `/proc/sys/fs/binfmt_misc` is -- is absent from the view
+  rather than fatal to it;
 * btrfs is currently unsupported;
 * procfs/sysfs do not yet have a final model;
 * RAM is modeled as one RAM per tmpfs;
@@ -727,8 +763,13 @@ The following user decisions remain in force unless explicitly revisited:
   session ends, `DROP_PRIVILEGE`, or an optional timeout that is off by
   default. ACE does not prompt per object, and must not be changed to;
 * the shared seam always attempts an operation as the user first, and reaches
-  the FMM/CRM service only on `EACCES`/`EPERM`. This is what keeps session-scoped
-  authorization from making everything the user touches root-owned;
+  the FMM/CRM service only when that attempt failed. Trying as the user first
+  is what keeps session-scoped authorization from making everything the user
+  touches root-owned, and `tests/navigation_matrix_test.sh` holds it in place
+  by checking that what an authorised session creates in the user's own drawer
+  is still owned by the user. Which failures are retried is a separate
+  question from whether the attempt happens, and the answer to the second is
+  always;
 * there is no configured list of protected paths, and none may be added. The
   boundary is whatever the kernel refuses;
 * files created through the FMM/CRM service are root-owned, and ACE says so when it

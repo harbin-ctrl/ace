@@ -549,6 +549,147 @@ static int do_mount(const struct ace_privilege_request *request,
     return ACE_PRIVILEGE_OK;
 }
 
+/*
+ * One filesystem, given a view of its own, identified by device id.
+ *
+ * The same operation do_mount() performs for a block device, for everything
+ * that has no block device to be named by.  A tmpfs is the ordinary case and
+ * /run is the one that mattered: systemd mounts a private filesystem over
+ * /run/credentials/<unit>, so the directory underneath is invisible on the
+ * host and had nowhere else to be seen, and a session that asked to see each
+ * filesystem independently was shown a name it was then told did not exist.
+ *
+ * The bind is deliberately not MS_REC, for the reason do_mount() gives: what
+ * is wanted here is this filesystem alone, without the mounts standing on top
+ * of it, because those are other volumes with names of their own.
+ *
+ * Nothing about a path arrives from the far side.  The request carries
+ * "major:minor"; the mount that device sits at is looked up here, in this
+ * process's own mountinfo, and the target is built from the numbers.
+ */
+static int parse_device_id(const void *payload, uint32_t length,
+                           dev_t *device_id, unsigned long *major_number,
+                           unsigned long *minor_number)
+{
+    const char *bytes = payload;
+    char text[64];
+    char *end;
+    unsigned long major_value;
+    unsigned long minor_value;
+
+    if (!bytes || length < 4 || length > sizeof(text) ||
+        bytes[length - 1] != '\0')
+        return -1;
+    if (strnlen(bytes, length) != length - 1)
+        return -1;
+    memcpy(text, bytes, length);
+
+    major_value = strtoul(text, &end, 10);
+    if (end == text || *end != ':')
+        return -1;
+    minor_value = strtoul(end + 1, &end, 10);
+    if (end == (char *)NULL || *end != '\0' || end == text)
+        return -1;
+    *major_number = major_value;
+    *minor_number = minor_value;
+    *device_id = makedev((unsigned int)major_value, (unsigned int)minor_value);
+    return 0;
+}
+
+static int do_bind(const struct ace_privilege_request *request,
+                   const void *payload, uid_t served_uid, char *reply,
+                   size_t reply_size, size_t *reply_length, int *host_errno)
+{
+    struct volume_entry *entry;
+    struct stat information;
+    dev_t device_id;
+    unsigned long major_number;
+    unsigned long minor_number;
+    char key[64];
+    char target[PATH_MAX];
+    char source_mount[PATH_MAX];
+    int written;
+
+    if (parse_device_id(payload, request->payload_length, &device_id,
+                        &major_number, &minor_number) != 0)
+        return ACE_PRIVILEGE_PROTOCOL_ERROR;
+    if (!namespace_ready)
+        return ACE_PRIVILEGE_REFUSED;
+    if (ensure_view_root(served_uid) != 0) {
+        *host_errno = errno;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+    if (snprintf(key, sizeof(key), "fs-%lu-%lu", major_number,
+                 minor_number) >= (int)sizeof(key))
+        return ACE_PRIVILEGE_ESCAPED;
+    if (snprintf(target, sizeof(target), "%s/%s", view_root, key) >=
+        (int)sizeof(target))
+        return ACE_PRIVILEGE_ESCAPED;
+
+    entry = entry_for(key);
+    if (entry && entry->view_path[0]) {
+        /* Already ours.  Idempotent, so a broker retrying after a lost reply
+           does not stack a second mount on the same directory. */
+        written = snprintf(reply, reply_size, "%s", entry->view_path);
+        if (written < 0 || (size_t)written >= reply_size)
+            return ACE_PRIVILEGE_PROTOCOL_ERROR;
+        *reply_length = (size_t)written + 1;
+        return ACE_PRIVILEGE_OK;
+    }
+
+    /* Where the far side said nothing: the mountpoint is discovered here.
+       A device that is not mounted has no view to give, which is not a
+       failure -- it is simply not one of the filesystems this session can be
+       shown, and the broker carries on with the rest. */
+    if (existing_device_root(device_id, source_mount,
+                             sizeof(source_mount)) != 0)
+        return ACE_PRIVILEGE_UNSUPPORTED;
+    /* And it really is that device, asked of the kernel rather than believed
+       from the file that named it. */
+    if (stat(source_mount, &information) != 0) {
+        *host_errno = errno;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+    if (information.st_dev != device_id) {
+        /* The mountpoint is itself covered by something else -- autofs under
+           /proc/sys/fs/binfmt_misc is the usual example -- so a bind of that
+           path would bind the filesystem standing on top of this one rather
+           than this one.  There is nowhere to take this filesystem from, so
+           it gets no view; that is a filesystem missing from the view, not a
+           failure of it. */
+        return ACE_PRIVILEGE_UNSUPPORTED;
+    }
+
+    if (make_directory_path(target) != 0) {
+        *host_errno = errno;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+    if (path_is_mountpoint(target)) {
+        *host_errno = EBUSY;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+    if (mount(source_mount, target, NULL, MS_BIND, NULL) != 0) {
+        *host_errno = errno;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+
+    entry = entry ? entry : free_entry();
+    if (!entry) {
+        (void)umount2(target, MNT_DETACH);
+        *host_errno = ENOSPC;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
+    entry->in_use = 1;
+    snprintf(entry->kernel_name, sizeof(entry->kernel_name), "%s", key);
+    snprintf(entry->view_path, sizeof(entry->view_path), "%s", target);
+
+    written = snprintf(reply, reply_size, "%s", target);
+    if (written < 0 || (size_t)written >= reply_size)
+        return ACE_PRIVILEGE_PROTOCOL_ERROR;
+    *reply_length = (size_t)written + 1;
+    return ACE_PRIVILEGE_OK;
+}
+
 static int do_unmount(const struct ace_privilege_request *request,
                       const void *payload, int *host_errno)
 {
@@ -629,6 +770,9 @@ int ace_fmm_volume_dispatch(const struct ace_privilege_request *request,
     case ACE_PRIVILEGE_VOLUME_MOUNT:
         return do_mount(request, payload, served_uid, reply, reply_size,
                         reply_length, host_errno);
+    case ACE_PRIVILEGE_VOLUME_BIND:
+        return do_bind(request, payload, served_uid, reply, reply_size,
+                       reply_length, host_errno);
     case ACE_PRIVILEGE_VOLUME_UNMOUNT:
         return do_unmount(request, payload, host_errno);
     case ACE_PRIVILEGE_VOLUME_LIST:

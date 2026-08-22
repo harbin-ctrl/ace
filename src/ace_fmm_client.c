@@ -20,6 +20,8 @@
 
 #include "ace_fmm_client.h"
 
+#include <sys/sysmacros.h>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -704,6 +706,48 @@ int ace_fmm_prepare_view(struct ace_privilege_connection *fmm, char *root,
         response.payload_length > root_size ||
         root[response.payload_length - 1] != '\0') {
         errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * A view for a filesystem that has no block device to be named by.
+ *
+ * The device id is the whole request.  Where the mount actually is, is the
+ * worker's business and is looked up there -- see ACE_PRIVILEGE_VOLUME_BIND.
+ */
+int ace_fmm_bind(struct ace_privilege_connection *fmm, dev_t device_id,
+                 char *view_path, size_t view_path_size)
+{
+    struct ace_privilege_request request;
+    struct ace_privilege_response response;
+    char payload[64];
+    int written;
+
+    if (!fmm || !view_path) {
+        errno = EINVAL;
+        return -1;
+    }
+    written = snprintf(payload, sizeof(payload), "%lu:%lu",
+                       (unsigned long)major(device_id),
+                       (unsigned long)minor(device_id));
+    if (written < 0 || (size_t)written >= sizeof(payload)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.operation = ACE_PRIVILEGE_VOLUME_BIND;
+    request.payload_length = (uint32_t)written + 1;
+    if (ace_privilege_connection_request(fmm, &request, payload, &response,
+                                         view_path, view_path_size, NULL) != 0)
+        return -1;
+    if (response.status != ACE_PRIVILEGE_OK) {
+        /* Distinguished so the caller can skip a filesystem that has no view
+           to give without treating it as a failure of the view itself. */
+        errno = response.status == ACE_PRIVILEGE_UNSUPPORTED ? ENOTSUP :
+                (response.host_errno ? response.host_errno : EIO);
         return -1;
     }
     return 0;
