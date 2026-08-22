@@ -243,16 +243,18 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
      * kernel's business and a copy of it in a protocol is a copy that can
      * disagree with the one the caller compiled against.
      */
-    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL, 0, 0, 0,
+    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
+                             follow ? 0 : ACE_PRIVILEGE_FLAG_NOFOLLOW, 0, 0,
                              &received) != 0)
         return -1;
     if (received < 0) {
         errno = EPROTO;
         return -1;
     }
-    /* AT_EMPTY_PATH is how an O_PATH descriptor is stat'ed.  Following or not
-       following was already decided during resolution, so there is nothing
-       left to choose here. */
+    /* AT_EMPTY_PATH is how an O_PATH descriptor is stat'ed.  Which object it
+       refers to -- the link or its target -- was settled by the flag above,
+       so the caller's question survives the trip rather than being answered
+       about whichever object the worker happened to reach. */
     if (fstatat(received, "", information, AT_EMPTY_PATH) != 0) {
         int failure = errno;
 
@@ -263,6 +265,63 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
     close(received);
     last_was_privileged = 1;
     return 0;
+}
+
+/*
+ * Read one symlink's target, escalating a permission refusal.
+ *
+ * Returns what readlink() returns, unterminated length and all, because every
+ * caller of this was written against readlink() and a wrapper that improved
+ * on its interface would be a second thing to remember.
+ *
+ * The privileged half asks for a stat and reads the answer off the
+ * descriptor.  A symlink's target is not separable from the link the way a
+ * file's contents are separable from the file: the same O_PATH|O_NOFOLLOW
+ * handle that describes the link also carries what it points at.  So there is
+ * no opcode for this, and no second resolution of the name -- which is the
+ * property worth having, since resolving a name twice is how the object
+ * examined stops being the object acted on.
+ */
+ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size)
+{
+    int failure;
+    int received = -1;
+    ssize_t length;
+
+    last_was_privileged = 0;
+    if (!path || !buffer || !size) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!needs_crm_regardless(path)) {
+        length = readlink(path, buffer, size);
+        if (length >= 0)
+            return length;
+        failure = errno;
+        if (!refusal_is_permission(failure) || !may_escalate()) {
+            errno = failure;
+            return -1;
+        }
+    }
+    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
+                             ACE_PRIVILEGE_FLAG_NOFOLLOW, 0, 0,
+                             &received) != 0)
+        return -1;
+    if (received < 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    length = readlinkat(received, "", buffer, size);
+    failure = errno;
+    close(received);
+    if (length < 0) {
+        /* EINVAL from here means the object is not a link, which is what
+           readlink() says about it too.  Nothing to translate. */
+        errno = failure;
+        return -1;
+    }
+    last_was_privileged = 1;
+    return length;
 }
 
 /* The operations with no descriptor to hand back.  Same shape as the others:

@@ -65,6 +65,25 @@ if cat "$secret" >/dev/null 2>&1 || ls "$closed_dir" >/dev/null 2>&1; then
 fi
 printf 'plain\n' > "$test_dir/plain.txt"
 
+# The same arrangement of links twice: once where the user can look, once
+# where only root can.  What it is for is below, at the listing comparison.
+make_links()
+{
+    mkdir -p "$1/target-dir" &&
+    printf 'xyz\n' > "$1/target-file" &&
+    ln -s target-dir "$1/link-to-dir" &&
+    ln -s target-file "$1/link-to-file" &&
+    ln -s nowhere "$1/link-to-nothing"
+}
+make_links "$test_dir/links" || fail 'could not build the readable link directory'
+sudo -n sh -c "mkdir -p $closed_dir/links &&
+    mkdir -p $closed_dir/links/target-dir &&
+    printf 'xyz\n' > $closed_dir/links/target-file &&
+    ln -s target-dir $closed_dir/links/link-to-dir &&
+    ln -s target-file $closed_dir/links/link-to-file &&
+    ln -s nowhere $closed_dir/links/link-to-nothing" ||
+    fail 'could not build the protected link directory'
+
 start_broker()
 {
     if [ "${1-}" = "--root" ]; then
@@ -193,9 +212,34 @@ owner=$(sudo -n stat -c %U "$secret")
 [ "$owner" = "root" ] ||
     fail "stamping a protected file changed its owner to $owner"
 
+# 7. A directory of symlinks, listed twice: once from where the user can read
+#    it, once from where only root can.  The two listings must agree.
+#
+#    This is the sharpest form of the rule.  An escalated Examine used to
+#    describe what a link pointed at rather than the link, because the request
+#    carried no way to say which of the two objects was being asked about --
+#    so the same directory reported different contents depending on whether
+#    ACE had happened to need privilege to read it.  A refusal is visible and
+#    can be argued with; a quietly different answer cannot.
+listing_of()
+{
+    # Name and type/size only: the header names the directory itself and the
+    # dates are whenever the two copies happened to be made.
+    ace root "$repo_dir/build/List" "$1" 2>&1 |
+        grep -v '^Directory ' |
+        sed -n 's/^\([^ ]*\) *\([^ ]*\) .*/\1 \2/p' | sort
+}
+open_listing=$(listing_of "$(name_of root "$test_dir/links")")
+closed_listing=$(listing_of "$(name_of root "$closed_dir/links")")
+[ -n "$open_listing" ] || fail 'the readable link directory listed as nothing'
+if [ "$open_listing" != "$closed_listing" ]; then
+    printf 'readable:\n%s\nprotected:\n%s\n' "$open_listing" "$closed_listing" >&2
+    fail 'a directory of links listed differently once privilege was needed'
+fi
+
 stop_broker
 
-# 7. The same refusal without --root.  The command's own answer stands, and
+# 8. The same refusal without --root.  The command's own answer stands, and
 #    nothing privileged is started for it: --root is the permission, and this
 #    is what its absence has to mean.
 start_broker || fail 'the unprivileged broker did not start'

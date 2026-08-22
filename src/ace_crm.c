@@ -256,6 +256,15 @@ static int perform_open(int channel, const struct ace_privilege_request *request
         /* O_PATH: enough to fstat through, and not enough to read.  Examine
            does not need the contents and should not be handed them. */
         flags = O_PATH | O_CLOEXEC;
+        /*
+         * Only here.  O_NOFOLLOW on an ordinary open reports a symlink as
+         * ELOOP, which this worker reads as "the path tried to leave" and
+         * reports as ESCAPED -- a true statement about a different thing.
+         * With O_PATH there is no such collision: the descriptor simply
+         * refers to the link, which is what was asked for.
+         */
+        if (request->flags & ACE_PRIVILEGE_FLAG_NOFOLLOW)
+            flags |= O_NOFOLLOW;
         break;
     case ACE_PRIVILEGE_ACCESS_OPEN_WRITE:
         flags = ((request->flags & ACE_PRIVILEGE_FLAG_UPDATE) ? O_RDWR

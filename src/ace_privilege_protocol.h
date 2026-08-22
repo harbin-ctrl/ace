@@ -368,6 +368,23 @@ enum ace_privilege_status {
  * looked like a bug in the file rather than in the request.
  */
 #define ACE_PRIVILEGE_FLAG_UPDATE    0x0040u
+/*
+ * Ask about the link, not about what it points at.
+ *
+ * This is lstat's question, and it has to be asked explicitly, because the
+ * two are not variations on a theme -- they are questions about two different
+ * objects that happen to share a name.  Without it an escalated Examine of a
+ * symlink describes the target: the same directory then lists differently
+ * depending on whether ACE happened to need privilege to read it, which is
+ * the one thing an escalated operation must never do.  What differs between
+ * the two paths is who performed the operation, never what was performed.
+ *
+ * Paired with O_PATH it is also what makes the link's own target readable:
+ * the descriptor that comes back refers to the link itself, so ReadLink is
+ * answered from it with readlinkat() rather than by a separate opcode that
+ * would resolve the name a second time.
+ */
+#define ACE_PRIVILEGE_FLAG_NOFOLLOW  0x0080u
 
 /* Length of the per-launch random instance identifier.  Sixteen bytes so
    that guessing it is not a strategy. */

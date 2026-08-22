@@ -254,5 +254,5 @@ ssize_t ace_amiga_posix_readlink(const char *path, char *buffer,
 
     if (host_path(path, resolved) != 0)
         return -1;
-    return readlink(resolved, buffer, buffer_size);
+    return ace_crm_retry_readlink(resolved, buffer, buffer_size);
 }

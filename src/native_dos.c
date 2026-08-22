@@ -2757,7 +2757,7 @@ LONG ReadLink(struct MsgPort *port, BPTR handle, CONST_STRPTR name,
         set_native_broker_error();
         return -1;
     }
-    length = readlink(path, target, sizeof(target) - 1);
+    length = ace_crm_retry_readlink(path, target, sizeof(target) - 1);
     if (length < 0) {
         set_native_broker_error();
         return -1;

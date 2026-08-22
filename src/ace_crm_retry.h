@@ -74,6 +74,10 @@ int ace_crm_retry_chmod(const char *path, mode_t mode);
    now, as utime() does. */
 int ace_crm_retry_utime(const char *path, const struct utimbuf *times);
 
+/* Read a symlink's target, escalating a permission refusal.  Returns what
+   readlink() returns: the length, with no terminator written. */
+ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size);
+
 /*
  * Whether the last successful ace_crm_retry call needed the crm.
  *
