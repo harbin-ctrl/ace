@@ -627,6 +627,13 @@ static int broker_exchange_bytes_locked(int fd, uint32_t operation,
     struct amiga_broker_request request;
     struct amiga_broker_response response;
 
+    /* Zeroed first, as privop_exchange() does.  Every field below is assigned
+       except privop_time, which this path has no use for -- so without this
+       the request carried whatever was on the stack, and the padding between
+       the fields went out to the broker as well.  Harmless in what the broker
+       does with it, and noisy where it matters: 483 valgrind reports in a run
+       that was being read for a real memory error. */
+    memset(&request, 0, sizeof(request));
     request.magic = AMIGA_BROKER_MAGIC;
     request.operation = operation;
     request.session_length = (uint32_t)session_length;

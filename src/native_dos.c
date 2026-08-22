@@ -1964,6 +1964,28 @@ LONG Info(BPTR handle, struct InfoData *parameter_block)
     return DOSTRUE;
 }
 
+/*
+ * Release one command-directory list.
+ *
+ * The locks in it are not only this list's.  Shell.c walks the list to search
+ * the path and installs each one as the current directory as it goes
+ * (loadCommand(), Shell.c:402), and ACE's CurrentDir() keeps the caller's
+ * pointer rather than a copy of it -- so while that search is running the
+ * process is standing on a lock this list owns.
+ *
+ * Normally the Shell puts the previous directory back before anything
+ * rebuilds the list, and the window closes.  It cannot when that previous
+ * directory has been deleted: CurrentDir() fails at the broker and returns
+ * without restoring anything, so the process is left standing on the list's
+ * lock.  The next Cli() then frees the list underneath it, and
+ * native_sync_current_dir() reads a freed lock and eventually frees it a
+ * second time -- which is an abort, from a shell that had done nothing worse
+ * than delete the drawer it was sitting in.
+ *
+ * Dropping the reference sends native_sync_current_dir() back to the broker
+ * for the answer, which is where the current directory actually lives; it
+ * re-establishes it in native_initial_dir, which is static and never freed.
+ */
 static void free_cli_path_list(BPTR head)
 {
     BPTR *entry = (BPTR *)BADDR(head);
@@ -1971,6 +1993,8 @@ static void free_cli_path_list(BPTR head)
     while (entry) {
         BPTR *next = (BPTR *)BADDR(entry[0]);
 
+        if (native_current_dir == entry[1])
+            native_current_dir = BNULL;
         UnLock(entry[1]);
         free(entry);
         entry = next;
