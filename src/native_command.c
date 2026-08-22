@@ -25,6 +25,8 @@
 #include "aros_exec_runtime.h"
 #include "native_host.h"
 
+int ace_dos_handle_descriptor(BPTR handle);
+
 struct ace_command_segment {
     char path[PATH_MAX];
 };
@@ -714,11 +716,27 @@ LONG RunCommand(BPTR value, ULONG stack, STRPTR arguments, LONG length)
         return RETURN_FAIL;
     }
     if (child == 0) {
+        int input_descriptor;
+        int output_descriptor;
+
         (void)sigprocmask(SIG_SETMASK, &previous_mask, NULL);
         native_broker_reset_after_fork();
         if (native_broker_getcwd(cwd, sizeof(cwd)) == 0)
             (void)chdir(cwd);
         if (setenv("ACE_COMMAND_ARGUMENTS", arguments, 1) != 0)
+            _exit(RETURN_FAIL);
+        /* Shell.c's AmigaDOS 3.1 redirection parser has already selected
+           these streams with SelectInput()/SelectOutput().  They are FILE *
+           state in this process, whereas execv() gives the command only its
+           POSIX descriptors, so carry the selected streams across the exec
+           boundary.  The argument line remains in ACE_COMMAND_ARGUMENTS;
+           native_dos.c supplies that prefix before redirected stdin. */
+        input_descriptor = ace_dos_handle_descriptor(Input());
+        output_descriptor = ace_dos_handle_descriptor(Output());
+        if ((input_descriptor >= 0 &&
+             dup2(input_descriptor, STDIN_FILENO) < 0) ||
+            (output_descriptor >= 0 &&
+             dup2(output_descriptor, STDOUT_FILENO) < 0))
             _exit(RETURN_FAIL);
         if (script && setenv(ACE_SCRIPT_INPUT_VARIABLE, script_name, 1) != 0)
             _exit(RETURN_FAIL);
