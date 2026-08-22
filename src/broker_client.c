@@ -831,6 +831,12 @@ static int broker_request_bytes(uint32_t operation,
  * The command never speaks to a root process.  It asks the broker, the broker
  * asks the CRM, and what comes back is a status and -- for the
  * operations that open something -- a handle to that one object.
+ *
+ * Three outcomes rather than two: 0 for success, 1 for an exchange that
+ * completed and carried a refusal, -1 for an exchange that did not complete.
+ * The caller needs the difference.  Only the middle one is an answer about
+ * the object, and only an answer about the object is fit to replace what the
+ * caller's own unprivileged attempt already said.
  */
 static int privop_exchange(int fd, uint32_t privop, const char *path,
                            const char *second, uint32_t flags, uint32_t mode,
@@ -924,10 +930,8 @@ int native_broker_privop(uint32_t privop, const char *path, const char *second,
             return -1;
         outcome = privop_exchange(fd, privop, path, second, flags, mode, when,
                                   received_fd);
-        if (outcome == 0)
-            return 0;
-        if (outcome > 0)
-            return -1;
+        if (outcome >= 0)
+            return outcome;
         broker_disconnect();
     }
     return -1;

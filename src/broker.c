@@ -2599,10 +2599,20 @@ static int ensure_access_worker(void)
         errno = EACCES;
         return -1;
     }
-    if (!fmm && start_root_services() != 0)
+    /* Authorised, but the privileged side could not be built.  Reported as
+       EIO rather than EACCES: "the service is not there" is a fact about this
+       machine, not about the object, and a caller that mistook it for one
+       would tell the user a name they mistyped was protected. */
+    if (!fmm && start_root_services() != 0) {
+        errno = EIO;
         return -1;
+    }
     crm = ace_fmm_start_crm(fmm);
-    return crm ? 0 : -1;
+    if (!crm) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -2645,7 +2655,7 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
     if (!path || !*path || path[0] != '/')
         return EINVAL;
     if (ensure_access_worker() != 0)
-        return errno ? errno : EACCES;
+        return errno ? errno : EIO;
 
     first = privop_domain_path(path, &flags);
     if (request->privop == ACE_PRIVILEGE_ACCESS_SYMLINK) {
@@ -2699,29 +2709,32 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
     return errno ? errno : EIO;
 }
 
-/* A device-view path exists only in the FMM's private mount namespace.  The
- * broker still owns the current directory, so setting it must validate the
- * directory through the CRM rather than treating the broker's own ENOENT as
- * proof that the object is absent. */
+/* The broker owns the current directory, so setting it has to be able to
+ * validate a directory the broker itself cannot see.  A device-view path is
+ * the usual case -- it exists only in the FMM's private mount namespace, so
+ * the broker's own stat says ENOENT about an object that is plainly there --
+ * but the broker does not work out which case it is in, because it cannot.
+ * It stats as itself, and if that fails it asks the CRM, exactly as every
+ * other operation in ACE now does.  The path takes no part in the decision. */
 static int stat_for_current_directory(const char *path, struct stat *information)
 {
-    const char *root = ace_dos_devices_view_root();
-    size_t root_length = root ? strlen(root) : 0;
     struct amiga_broker_request request;
+    int failure;
     int descriptor = -1;
     int status;
 
     if (stat(path, information) == 0)
         return 0;
-    if (!root_length || strncmp(path, root, root_length) != 0 ||
-        path[root_length] != '/' || !path[root_length + 1])
-        return -1;
+    failure = errno;
 
     memset(&request, 0, sizeof(request));
     request.privop = ACE_PRIVILEGE_ACCESS_STAT;
     status = perform_privileged_operation(&request, path, NULL, &descriptor);
     if (status != 0) {
-        errno = status;
+        /* The privileged attempt is a second chance, not a second opinion:
+           when it fails too, what the broker's own stat said about the object
+           is the answer, rather than a status describing the channel. */
+        errno = failure;
         return -1;
     }
     if (descriptor < 0 || fstat(descriptor, information) != 0) {

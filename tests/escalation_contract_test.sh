@@ -3,16 +3,18 @@
 #
 # The rule this file exists to hold in place:
 #
-#   every AmigaDOS call is tried first as the user; only a refusal on
-#   permission grounds, in a session that asked for --root, is retried with
-#   privilege; and neither the AmigaDOS path nor the Linux path takes any part
-#   in that decision -- only the outcome of the first attempt does.
+#   every AmigaDOS call is tried first as the user; a call that fails, in a
+#   session that asked for --root, is retried with privilege; and neither the
+#   AmigaDOS path nor the Linux path takes any part in that decision -- only
+#   the outcome of the first attempt does.
 #
 # The check that gives the rest their teeth is process arithmetic.  An
-# authorised session runs no privileged process at all until something is
-# actually refused, so "was this done as the user?" has an observable answer:
+# authorised session runs no privileged process at all until something has
+# actually failed, so "was this done as the user?" has an observable answer:
 # count the root processes.  Nothing here inspects ACE's internals; a change
-# that reintroduced blanket escalation would still be visible from here.
+# that reintroduced blanket escalation -- privilege raised for work that
+# succeeded as the user, or raised from reading the path -- would still be
+# visible from here.
 set -u
 
 repo_dir=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -159,7 +161,9 @@ missing_name=$(printf '%s' "$plain_name" | sed 's/plain\.txt$/nothing-here.txt/'
 
 # 1. Something the user can do.  Not one privileged process exists yet, and
 #    reading a file they own must not create one -- an authorisation is
-#    permission to ask when refused, not an instruction to stop trying.
+#    permission to ask when the attempt fails, not an instruction to stop
+#    trying.  This is the assertion that catches blanket escalation, and it
+#    is the one that does not depend on which failures are retried.
 [ "$(privileged_processes)" -eq 0 ] ||
     fail 'a privileged process existed before anything was refused'
 out=$(ace root "$repo_dir/build/Type" "$plain_name" 2>&1) ||
@@ -168,13 +172,19 @@ out=$(ace root "$repo_dir/build/Type" "$plain_name" 2>&1) ||
 [ "$(privileged_processes)" -eq 0 ] ||
     fail 'reading a file the user owns started a privileged process'
 
-# 2. A name that is not there.  The commonest failure there is, and the one
-#    that must never raise privilege: a typo that authenticated would teach
-#    the user to wave prompts away.
-ace root "$repo_dir/build/Type" "$missing_name" >/dev/null 2>&1 &&
+# 2. A name that is not there.  This is retried with privilege like any other
+#    failure -- ACE cannot know from the name whether the object is missing or
+#    merely somewhere it cannot look, and guessing from the path is exactly
+#    what this file exists to prevent.  What must survive the retry is the
+#    answer: the second attempt fails too, and the user is told the object is
+#    not there rather than being handed whatever the privileged round trip had
+#    to say about itself.
+out=$(ace root "$repo_dir/build/Type" "$missing_name" 2>&1) &&
     fail 'a missing file was somehow read'
-[ "$(privileged_processes)" -eq 0 ] ||
-    fail 'a missing file started a privileged process'
+case "$out" in
+    *"not found"*|*"Object not found"*) ;;
+    *) fail "a missing file reported something other than not-found: $out" ;;
+esac
 
 # 3. A real refusal, in a session that may ask.  This is the one case that
 #    escalates, and it must produce the file.
@@ -193,8 +203,12 @@ out=$(ace root "$repo_dir/build/Type" "$plain_name" 2>&1) ||
     fail "an ordinary file stopped being readable once privilege existed: $out"
 [ "$out" = "plain" ] ||
     fail "an ordinary file read back wrongly once privilege existed: $out"
-ace root "$repo_dir/build/Type" "$missing_name" >/dev/null 2>&1 &&
+out=$(ace root "$repo_dir/build/Type" "$missing_name" 2>&1) &&
     fail 'a missing file was somehow read once privilege existed'
+case "$out" in
+    *"not found"*|*"Object not found"*) ;;
+    *) fail "a missing file misreported once privilege existed: $out" ;;
+esac
 
 made_name=$(printf '%s' "$plain_name" | sed 's/plain\.txt$/made-here/')
 ace root "$repo_dir/build/MakeDir" "$made_name" >/dev/null 2>&1 ||
@@ -329,4 +343,4 @@ out=$(ace user "$repo_dir/build/Type" "$plain_name" 2>&1) ||
 [ "$out" = "plain" ] || fail "an unauthorised session read back wrongly: $out"
 stop_broker
 
-printf 'ACE escalated only what was refused, and only where it was allowed to\n'
+printf 'ACE escalated only what failed, and only where it was allowed to\n'

@@ -1,5 +1,5 @@
 /*
- * Try as the user; ask only when refused.
+ * Try as the user; ask only when that fails.
  *
  * This file is small on purpose.  It is the only place in ACE that decides an
  * operation needs privilege, and a decision made in one place can be read in
@@ -19,7 +19,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -29,63 +28,50 @@
 static int last_was_privileged;
 
 /*
- * Whether a failure is the kind that privilege would fix.
+ * Whether the privileged retry is even possible.
  *
- * Deliberately just the two.  ENOENT is the interesting exclusion: a
- * misspelled name is the commonest failure there is, and a seam that treated
- * it as a reason to become root would turn every typo in every script into an
- * authentication prompt -- and would teach the user to dismiss those prompts,
- * which is the failure mode this whole design was built to avoid.
- */
-static int refusal_is_permission(int failure)
-{
-    return failure == EACCES || failure == EPERM;
-}
-
-/*
- * The device-view root, asked of the broker once.
+ * The only question asked before an operation is attempted, and it is about
+ * the session rather than about the object: without --root a refusal simply
+ * stands, which is what it would have been without the crm.
  *
- * Cached for the life of the process because it cannot change under a running
- * session: the crm creates it at startup and it lives as long as the
- * crm does.  An empty answer means an ordinary session with no device
- * view, and is cached too -- asking again on every open would put a broker
- * round trip in front of every file in a Dir.
+ * Nothing here looks at the path.  It used to: a prefix comparison against
+ * the device-view root sent matching names straight to the crm without trying
+ * them locally at all, which meant ACE decided an operation needed root by
+ * inspecting a string.  That was a workaround for this file escalating only
+ * EACCES and EPERM -- a device-view path fails locally with ENOENT, because
+ * the mount that would satisfy it is in a namespace this process is not in --
+ * and with every failure retried the workaround has nothing left to do.  The
+ * kernel's answer to the attempt is the whole of the decision.
  */
-static const char *view_root(void)
-{
-    static char cached[PATH_MAX];
-    static int asked;
-
-    if (!asked) {
-        asked = 1;
-        if (native_broker_view_root(cached, sizeof(cached)) != 0)
-            cached[0] = '\0';
-    }
-    return cached;
-}
-
-/*
- * A path that only the crm can reach.
- *
- * Not a permission question at all: these live in a mount namespace this
- * process is not in and cannot enter, so the local attempt fails with ENOENT
- * however the permissions stand.  Recognising them by position is the only
- * way, and the position comes from the process that chose it.
- */
-static int needs_crm_regardless(const char *path)
-{
-    const char *root = view_root();
-    size_t length = strlen(root);
-
-    return length && strncmp(path, root, length) == 0 &&
-           path[length] == '/' && path[length + 1];
-}
-
-/* Whether this session may ask at all.  Without --root a refusal simply
-   stands, which is what it would have been without the crm. */
 static int may_escalate(void)
 {
     return ace_mode_is_root();
+}
+
+/*
+ * Which of two failures to report, when the privileged retry failed too.
+ *
+ * The retry is a second chance, not a second opinion.  When it came back with
+ * something the crm learned about the object -- EPERM on a hard link to a
+ * directory, ENOENT on a name that really is not there -- that is the better
+ * answer, because it was reached with more power than the caller had and is
+ * therefore about the object rather than about the caller.
+ *
+ * When it came back with a fact about the exchange instead, the caller's own
+ * refusal stands.  A broken channel or a garbled reply says nothing about the
+ * file, and letting it through would report EIO for a mistyped name -- which
+ * matters far more now that every failure is retried, because most failures
+ * are ordinary and were answered correctly the first time.
+ */
+static int report_failure(int outcome, int local_failure)
+{
+    int privileged = errno;
+
+    if (outcome < 0 || privileged == EIO || privileged == EPROTO)
+        errno = local_failure;
+    else
+        errno = privileged;
+    return -1;
 }
 
 static uint32_t open_flags_to_crm(int flags)
@@ -123,6 +109,7 @@ int ace_crm_retry_open(const char *path, int flags, mode_t mode)
 {
     int result;
     int failure;
+    int outcome;
     int received = -1;
 
     last_was_privileged = 0;
@@ -130,15 +117,13 @@ int ace_crm_retry_open(const char *path, int flags, mode_t mode)
         errno = EINVAL;
         return -1;
     }
-    if (!needs_crm_regardless(path)) {
-        result = open(path, flags, mode);
-        if (result >= 0)
-            return result;
-        failure = errno;
-        if (!refusal_is_permission(failure) || !may_escalate()) {
-            errno = failure;
-            return -1;
-        }
+    result = open(path, flags, mode);
+    if (result >= 0)
+        return result;
+    failure = errno;
+    if (!may_escalate()) {
+        errno = failure;
+        return -1;
     }
     /*
      * Read-write is asked for as write.  The crm's opens are typed and
@@ -146,12 +131,12 @@ int ace_crm_retry_open(const char *path, int flags, mode_t mode)
      * reads and writes a protected object is two capabilities, and ACE's uses
      * -- copy in, copy out, examine -- each want one.
      */
-    if (native_broker_privop((uint32_t)crm_operation_for_open(flags), path,
+    if ((outcome = native_broker_privop((uint32_t)crm_operation_for_open(flags), path,
                              NULL,
                              open_flags_to_crm(flags) |
                                  update_flag(flags),
-                             (uint32_t)(mode & 07777), 0, &received) != 0)
-        return -1;
+                             (uint32_t)(mode & 07777), 0, &received)) != 0)
+        return report_failure(outcome, failure);
     last_was_privileged = 1;
     return received;
 }
@@ -220,6 +205,7 @@ DIR *ace_crm_retry_opendir(const char *path)
 int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
 {
     int failure;
+    int outcome;
     int received = -1;
 
     last_was_privileged = 0;
@@ -227,15 +213,12 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
         errno = EINVAL;
         return -1;
     }
-    if (!needs_crm_regardless(path)) {
-        if ((follow ? stat(path, information)
-                    : lstat(path, information)) == 0)
-            return 0;
-        failure = errno;
-        if (!refusal_is_permission(failure) || !may_escalate()) {
-            errno = failure;
-            return -1;
-        }
+    if ((follow ? stat(path, information) : lstat(path, information)) == 0)
+        return 0;
+    failure = errno;
+    if (!may_escalate()) {
+        errno = failure;
+        return -1;
     }
     /*
      * An O_PATH descriptor comes back and the fstat happens here.  The worker
@@ -243,10 +226,10 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
      * kernel's business and a copy of it in a protocol is a copy that can
      * disagree with the one the caller compiled against.
      */
-    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
-                             follow ? 0 : ACE_PRIVILEGE_FLAG_NOFOLLOW, 0, 0,
-                             &received) != 0)
-        return -1;
+    if ((outcome = native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
+                                        follow ? 0 : ACE_PRIVILEGE_FLAG_NOFOLLOW,
+                                        0, 0, &received)) != 0)
+        return report_failure(outcome, failure);
     if (received < 0) {
         errno = EPROTO;
         return -1;
@@ -268,7 +251,7 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
 }
 
 /*
- * Read one symlink's target, escalating a permission refusal.
+ * Read one symlink's target, escalating a refusal like everything else.
  *
  * Returns what readlink() returns, unterminated length and all, because every
  * caller of this was written against readlink() and a wrapper that improved
@@ -285,6 +268,7 @@ int ace_crm_retry_stat(const char *path, struct stat *information, int follow)
 ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size)
 {
     int failure;
+    int outcome;
     int received = -1;
     ssize_t length;
 
@@ -293,26 +277,25 @@ ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size)
         errno = EINVAL;
         return -1;
     }
-    if (!needs_crm_regardless(path)) {
-        length = readlink(path, buffer, size);
-        if (length >= 0)
-            return length;
-        failure = errno;
-        if (!refusal_is_permission(failure) || !may_escalate()) {
-            errno = failure;
-            return -1;
-        }
-    }
-    if (native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
-                             ACE_PRIVILEGE_FLAG_NOFOLLOW, 0, 0,
-                             &received) != 0)
+    length = readlink(path, buffer, size);
+    if (length >= 0)
+        return length;
+    failure = errno;
+    if (!may_escalate()) {
+        errno = failure;
         return -1;
+    }
+    if ((outcome = native_broker_privop(ACE_PRIVILEGE_ACCESS_STAT, path, NULL,
+                                        ACE_PRIVILEGE_FLAG_NOFOLLOW, 0, 0,
+                                        &received)) != 0)
+        return (int)report_failure(outcome, failure);
     if (received < 0) {
         errno = EPROTO;
         return -1;
     }
     length = readlinkat(received, "", buffer, size);
-    failure = errno;
+    if (length < 0)
+        failure = errno;
     close(received);
     if (length < 0) {
         /* EINVAL from here means the object is not a link, which is what
@@ -324,32 +307,33 @@ ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size)
     return length;
 }
 
-/* The operations with no descriptor to hand back.  Same shape as the others:
-   try, and escalate only a permission refusal. */
+/*
+ * The operations with no descriptor to hand back.  Same shape as the others:
+ * try, and let the failure decide.
+ *
+ * The caller passes the result of its own attempt and has not touched errno
+ * since, so the refusal read here is the one that attempt produced.
+ *
+ * When the privileged retry fails too, report_failure() decides which of the
+ * two answers the caller is told about.
+ */
 static int named_operation(uint32_t privop, const char *path,
                            const char *second, uint32_t mode, int64_t when,
-                           int local_result, int force)
+                           int local_result)
 {
     int failure;
+    int outcome;
 
-    /* force means the object lives where this process cannot reach it, so
-       there was no local attempt to interpret.  Reading errno here would read
-       whatever the last unrelated call left behind, and a stale ENOENT would
-       turn a device-view operation into a refusal. */
-    if (!force) {
-        if (local_result == 0)
-            return 0;
-        failure = errno;
-        if (!refusal_is_permission(failure) || !may_escalate()) {
-            errno = failure;
-            return -1;
-        }
-    } else if (!may_escalate()) {
-        errno = EACCES;
+    if (local_result == 0)
+        return 0;
+    failure = errno;
+    if (!may_escalate()) {
+        errno = failure;
         return -1;
     }
-    if (native_broker_privop(privop, path, second, 0, mode, when, NULL) != 0)
-        return -1;
+    outcome = native_broker_privop(privop, path, second, 0, mode, when, NULL);
+    if (outcome != 0)
+        return report_failure(outcome, failure);
     last_was_privileged = 1;
     return 0;
 }
@@ -388,7 +372,7 @@ static int remove_either_kind(const char *path)
 }
 
 /*
- * Create a symlink, escalating a permission refusal.
+ * Create a symlink, escalating a refusal.
  *
  * The argument order is symlink()'s, target first, for the same reason the
  * readlink wrapper keeps readlink()'s: every caller was written against the
@@ -401,22 +385,13 @@ static int remove_either_kind(const char *path)
  */
 int ace_crm_retry_symlink(const char *target, const char *path)
 {
-    int failure;
-
     last_was_privileged = 0;
     if (!target || !*target || !path) {
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_SYMLINK, path, target, 0,
-                               0, -1, 1);
-    if (symlink(target, path) == 0)
-        return 0;
-    failure = errno;
-    errno = failure;
     return named_operation(ACE_PRIVILEGE_ACCESS_SYMLINK, path, target, 0, 0,
-                           -1, 0);
+                           symlink(target, path));
 }
 
 int ace_crm_retry_unlink(const char *path)
@@ -426,14 +401,12 @@ int ace_crm_retry_unlink(const char *path)
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_UNLINK, path, NULL, 0, 0,
-                           remove_either_kind(path), 0);
+                           remove_either_kind(path));
 }
 
 /*
- * Give an object a second name, escalating a permission refusal.
+ * Give an object a second name, escalating a refusal.
  *
  * With one refusal deliberately not escalated.  A hard link to a directory is
  * refused by the kernel itself, for root exactly as for anyone: a directory
@@ -457,9 +430,6 @@ int ace_crm_retry_link(const char *from, const char *to)
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(from) || needs_crm_regardless(to))
-        return named_operation(ACE_PRIVILEGE_ACCESS_LINK, from, to, 0, 0, -1,
-                               1);
     if (link(from, to) == 0)
         return 0;
     failure = errno;
@@ -469,7 +439,7 @@ int ace_crm_retry_link(const char *from, const char *to)
         return -1;
     }
     errno = failure;
-    return named_operation(ACE_PRIVILEGE_ACCESS_LINK, from, to, 0, 0, -1, 0);
+    return named_operation(ACE_PRIVILEGE_ACCESS_LINK, from, to, 0, 0, -1);
 }
 
 int ace_crm_retry_rename(const char *from, const char *to)
@@ -479,10 +449,8 @@ int ace_crm_retry_rename(const char *from, const char *to)
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(from) || needs_crm_regardless(to))
-        return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_RENAME, from, to, 0, 0,
-                           rename(from, to), 0);
+                           rename(from, to));
 }
 
 int ace_crm_retry_mkdir(const char *path, mode_t mode)
@@ -492,11 +460,8 @@ int ace_crm_retry_mkdir(const char *path, mode_t mode)
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
-                               (uint32_t)(mode & 07777), 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_MKDIR, path, NULL,
-                           (uint32_t)(mode & 07777), 0, mkdir(path, mode), 0);
+                           (uint32_t)(mode & 07777), 0, mkdir(path, mode));
 }
 
 int ace_crm_retry_chmod(const char *path, mode_t mode)
@@ -506,11 +471,8 @@ int ace_crm_retry_chmod(const char *path, mode_t mode)
         errno = EINVAL;
         return -1;
     }
-    if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
-                               (uint32_t)(mode & 07777), 0, -1, 1);
     return named_operation(ACE_PRIVILEGE_ACCESS_SET_PROTECTION, path, NULL,
-                           (uint32_t)(mode & 07777), 0, chmod(path, mode), 0);
+                           (uint32_t)(mode & 07777), 0, chmod(path, mode));
 }
 
 /*
@@ -532,12 +494,9 @@ int ace_crm_retry_utime(const char *path, const struct utimbuf *times)
         return -1;
     }
     when = times ? (int64_t)times->modtime : (int64_t)time(NULL);
-    if (needs_crm_regardless(path))
-        return named_operation(ACE_PRIVILEGE_ACCESS_SET_DATE, path, NULL, 0,
-                               when, -1, 1);
     local = utime(path, times);
     return named_operation(ACE_PRIVILEGE_ACCESS_SET_DATE, path, NULL, 0, when,
-                           local, 0);
+                           local);
 }
 
 int ace_crm_retry_last_was_privileged(void)

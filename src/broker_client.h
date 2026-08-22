@@ -137,6 +137,9 @@ int native_broker_task_list(char *result, size_t result_size);
  * Paths are absolute host paths.  Which resolution domain they end up in is
  * the broker's decision, because that is where path translation lives.
  */
+/* 0 when the operation was performed, 1 when the CRM answered and refused,
+   -1 when the exchange did not complete.  errno carries the refusal in the
+   middle case and the transport failure in the last. */
 int native_broker_privop(uint32_t privop, const char *path, const char *second,
                          uint32_t flags, uint32_t mode, int64_t when,
                          int *received_fd);
