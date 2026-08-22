@@ -308,7 +308,24 @@ enum ace_privilege_operation {
      * Choosing what that string should say is the seam's business, not this
      * worker's: see MakeLink() in src/native_dos.c.
      */
-    ACE_PRIVILEGE_ACCESS_SYMLINK = 0x020A
+    ACE_PRIVILEGE_ACCESS_SYMLINK = 0x020A,
+    /*
+     * Give one existing object a second name.
+     *
+     * Two paths, resolved in one request under one domain, like rename and
+     * for the same reason: a link whose halves were authorised separately is
+     * not one operation.
+     *
+     * Nothing here decides what may be linked.  The kernel refuses a hard
+     * link to a directory for root exactly as it does for anyone -- the
+     * directory tree stops being a tree if it does not -- so this worker is
+     * not the place that policy lives, and a caller that asks gets the same
+     * refusal it would have got itself.  AmigaDOS does allow directory hard
+     * links, which is a difference this boundary cannot paper over and should
+     * not pretend to: see MakeLink() in src/native_dos.c, where the refusal
+     * is turned into something a person can act on.
+     */
+    ACE_PRIVILEGE_ACCESS_LINK = 0x020B
 };
 
 /*

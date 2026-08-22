@@ -432,6 +432,46 @@ int ace_crm_retry_unlink(const char *path)
                            remove_either_kind(path), 0);
 }
 
+/*
+ * Give an object a second name, escalating a permission refusal.
+ *
+ * With one refusal deliberately not escalated.  A hard link to a directory is
+ * refused by the kernel itself, for root exactly as for anyone: a directory
+ * with two parents is no longer a tree, and everything that walks one --
+ * "..", a recursive delete, a filesystem check -- depends on it being one.
+ * Asking the worker would spend an authorisation on an operation that cannot
+ * succeed, and an authorisation prompt that buys nothing is precisely the
+ * thing this design refuses to produce.
+ *
+ * The distinction is worth making carefully, because EPERM says both things
+ * here.  On a file it can mean an ordinary refusal that privilege would fix
+ * -- a protected_hardlinks refusal, say -- and that one escalates.
+ */
+int ace_crm_retry_link(const char *from, const char *to)
+{
+    struct stat information;
+    int failure;
+
+    last_was_privileged = 0;
+    if (!from || !to) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (needs_crm_regardless(from) || needs_crm_regardless(to))
+        return named_operation(ACE_PRIVILEGE_ACCESS_LINK, from, to, 0, 0, -1,
+                               1);
+    if (link(from, to) == 0)
+        return 0;
+    failure = errno;
+    if (failure == EPERM && lstat(from, &information) == 0 &&
+        S_ISDIR(information.st_mode)) {
+        errno = failure;
+        return -1;
+    }
+    errno = failure;
+    return named_operation(ACE_PRIVILEGE_ACCESS_LINK, from, to, 0, 0, -1, 0);
+}
+
 int ace_crm_retry_rename(const char *from, const char *to)
 {
     last_was_privileged = 0;

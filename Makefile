@@ -135,7 +135,7 @@ AROS_WHY_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Why.c
 AROS_PROMPT_SRC := $(AROS_ROOT)/workbench/c/shellcommands/Prompt.c
 INSTALL_LNX_SRC := src/lnx.c
 AROS_MAKEDIR_SRC := $(AROS_ROOT)/workbench/c/MakeDir.c
-AROS_MAKELINK_SRC := $(AROS_ROOT)/workbench/c/MakeLink.c
+MAKELINK_SRC := src/makelink.c
 AROS_JOIN_SRC := $(AROS_ROOT)/workbench/c/Join.c
 AROS_EVAL_SRC := $(AROS_ROOT)/workbench/c/Eval.c
 AROS_EVAL_PARSER_SRC := $(AROS_ROOT)/workbench/c/evalParser.y
@@ -528,7 +528,7 @@ $(BUILD)/ace-requestor-gui.o: src/ace_requestor_gui.c \
 $(BUILD)/makedir.o: $(AROS_MAKEDIR_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
-$(BUILD)/MakeLink.o: $(AROS_MAKELINK_SRC) | $(BUILD)
+$(BUILD)/MakeLink.o: $(MAKELINK_SRC) | $(BUILD)
 	$(CC) $(CFLAGS) -I$(COMPAT) -Dmain=ace_command_entry_main -c $< -o $@
 
 $(BUILD)/Join.o: $(AROS_JOIN_SRC) | $(BUILD)

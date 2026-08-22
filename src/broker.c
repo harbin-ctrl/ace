@@ -2545,16 +2545,17 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
         if (!value || !*value)
             return EINVAL;
         second = value;
-    } else if (request->privop == ACE_PRIVILEGE_ACCESS_RENAME) {
+    } else if (request->privop == ACE_PRIVILEGE_ACCESS_RENAME ||
+               request->privop == ACE_PRIVILEGE_ACCESS_LINK) {
         uint32_t second_flags = flags;
 
         if (!value || !*value || value[0] != '/')
             return EINVAL;
         second = privop_domain_path(value, &second_flags);
-        /* Both halves must be in the same domain.  A rename that crossed from
-           a volume into the host tree is not a rename this layer can express,
-           and pretending otherwise would resolve the two ends under different
-           rules. */
+        /* Both halves must be in the same domain.  A rename or a hard link
+           that crossed from a volume into the host tree is not an operation
+           this layer can express, and pretending otherwise would resolve the
+           two ends under different rules. */
         if ((second_flags & ACE_PRIVILEGE_FLAG_HOST_PATH) !=
             (flags & ACE_PRIVILEGE_FLAG_HOST_PATH))
             return EXDEV;

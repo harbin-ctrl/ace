@@ -229,6 +229,46 @@ out=$(ace root "$repo_dir/build/Type" "$closed_name/link" 2>&1) ||
     fail "the link could not be followed: $out"
 [ "$out" = "linked" ] || fail "the link resolved to the wrong thing: $out"
 
+#    A hard link where only root may write, and one the host will never make.
+#    The second is the interesting half: AmigaDOS allows a hard link to a
+#    directory and Linux refuses one to everybody, so escalating it would
+#    spend an authorisation on an operation that cannot succeed either way.
+#    An authorisation prompt that buys nothing is the exact habit this design
+#    refuses to teach, so the count must not move.
+ace root "$repo_dir/build/MakeLink" "$closed_name/hard" "$closed_name/target" HARD \
+    >/dev/null 2>&1
+sudo -n test -f "$closed_dir/hard" ||
+    fail 'a hard link could not be made in the closed directory'
+[ "$(sudo -n stat -c %i "$closed_dir/target")" = \
+  "$(sudo -n stat -c %i "$closed_dir/hard")" ] ||
+    fail 'the privileged hard link is not a second name for the same object'
+
+#    In the user's own directory the kernel refuses on the spot, and that
+#    refusal is complete information: nothing is asked of the worker, because
+#    nothing it could do would change the answer.
+mkdir -p "$test_dir/a-drawer" || fail 'could not make the test drawer'
+drawer_name=$(printf '%s' "$plain_name" | sed 's/plain\.txt$/a-drawer/')
+link_name=$(printf '%s' "$plain_name" | sed 's/plain\.txt$/drawer-link/')
+before=$(privileged_processes)
+out=$(ace root "$repo_dir/build/MakeLink" "$link_name" "$drawer_name" HARD FORCE 2>&1 || true)
+case "$out" in
+    *"cannot hard-link directories"*) ;;
+    *) fail "a directory hard link did not report the host refusal: $out" ;;
+esac
+[ "$(privileged_processes)" -eq "$before" ] ||
+    fail 'an operation no privilege can perform still asked for privilege'
+
+#    In the closed directory the refusal arrives only after asking, because
+#    until then the user cannot tell a directory they may not link from a
+#    directory they may not reach.  The report must still be the right one.
+sudo -n mkdir -p "$closed_dir/a-drawer" || fail 'could not make the test drawer'
+out=$(ace root "$repo_dir/build/MakeLink" "$closed_name/drawer-link" \
+    "$closed_name/a-drawer" HARD FORCE 2>&1 || true)
+case "$out" in
+    *"cannot hard-link directories"*) ;;
+    *) fail "a directory hard link in a closed drawer misreported: $out" ;;
+esac
+
 # 7. A directory of symlinks, listed twice: once from where the user can read
 #    it, once from where only root can.  The two listings must agree.
 #

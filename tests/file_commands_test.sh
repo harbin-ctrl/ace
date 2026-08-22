@@ -65,12 +65,40 @@ run_command MakeLink SYS:C/soft-link SYS:C/source.txt
 cmp "$sys_dir/C/soft-link" "$sys_dir/C/source.txt" || \
     fail 'the soft link does not resolve to the file it names'
 
+# AmigaDOS hard-links directories; no Linux filesystem does, at any privilege
+# level.  Both refusals must say which one they are: without FORCE the answer
+# is the AmigaDOS rule, and with it the answer is that the host cannot, which
+# is the difference between "try harder" and "stop".
+mkdir -p "$sys_dir/C/a-drawer"
+out=$(run_command MakeLink SYS:C/dir-link SYS:C/a-drawer HARD 2>&1 || true)
+case "$out" in
+    *"FORCE"*) ;;
+    *) fail "MakeLink HARD on a drawer did not mention FORCE: $out" ;;
+esac
+out=$(run_command MakeLink SYS:C/dir-link SYS:C/a-drawer HARD FORCE 2>&1 || true)
+case "$out" in
+    *"cannot hard-link directories"*) ;;
+    *) fail "MakeLink HARD FORCE on a drawer did not report the host refusal: $out" ;;
+esac
+if [ -e "$sys_dir/C/dir-link" ]; then
+    fail 'MakeLink reported a refusal and made the link anyway'
+fi
+
+# A refused soft link says so.  Upstream returns a failure code and prints
+# nothing, which looks exactly like success from a script.
+out=$(run_command MakeLink SYS:C/missing-drawer/link SYS:C/source.txt 2>&1 || true)
+[ -n "$out" ] || fail 'a refused soft link printed nothing at all'
+
 run_command MakeLink SYS:C/dangling-link SYS:C/missing-target
 [ -L "$sys_dir/C/dangling-link" ] || \
     fail 'MakeLink did not create a dangling soft link'
 
 run_command MakeLink SYS:C/hard-link SYS:C/source.txt HARD
 [ -f "$sys_dir/C/hard-link" ] || fail 'MakeLink did not create a hard link'
+# Not merely a file of the same name: a hard link is a second name for one
+# object, and the inode is the only thing that says so.
+[ "$(stat -c %i "$sys_dir/C/source.txt")" = "$(stat -c %i "$sys_dir/C/hard-link")" ] || \
+    fail 'MakeLink HARD made a separate object rather than a second name'
 [ "$(stat -c '%i' "$sys_dir/C/hard-link")" = \
   "$(stat -c '%i' "$sys_dir/C/source.txt")" ] || \
     fail 'MakeLink hard link does not share the source inode'

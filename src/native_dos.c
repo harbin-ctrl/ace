@@ -2826,10 +2826,38 @@ LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
         }
     } else {
         source = (struct native_lock *)destination;
-        if (!source || link(source->path, link_path) != 0) {
-            if (!source)
-                errno = EINVAL;
+        if (!source) {
+            errno = EINVAL;
             set_native_broker_error();
+            return DOSFALSE;
+        }
+        if (ace_crm_retry_link(source->path, link_path) != 0) {
+            struct stat information;
+            int failure = errno;
+
+            set_native_broker_error();
+            /*
+             * AmigaDOS hard-links directories; Linux does not, for anyone.
+             * A directory with two parents is no longer a tree, and "..",
+             * recursive deletion and filesystem checking all rest on it being
+             * one, so the kernel refuses it at every privilege level.
+             *
+             * Reported rather than left as a bare refusal.  The two are not
+             * the same sentence: "you may not do this here" invites the user
+             * to try again with more privilege, which will fail identically,
+             * while "this filesystem cannot do this at all" tells them the
+             * thing they need in order to stop.  Asked rather than assumed --
+             * if a filesystem ever does support it the link simply succeeds
+             * and nothing is claimed about it.
+             */
+            /* Through the escalating stat, not lstat(): the object may be
+               somewhere this process cannot look, which is the case the
+               retry existed for and would otherwise be the one case that
+               reported the refusal without explaining it. */
+            if (failure == EPERM &&
+                ace_crm_retry_stat(source->path, &information, 0) == 0 &&
+                S_ISDIR(information.st_mode))
+                native_ioerr = ERROR_NOT_IMPLEMENTED;
             return DOSFALSE;
         }
     }

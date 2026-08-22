@@ -325,13 +325,15 @@ static int perform_named(int channel,
     int parent;
     int outcome;
 
-    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME) {
+    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME ||
+        request->operation == ACE_PRIVILEGE_ACCESS_LINK) {
         /*
          * Both halves in one request, resolved here, one after the other,
          * with nothing in between.  A rename whose halves were authorised
          * separately is not a rename: it is two operations with a window
          * between them, and the second one acts on whatever the name means by
-         * the time it runs.
+         * the time it runs.  A hard link is the same shape and gets the same
+         * treatment.
          */
         char from_directory[PATH_MAX];
         const char *from_name = NULL;
@@ -370,7 +372,11 @@ static int perform_named(int channel,
             close(from_parent);
             return send_reply(channel, request->request_id, status, failure);
         }
-        outcome = renameat(from_parent, from_name, parent, name);
+        /* linkat() without AT_SYMLINK_FOLLOW links the link itself when the
+           name is one, which is what a second name for that object means. */
+        outcome = request->operation == ACE_PRIVILEGE_ACCESS_LINK
+                      ? linkat(from_parent, from_name, parent, name, 0)
+                      : renameat(from_parent, from_name, parent, name);
         close(from_parent);
         close(parent);
         return send_reply(channel, request->request_id,
@@ -475,6 +481,7 @@ static int perform(int channel, const struct ace_privilege_request *request,
        Symlink carries a path and the link's contents, which is not a path at
        all and is never resolved. */
     if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME ||
+        request->operation == ACE_PRIVILEGE_ACCESS_LINK ||
         request->operation == ACE_PRIVILEGE_ACCESS_SYMLINK)
         return perform_named(channel, request, payload);
 
