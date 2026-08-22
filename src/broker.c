@@ -2371,6 +2371,29 @@ static int resolve_path(struct broker_session *session, const char *input,
                 errno = EEXIST;
                 return -1;
             default:
+                /*
+                 * A name with a colon names a device, a volume or an assign,
+                 * and this one names none of them.  Saying so is the whole
+                 * answer, because AmigaDOS has no second reading available: a
+                 * colon cannot appear in a filename, so "NAME:" is never
+                 * something else worth trying.
+                 *
+                 * Falling through to resolve it against the current directory
+                 * invented a file nobody had asked for.  "Copy x TO NIL:"
+                 * made a drawer called "NIL:" and put a real copy of x inside
+                 * it; "Type something >NIL:" tried to write into that drawer
+                 * and failed with a raw EISDIR.  Every unimplemented device
+                 * behaved that way, quietly, and the quiet is the problem --
+                 * an unmounted device is an ordinary thing to ask about and
+                 * has an ordinary answer.
+                 *
+                 * Only where the colon comes before any slash, which is the
+                 * only place AmigaDOS reads one as a device.
+                 */
+                if (!memchr(input, '/', name_length)) {
+                    errno = ENODEV;
+                    return -1;
+                }
                 break;
             }
         }

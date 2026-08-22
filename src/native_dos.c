@@ -2549,10 +2549,16 @@ BPTR Open(CONST_STRPTR name, LONG mode)
                            ERROR_OBJECT_NOT_FOUND : open_errno;
     } else if (native_resolve_path_for_open(name, resolved,
                                            sizeof(resolved)) != 0) {
-        native_ioerr = errno == ENOENT || errno == 0 ?
-                       ERROR_OBJECT_NOT_FOUND : errno;
-        if (errno == ENXIO)
-            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+        /* Through the shared mapping rather than by hand: a name that failed
+           to resolve fails for reasons this function has no opinion about,
+           and every one of them already has an AmigaDOS counterpart there.
+           Assigning the errno straight to native_ioerr is what printed
+           "Error 19" at a shell that had redirected into an unmounted
+           device, where AmigaDOS says the device is not mounted. */
+        if (errno == 0)
+            native_ioerr = ERROR_OBJECT_NOT_FOUND;
+        else
+            set_native_broker_error();
         return NULL;
     } else {
         errno = 0;
@@ -3351,6 +3357,9 @@ static void set_native_broker_error(void)
        opened, and the broker answers it in advance rather than letting the
        open happen at all. */
     case ENXIO:       native_ioerr = ERROR_OBJECT_WRONG_TYPE; break;
+    /* A device, volume or assign that is not there.  AmigaDOS asks the user
+       to insert the volume and, when it does not appear, says this. */
+    case ENODEV:      native_ioerr = ERROR_DEVICE_NOT_MOUNTED; break;
     case EROFS:       native_ioerr = ERROR_DISK_WRITE_PROTECTED; break;
     case ENOSPC:      native_ioerr = ERROR_DISK_FULL; break;
     case ENAMETOOLONG: native_ioerr = ERROR_INVALID_COMPONENT_NAME; break;

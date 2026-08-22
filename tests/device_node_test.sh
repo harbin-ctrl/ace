@@ -122,4 +122,25 @@ run Delete SYS:C/a-socket >/dev/null 2>&1 ||
     fail 'a socket could not be deleted'
 [ ! -e "$sys_dir/C/a-socket" ] || fail 'Delete reported success and left the socket'
 
+# A name with a colon is a device, a volume or an assign.  One that is none of
+# them has an ordinary answer -- AmigaDOS says the device is not mounted --
+# and no second reading worth trying, because a colon cannot appear in a
+# filename.  Resolving it against the current directory instead invented
+# files: "Copy x TO NIL:" made a drawer called "NIL:" and put a real copy of x
+# in it, and every unimplemented device did the same thing quietly.
+for absent in NIL: ABC: DF0: FOO:bar; do
+    out=$(run Type "$absent" 2>&1 || true)
+    case "$out" in
+        *"not mounted"*) ;;
+        *) fail "$absent was not reported as an unmounted device: $out" ;;
+    esac
+done
+out=$(run Copy SYS:C/a-file TO ABC: 2>&1 || true)
+[ ! -e "$sys_dir/C/ABC:" ] && [ ! -e "ABC:" ] ||
+    fail 'Copy to an unmounted device invented something to copy into'
+
+# And the assigns that do exist are untouched by that.
+out=$(run Type SYS:C/a-file 2>&1) || fail "a real assign stopped working: $out"
+[ "$out" = "ordinary" ] || fail "a real assign read back wrongly: $out"
+
 printf 'ACE named the nodes, refused to open them, and did not stall doing it\n'
