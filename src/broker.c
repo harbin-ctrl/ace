@@ -108,6 +108,12 @@ struct broker_session {
     int32_t result2;
     int32_t fail_level;
     char prompt[MAX_VALUE];
+    /* Operations this session needed the CRM to complete, since the last time
+       the shell asked.  Counted here because the commands that perform them
+       are separate processes: each one exits with what it knew.  See
+       AMIGA_BROKER_TALLY. */
+    uint32_t privileged_operations;
+    int tally_enabled;
     pid_t foreground_pid;
     uint64_t foreground_task;
     uint32_t pending_foreground_signals;
@@ -4142,6 +4148,37 @@ static int handle_client(struct broker_connection *connection)
         break;
     }
 
+    case AMIGA_BROKER_TALLY:
+        switch (request.flags) {
+        case AMIGA_BROKER_TALLY_ON:
+            session->tally_enabled = 1;
+            /* Anything counted before this moment was counted while nobody
+               was watching, and belongs to no reporting period. */
+            session->privileged_operations = 0;
+            break;
+        case AMIGA_BROKER_TALLY_OFF:
+            session->tally_enabled = 0;
+            session->privileged_operations = 0;
+            break;
+        case AMIGA_BROKER_TALLY_STATE:
+            snprintf(result, sizeof(result), "%s",
+                     session->tally_enabled ? "ON" : "OFF");
+            break;
+        case AMIGA_BROKER_TALLY_REPORT:
+            snprintf(result, sizeof(result), "%lu",
+                     session->tally_enabled ?
+                         (unsigned long)session->privileged_operations : 0UL);
+            /* Cleared whether or not it was reported, so the count always
+               covers one prompt to the next rather than accumulating while
+               the tally happens to be off. */
+            session->privileged_operations = 0;
+            break;
+        default:
+            status = EINVAL;
+            break;
+        }
+        break;
+
     case AMIGA_BROKER_SETRESULT: {
         char *end;
         long return_code = strtol(path, &end, 10);
@@ -4169,6 +4206,12 @@ static int handle_client(struct broker_connection *connection)
         privop_used = 1;
         status = perform_privileged_operation(&request, path, value,
                                               &privop_fd);
+        /* Only when it actually happened.  An operation the CRM could not
+           perform either did not require root to complete -- it did not
+           complete -- and counting the attempt would tell the user that
+           privilege had been used where none had. */
+        if (status == 0 && session->privileged_operations < UINT32_MAX)
+            session->privileged_operations++;
         break;
 
     default:
@@ -4193,6 +4236,7 @@ static int handle_client(struct broker_connection *connection)
                request.operation == AMIGA_BROKER_LISTVARS ||
                request.operation == AMIGA_BROKER_GETCLI ||
                request.operation == AMIGA_BROKER_GETRESULT ||
+               request.operation == AMIGA_BROKER_TALLY ||
                request.operation == AMIGA_BROKER_LISTDOS ||
                request.operation == AMIGA_BROKER_LISTASSIGNS ||
                request.operation == AMIGA_BROKER_LISTPATH ||

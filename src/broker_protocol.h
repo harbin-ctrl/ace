@@ -222,7 +222,19 @@ enum amiga_broker_operation {
      * and cannot leave its volume; anything else goes as a host path.  The
      * command does not need to know the difference and is not asked.
      */
-    AMIGA_BROKER_PRIVOP = 39
+    AMIGA_BROKER_PRIVOP = 39,
+
+    /*
+     * The session's count of operations that needed the CRM to complete, and
+     * whether the shell is reporting it.
+     *
+     * Counted here rather than in the commands because the commands are
+     * separate processes: each one lives for a single operation and takes its
+     * knowledge with it when it exits, while the broker is the single point
+     * every privileged request already passes through.  The flags say which
+     * of the four things is wanted; see AMIGA_BROKER_TALLY_*.
+     */
+    AMIGA_BROKER_TALLY = 40
 };
 
 #define AMIGA_BROKER_ASSIGN_REMOVE       0x0001u
@@ -245,6 +257,20 @@ enum amiga_broker_operation {
 #define AMIGA_BROKER_VAR_VARIABLE 0x0020u
 /* Internal callers may already hold an absolute Linux path (for example a
  * native lock passed to CurrentDir). It must not receive Amiga '/' semantics. */
+/*
+ * What an AMIGA_BROKER_TALLY request is asking for, in its flags.
+ *
+ * REPORT is the one the shell sends before each prompt: it answers with the
+ * count and clears it, so the number always covers the ground between one
+ * prompt and the next.  It answers zero while the tally is off, so a session
+ * that turns it on does not immediately receive a backlog of operations
+ * nobody was counting.
+ */
+#define AMIGA_BROKER_TALLY_REPORT 0u
+#define AMIGA_BROKER_TALLY_ON     1u
+#define AMIGA_BROKER_TALLY_OFF    2u
+#define AMIGA_BROKER_TALLY_STATE  3u
+
 #define AMIGA_BROKER_PATH_HOST  0x80000000u
 
 #define AMIGA_BROKER_MODE_ROOT       0x0001u

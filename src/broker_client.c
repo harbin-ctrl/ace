@@ -1307,6 +1307,19 @@ int native_broker_task_list(char *result, size_t result_size)
                           result_size);
 }
 
+/*
+ * The session's tally of operations that needed root, and its on/off state.
+ *
+ * One call covers all four because they are one piece of session state; the
+ * flags say which part of it is wanted.  The shell sends REPORT before each
+ * prompt, and Tally sends the rest.
+ */
+int native_broker_tally(uint32_t what, char *result, size_t result_size)
+{
+    return broker_request(AMIGA_BROKER_TALLY, "", "", what, result,
+                          result_size);
+}
+
 int native_broker_view_root(char *result, size_t result_size)
 {
     return broker_request(AMIGA_BROKER_VIEWROOT, NULL, NULL, 0, result,

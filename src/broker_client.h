@@ -146,6 +146,10 @@ int native_broker_privop(uint32_t privop, const char *path, const char *second,
 
 /* Where the FMM/CRM service put the device roots, or empty for a session without a
    device view.  Paths beneath it exist only in the FMM/CRM service's namespace. */
+/* The session's count of operations that needed the CRM, and whether the
+   shell is reporting it.  `what` is one of AMIGA_BROKER_TALLY_*. */
+int native_broker_tally(uint32_t what, char *result, size_t result_size);
+
 int native_broker_view_root(char *result, size_t result_size);
 
 #endif
