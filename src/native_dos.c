@@ -2649,6 +2649,125 @@ LONG Rename(CONST_STRPTR old_name, CONST_STRPTR new_name)
     return DOSTRUE;
 }
 
+/*
+ * How much of two absolute paths is shared, ending on a component boundary.
+ *
+ * Boundary matters: "/usr/lib" and "/usr/libexec" share the seven characters
+ * of "/usr/li", and treating that as a shared path would produce a relative
+ * target that walks into a directory nobody named.
+ */
+static size_t native_common_directory(const char *first, const char *second)
+{
+    size_t index = 0;
+    size_t boundary = 0;
+
+    while (first[index] && second[index] && first[index] == second[index]) {
+        if (first[index] == '/')
+            boundary = index;
+        index++;
+    }
+    if ((!first[index] || first[index] == '/') &&
+        (!second[index] || second[index] == '/'))
+        boundary = index;
+    return boundary;
+}
+
+/*
+ * What a soft link on this volume should say.
+ *
+ * A link's target is text, and the text has to keep meaning something after
+ * ACE has exited -- to the user's own processes, to their file manager, to
+ * the machine next boot.  Within one volume a relative target does that: it
+ * describes a route between two objects on the same disk, which is true
+ * wherever that disk is mounted, and it is what AmigaDOS means by a link
+ * inside a volume.  An absolute host path would be true only of this mount,
+ * and inside the device view it would be true only of this session -- a link
+ * that looked right from inside ACE and was broken for everyone else.
+ *
+ * Returns -1 when the two are not on one volume, which is not an error: the
+ * caller then has a different, equally honest answer to give.
+ */
+static int native_relative_target_for_link(const char *link_path,
+                                           const char *target_path,
+                                           char *result, size_t result_size)
+{
+    char directory[PATH_MAX];
+    const char *slash = strrchr(link_path, '/');
+    const char *remainder;
+    size_t common;
+    size_t used = 0;
+
+    if (!slash || slash == link_path || target_path[0] != '/')
+        return -1;
+    if ((size_t)(slash - link_path) >= sizeof(directory))
+        return -1;
+    memcpy(directory, link_path, (size_t)(slash - link_path));
+    directory[slash - link_path] = '\0';
+
+    common = native_common_directory(directory, target_path);
+    /* One step up for each component of the link's own directory that lies
+       below the shared part. */
+    for (const char *cursor = directory + common; *cursor; cursor++) {
+        if (*cursor != '/')
+            continue;
+        if (used + 3 >= result_size)
+            return -1;
+        memcpy(result + used, "../", 3);
+        used += 3;
+    }
+    remainder = target_path + common;
+    while (*remainder == '/')
+        remainder++;
+    if (!*remainder) {
+        /* The target is a directory the link is already inside. */
+        if (!used) {
+            if (result_size < 2)
+                return -1;
+            strcpy(result, ".");
+            return 0;
+        }
+        result[used - 1] = '\0';   /* drop the trailing slash of the last ".." */
+        return 0;
+    }
+    if (used + strlen(remainder) + 1 > result_size)
+        return -1;
+    strcpy(result + used, remainder);
+    return 0;
+}
+
+/* Whether a resolved host path lives in the fmm's device view, and so names
+   an object only this session can reach. */
+static int native_path_is_device_view(const char *path)
+{
+    char root[PATH_MAX];
+    size_t length;
+
+    if (native_broker_view_root(root, sizeof(root)) != 0 || !root[0])
+        return 0;
+    length = strlen(root);
+    return strncmp(path, root, length) == 0 &&
+           (path[length] == '/' || path[length] == '\0');
+}
+
+/* The volume an ACE name belongs to: the text before its colon. */
+static int native_volume_of(const char *host_path, char *result,
+                            size_t result_size)
+{
+    char name[PATH_MAX];
+    char *colon;
+
+    if (native_broker_name_from_host(host_path, name, sizeof(name)) != 0)
+        return -1;
+    colon = strchr(name, ':');
+    if (!colon)
+        return -1;
+    *colon = '\0';
+    if (strlen(name) >= result_size)
+        return -1;
+    strcpy(result, name);
+    return 0;
+}
+
 LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
 {
     char link_path[PATH_MAX];
@@ -2661,12 +2780,47 @@ LONG MakeLink(CONST_STRPTR name, IPTR destination, LONG soft)
         return DOSFALSE;
     }
     if (soft) {
+        char stored[PATH_MAX];
+        char link_volume[PATH_MAX];
+        char target_volume[PATH_MAX];
+
         if (native_broker_resolve_path((const char *)destination, target_path,
                                        sizeof(target_path)) != 0) {
             set_native_broker_error();
             return DOSFALSE;
         }
-        if (symlink(target_path, link_path) != 0) {
+        /*
+         * Same volume: say it relatively, so the link survives this session
+         * and this mount.  Different volumes: AmigaDOS allows that -- a soft
+         * link is a name, not a location, and is not restricted to one volume
+         * -- so the absolute host path stands, which is what ReadLink turns
+         * back into a volume-qualified ACE name.
+         *
+         * The one arrangement with no honest answer is a cross-volume link
+         * touching the device view.  That path exists only inside the fmm's
+         * namespace and only while this session lasts, so writing it into a
+         * filesystem would leave a link that is broken for every process that
+         * is not this ACE -- including the user's own, and including ACE
+         * tomorrow.  Refusing says so now rather than later.
+         */
+        if (native_volume_of(link_path, link_volume, sizeof(link_volume)) == 0 &&
+            native_volume_of(target_path, target_volume,
+                             sizeof(target_volume)) == 0 &&
+            strcmp(link_volume, target_volume) == 0 &&
+            native_relative_target_for_link(link_path, target_path, stored,
+                                            sizeof(stored)) == 0) {
+            /* relative target chosen */
+        } else if (native_path_is_device_view(link_path) ||
+                   native_path_is_device_view(target_path)) {
+            native_ioerr = ERROR_OBJECT_WRONG_TYPE;
+            return DOSFALSE;
+        } else if (strlen(target_path) < sizeof(stored)) {
+            strcpy(stored, target_path);
+        } else {
+            native_ioerr = ERROR_LINE_TOO_LONG;
+            return DOSFALSE;
+        }
+        if (ace_crm_retry_symlink(stored, link_path) != 0) {
             set_native_broker_error();
             return DOSFALSE;
         }

@@ -387,6 +387,38 @@ static int remove_either_kind(const char *path)
     return -1;
 }
 
+/*
+ * Create a symlink, escalating a permission refusal.
+ *
+ * The argument order is symlink()'s, target first, for the same reason the
+ * readlink wrapper keeps readlink()'s: every caller was written against the
+ * system call.
+ *
+ * The target is passed through untouched.  What it should say was decided by
+ * the caller -- see MakeLink() in native_dos.c, which has the volume
+ * information needed to choose -- and this layer has no business improving on
+ * a string it will never resolve.
+ */
+int ace_crm_retry_symlink(const char *target, const char *path)
+{
+    int failure;
+
+    last_was_privileged = 0;
+    if (!target || !*target || !path) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (needs_crm_regardless(path))
+        return named_operation(ACE_PRIVILEGE_ACCESS_SYMLINK, path, target, 0,
+                               0, -1, 1);
+    if (symlink(target, path) == 0)
+        return 0;
+    failure = errno;
+    errno = failure;
+    return named_operation(ACE_PRIVILEGE_ACCESS_SYMLINK, path, target, 0, 0,
+                           -1, 0);
+}
+
 int ace_crm_retry_unlink(const char *path)
 {
     last_was_privileged = 0;

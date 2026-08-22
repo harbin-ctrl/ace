@@ -55,8 +55,15 @@ run_command Touch SYS:C/touched.txt
 
 run_command MakeLink SYS:C/soft-link SYS:C/source.txt
 [ -L "$sys_dir/C/soft-link" ] || fail 'MakeLink did not create a soft link'
-[ "$(readlink "$sys_dir/C/soft-link")" = "$sys_dir/C/source.txt" ] || \
-    fail 'MakeLink soft link points at the wrong target'
+# Both ends are on one volume, so the target is stored as a route between them
+# rather than as this mount's absolute path.  That is what AmigaDOS means by a
+# link inside a volume, and it is the only spelling that still means the same
+# thing after ACE exits -- an absolute host path would be true of this mount
+# only, and inside the device view, of this session only.
+[ "$(readlink "$sys_dir/C/soft-link")" = "source.txt" ] || \
+    fail "MakeLink stored the wrong target: $(readlink "$sys_dir/C/soft-link")"
+cmp "$sys_dir/C/soft-link" "$sys_dir/C/source.txt" || \
+    fail 'the soft link does not resolve to the file it names'
 
 run_command MakeLink SYS:C/dangling-link SYS:C/missing-target
 [ -L "$sys_dir/C/dangling-link" ] || \

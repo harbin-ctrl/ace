@@ -244,7 +244,7 @@ int ace_amiga_posix_symlink(const char *target, const char *link_path)
         return -1;
     /* The target is data in a symlink and may intentionally be relative to
        the link. Only the link pathname itself is an AmigaDOS pathname. */
-    return symlink(target, link_resolved);
+    return ace_crm_retry_symlink(target, link_resolved);
 }
 
 ssize_t ace_amiga_posix_readlink(const char *path, char *buffer,

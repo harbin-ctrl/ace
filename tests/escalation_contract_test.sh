@@ -212,6 +212,23 @@ owner=$(sudo -n stat -c %U "$secret")
 [ "$owner" = "root" ] ||
     fail "stamping a protected file changed its owner to $owner"
 
+#    A link made where only root may write.  The target is stored as a route
+#    within the volume, so the link the user ends up owning means the same
+#    thing to every process that reads it -- including after ACE has exited,
+#    which an absolute path into a per-session mount tree would not.
+sudo -n sh -c "printf 'linked\n' > $closed_dir/target" ||
+    fail 'could not create the link target'
+ace root "$repo_dir/build/MakeLink" "$closed_name/link" "$closed_name/target" \
+    >/dev/null 2>&1
+stored=$(sudo -n readlink "$closed_dir/link" 2>/dev/null || true)
+[ -n "$stored" ] || fail 'MakeLink created nothing in the closed directory'
+case "$stored" in
+    /*) fail "the link stored an absolute path into this session: $stored" ;;
+esac
+out=$(ace root "$repo_dir/build/Type" "$closed_name/link" 2>&1) ||
+    fail "the link could not be followed: $out"
+[ "$out" = "linked" ] || fail "the link resolved to the wrong thing: $out"
+
 # 7. A directory of symlinks, listed twice: once from where the user can read
 #    it, once from where only root can.  The two listings must agree.
 #

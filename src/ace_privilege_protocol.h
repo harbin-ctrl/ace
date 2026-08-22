@@ -283,7 +283,32 @@ enum ace_privilege_operation {
      * value: AmigaDOS keeps one date per object and inventing a second one
      * here would be this layer making up a fact about the file.
      */
-    ACE_PRIVILEGE_ACCESS_SET_DATE = 0x0209
+    ACE_PRIVILEGE_ACCESS_SET_DATE = 0x0209,
+    /*
+     * Create one symlink, with one target.
+     *
+     * The odd one out, and worth saying why.  Every other opcode here names
+     * objects: the worker resolves each one under its own constraints and
+     * acts on what it finds.  A symlink's target is not an object -- it is
+     * text that some later resolution will interpret, possibly by a process
+     * that is not this worker and not ACE.  So it is carried as content and
+     * never resolved here.  This worker does not look at it, does not check
+     * that it exists, and does not care whether it is relative or absolute:
+     * it writes the string it was handed, which is precisely what symlink(2)
+     * does and precisely what AmigaDOS MakeLink means by a soft link.
+     *
+     * That the target is unresolved is what makes it safe rather than what
+     * makes it dangerous.  Resolving it would mean this worker following a
+     * path chosen by the far side; writing it means the string sits in a file
+     * until something else resolves it, under whatever constraints that
+     * something else has.  The link itself is created beneath the same
+     * resolution rules as any other object, so a link cannot be placed
+     * outside the domain it was asked for.
+     *
+     * Choosing what that string should say is the seam's business, not this
+     * worker's: see MakeLink() in src/native_dos.c.
+     */
+    ACE_PRIVILEGE_ACCESS_SYMLINK = 0x020A
 };
 
 /*

@@ -774,7 +774,15 @@ int ace_crm(struct ace_privilege_connection *worker, uint32_t operation,
     first_length = strlen(path) + 1;
     total = first_length;
     if (second) {
-        if (!*second || *second == '/') {
+        /*
+         * A symlink's target is the one second string that is not a path.
+         * It is the link's contents: the far side never resolves it, so a
+         * leading slash carries no domain meaning here and refusing one would
+         * refuse an ordinary absolute link.  Everything else that takes two
+         * strings takes two paths, and those keep the rule.
+         */
+        if (!*second ||
+            (*second == '/' && operation != ACE_PRIVILEGE_ACCESS_SYMLINK)) {
             errno = EINVAL;
             return -1;
         }

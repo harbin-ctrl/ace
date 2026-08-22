@@ -2537,7 +2537,15 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
         return errno ? errno : EACCES;
 
     first = privop_domain_path(path, &flags);
-    if (request->privop == ACE_PRIVILEGE_ACCESS_RENAME) {
+    if (request->privop == ACE_PRIVILEGE_ACCESS_SYMLINK) {
+        /* The target travels exactly as the caller wrote it.  It is the
+           link's contents, not a name this broker is resolving, and a
+           translation applied here would be a translation applied again by
+           whatever reads the link later. */
+        if (!value || !*value)
+            return EINVAL;
+        second = value;
+    } else if (request->privop == ACE_PRIVILEGE_ACCESS_RENAME) {
         uint32_t second_flags = flags;
 
         if (!value || !*value || value[0] != '/')
@@ -2570,6 +2578,12 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
         return EACCES;
     if (status == ACE_PRIVILEGE_UNSUPPORTED)
         return ENOSYS;
+    /* A malformed exchange is not a fact about the file.  Without this the
+       status falls through to whatever errno happened to be left over, and a
+       protocol mistake arrives at the user as a missing object -- which sends
+       whoever debugs it looking at the filesystem. */
+    if (status == ACE_PRIVILEGE_PROTOCOL_ERROR)
+        return EPROTO;
     return errno ? errno : EIO;
 }
 

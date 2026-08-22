@@ -379,6 +379,43 @@ static int perform_named(int channel,
                           outcome == 0 ? 0 : errno);
     }
 
+    if (request->operation == ACE_PRIVILEGE_ACCESS_SYMLINK) {
+        /*
+         * Two strings, and only the first is a path.  The second is the
+         * link's contents: bounded and terminated like any other payload, but
+         * never resolved, never opened, and not required to name anything
+         * that exists -- a dangling link is a legitimate object and AmigaDOS
+         * makes them on purpose.
+         */
+        const char *target;
+
+        if (request->first_path_length < 2 ||
+            request->first_path_length >= request->payload_length ||
+            relative[request->first_path_length - 1] != '\0' ||
+            relative[request->payload_length - 1] != '\0' ||
+            !*relative || *relative == '/')
+            return send_reply(channel, request->request_id,
+                              ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
+        target = relative + request->first_path_length;
+        if (!*target ||
+            strnlen(target, request->payload_length -
+                            request->first_path_length) !=
+                request->payload_length - request->first_path_length - 1)
+            return send_reply(channel, request->request_id,
+                              ACE_PRIVILEGE_PROTOCOL_ERROR, 0);
+
+        parent = open_parent(relative, request->flags, &name, directory,
+                             sizeof(directory), &status);
+        if (parent < 0)
+            return send_reply(channel, request->request_id, status, errno);
+        outcome = symlinkat(target, parent, name);
+        close(parent);
+        return send_reply(channel, request->request_id,
+                          outcome == 0 ? ACE_PRIVILEGE_OK
+                                       : ACE_PRIVILEGE_HOST_ERROR,
+                          outcome == 0 ? 0 : errno);
+    }
+
     parent = open_parent(relative, request->flags, &name, directory,
                          sizeof(directory), &status);
     if (parent < 0)
@@ -433,10 +470,12 @@ static int perform(int channel, const struct ace_privilege_request *request,
 {
     const char *relative;
 
-    /* Rename is the one operation whose payload is two paths, so it is also
-       the one that cannot be checked as a single string.  It validates both
-       halves itself. */
-    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME)
+    /* Two operations carry two strings, so neither can be checked as a single
+       one here; each validates its own halves.  Rename carries two paths.
+       Symlink carries a path and the link's contents, which is not a path at
+       all and is never resolved. */
+    if (request->operation == ACE_PRIVILEGE_ACCESS_RENAME ||
+        request->operation == ACE_PRIVILEGE_ACCESS_SYMLINK)
         return perform_named(channel, request, payload);
 
     relative = checked_relative(payload, request->payload_length);

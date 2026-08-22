@@ -78,6 +78,11 @@ int ace_crm_retry_utime(const char *path, const struct utimbuf *times);
    readlink() returns: the length, with no terminator written. */
 ssize_t ace_crm_retry_readlink(const char *path, char *buffer, size_t size);
 
+/* Create a symlink, escalating a permission refusal.  Argument order is
+   symlink()'s: what it points at, then what to call it.  The target is stored
+   exactly as given and is never resolved by anything on the way. */
+int ace_crm_retry_symlink(const char *target, const char *path);
+
 /*
  * Whether the last successful ace_crm_retry call needed the crm.
  *
