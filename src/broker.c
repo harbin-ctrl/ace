@@ -2749,6 +2749,55 @@ static int stat_for_current_directory(const char *path, struct stat *information
     return 0;
 }
 
+/*
+ * The current directory, after making sure it is still there.
+ *
+ * Linux removes a directory that processes are standing in and says nothing,
+ * so an ACE session can be left holding a name that no longer refers to
+ * anything: the prompt goes on printing it, and the next relative name
+ * resolved against it fails -- or lands somewhere else entirely, which is
+ * worse, because nothing about it looks wrong.
+ *
+ * AmigaOS never had to answer this. The current directory is held by a Lock,
+ * a Lock is a real reference, and Delete on a locked object answers
+ * ERROR_OBJECT_IN_USE. ACE has no such reference to offer, so it settles the
+ * question afterwards instead: walk up to the nearest ancestor that does
+ * exist, which is what a person would do by hand and is the one answer that
+ * cannot be surprising. The walk stops on its own at the volume root, because
+ * a mounted volume's root exists; it only goes past there if the volume
+ * itself has gone.
+ *
+ * Only absence moves the session. A directory that cannot be stat'ed for some
+ * other reason -- a parent the user may not traverse, above all -- is still
+ * there, and is left exactly where it is. Treating a refusal as a deletion
+ * would quietly move an authorised session out of the drawer it was working
+ * in, which is the kind of help nobody asked for.
+ */
+static void settle_current_directory(struct broker_session *session)
+{
+    struct stat information;
+    char *slash;
+
+    for (;;) {
+        if (stat_for_current_directory(session->cwd, &information) == 0) {
+            if (S_ISDIR(information.st_mode))
+                return;
+            /* Something else holds the name now. The drawer is still gone. */
+        } else if (errno != ENOENT && errno != ENOTDIR) {
+            return;
+        }
+        if (strcmp(session->cwd, "/") == 0)
+            return;
+        slash = strrchr(session->cwd, '/');
+        if (!slash)
+            return;
+        if (slash == session->cwd)
+            session->cwd[1] = '\0';
+        else
+            *slash = '\0';
+    }
+}
+
 static int send_response(int fd, int status, const char *payload)
 {
     return send_response_bytes(fd, status, payload,
@@ -3282,6 +3331,9 @@ static int handle_client(struct broker_connection *connection)
         break;
 
     case AMIGA_BROKER_GETCWD:
+        /* Asked once per prompt, among other times, which is where a session
+           standing in a deleted drawer needs to find out about it. */
+        settle_current_directory(session);
         strcpy(result, session->cwd);
         break;
 

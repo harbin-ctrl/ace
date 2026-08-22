@@ -66,6 +66,7 @@ for command in Echo CD Delete FailAt Dir List MakeDir; do
 done
 
 drawer_name="RAM4:${drawer#/tmp/}"
+volume=${drawer_name%%:*}
 
 # Deleted with the shell standing in it, and then asked to carry on: another
 # command, a listing, and a move somewhere that still exists.  The commands
@@ -116,5 +117,63 @@ for expected in after-delete still-running recovered; do
         *) fail "the shell stopped before printing $expected" ;;
     esac
 done
+
+# --------------------------------------------------------------------------
+# And it is somewhere sensible afterwards.
+#
+# Surviving is not enough on its own: a session left holding the name of a
+# drawer that is gone goes on printing it at the prompt, and the next relative
+# name resolved against it lands somewhere else with nothing about it looking
+# wrong.  The broker walks up to the nearest ancestor that still exists, which
+# is what a person would do by hand.
+# --------------------------------------------------------------------------
+mkdir -p "$drawer/a/b/c" || fail 'could not build the nested drawer'
+
+settle_script="$work/settle.script"
+cat > "$settle_script" <<SCRIPT
+FailAt 100
+CD $drawer_name/a/b/c
+Delete $drawer_name/a/b/c ALL
+Echo @@one-level
+CD
+CD $drawer_name/a
+Delete $drawer_name ALL
+Echo @@all-the-way
+CD
+Echo @@listing
+Dir
+SCRIPT
+
+output=$(ACE_SYS_DIR="$sys_dir" ACE_BROKER_SOCKET="$socket_path" \
+    ACE_SESSION=deleted-cwd-settle ACE_MODE_PRIVILEGE=user \
+    ACE_MODE_VIEW=mount ACE_MODE_OWNER_UID="$owner_uid" \
+    ACE_STARTUP_SCRIPT="rootfs:${settle_script#/}" \
+    "$repo_dir/build/ace-user-shell" </dev/null 2>&1)
+
+answer_after()
+{
+    printf '%s\n' "$output" |
+        awk -v want="@@$1" '$0==want{grab=1;next} /^@@/{grab=0} grab && NF {print; exit}'
+}
+
+# One level: the drawer it was standing in is gone, its parent is not.
+got=$(answer_after one-level)
+[ "$got" = "$drawer_name/a/b" ] ||
+    fail "after deleting the current drawer the session was at [$got], wanted [$drawer_name/a/b]"
+
+# Several levels at once: everything up to the volume root has gone, so that
+# is where it has to stop -- a mounted volume's root exists.
+got=$(answer_after all-the-way)
+[ "$got" = "$volume:" ] ||
+    fail "after deleting the whole tree the session was at [$got], wanted [$volume:]"
+
+# And a relative command really does act there, rather than wherever the
+# shell's own process happened to be left.  This is the symptom that was
+# reported: a Dir after the deletion listed an unrelated directory.
+listing=$(printf '%s\n' "$output" | awk '/^@@listing$/{grab=1;next} grab')
+case "$listing" in
+    *"could not"*|*"not found"*)
+        fail "a listing after the deletion failed: $listing" ;;
+esac
 
 printf 'ACE survived having its current directory deleted underneath it\n'
