@@ -156,6 +156,22 @@ case "$hidden" in
     *) fail "the covered directory did not resolve into the device view: $hidden" ;;
 esac
 
+# An explicit volume prefix and a relative path from that volume ask the same
+# question.  In particular, the ordinary host mount must not make
+# "CD rootfs:" followed by "CD dev" lose the underlying directory that the
+# device view has just made visible.  Changing into it also exercises the
+# broker's private-view cwd validation; it cannot use its own stat(), because
+# the broker deliberately lives outside the FMM's mount namespace.
+ace "$repo_dir/build/CD" "$root_alias:" || fail "could not enter $root_alias:"
+ace "$repo_dir/build/CD" "${covered#/}" ||
+    fail "could not enter covered directory ${covered} relative to $root_alias:"
+relative_hidden=$(ctl resolve "") ||
+    fail 'could not resolve the current covered directory'
+[ "$relative_hidden" = "$hidden" ] ||
+    fail "relative CD reached $relative_hidden, not the device-view path $hidden"
+[ "$(ctl name "$relative_hidden")" = "$root_alias:${covered#/}" ] ||
+    fail 'a device-view cwd did not name itself as its volume-relative path'
+
 # And it really is the underlying directory, not what is mounted over it: in
 # the fmm's namespace that path is on the root device, while on the host the
 # same name is on another one.

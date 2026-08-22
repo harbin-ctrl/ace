@@ -2160,8 +2160,34 @@ static int normalize_amiga_path(struct broker_session *session,
     }
     if (ace_dos_devices_volume_root_for_path(session->cwd, floor,
                                               sizeof(floor)) == 0 &&
-        normalize_mapped_path_beneath(floor, result, result, result_size) != 0)
+        normalize_mapped_path_beneath(floor, result, result, result_size) != 0) {
+        int failure = errno;
+        char volume_name[PATH_MAX];
+        char covered[PATH_MAX];
+        char *colon;
+        const char *relative;
+
+        /* The explicit-volume resolver below already retries a covered
+         * directory through this volume's private device root.  A relative
+         * path from that same volume is the same AmigaDOS question, so it
+         * must receive the same answer. */
+        if (failure == ENOENT &&
+            ace_dos_devices_name_from_path(floor, volume_name,
+                                            sizeof(volume_name)) == 0 &&
+            (colon = strchr(volume_name, ':')) != NULL) {
+            *colon = '\0';
+            relative = result + strlen(floor);
+            while (*relative == '/')
+                relative++;
+            if (ace_dos_devices_device_view_root(volume_name, covered,
+                                                  sizeof(covered)) == 0 &&
+                strcmp(covered, floor) != 0)
+                return normalize_mapped_path_beneath(covered, relative,
+                                                     result, result_size);
+        }
+        errno = failure;
         return -1;
+    }
     return 0;
 }
 
@@ -2642,6 +2668,43 @@ static int perform_privileged_operation(const struct amiga_broker_request *reque
     if (status == ACE_PRIVILEGE_PROTOCOL_ERROR)
         return EPROTO;
     return errno ? errno : EIO;
+}
+
+/* A device-view path exists only in the FMM's private mount namespace.  The
+ * broker still owns the current directory, so setting it must validate the
+ * directory through the CRM rather than treating the broker's own ENOENT as
+ * proof that the object is absent. */
+static int stat_for_current_directory(const char *path, struct stat *information)
+{
+    const char *root = ace_dos_devices_view_root();
+    size_t root_length = root ? strlen(root) : 0;
+    struct amiga_broker_request request;
+    int descriptor = -1;
+    int status;
+
+    if (stat(path, information) == 0)
+        return 0;
+    if (!root_length || strncmp(path, root, root_length) != 0 ||
+        path[root_length] != '/' || !path[root_length + 1])
+        return -1;
+
+    memset(&request, 0, sizeof(request));
+    request.privop = ACE_PRIVILEGE_ACCESS_STAT;
+    status = perform_privileged_operation(&request, path, NULL, &descriptor);
+    if (status != 0) {
+        errno = status;
+        return -1;
+    }
+    if (descriptor < 0 || fstat(descriptor, information) != 0) {
+        int failure = descriptor < 0 ? EPROTO : errno;
+
+        if (descriptor >= 0)
+            close(descriptor);
+        errno = failure;
+        return -1;
+    }
+    close(descriptor);
+    return 0;
 }
 
 static int send_response(int fd, int status, const char *payload)
@@ -3184,7 +3247,8 @@ static int handle_client(struct broker_connection *connection)
         struct stat information;
         if (resolve_path(session, path, result, sizeof(result),
                          (request.flags & AMIGA_BROKER_PATH_HOST) != 0) != 0 ||
-            stat(result, &information) != 0 || !S_ISDIR(information.st_mode)) {
+            stat_for_current_directory(result, &information) != 0 ||
+            !S_ISDIR(information.st_mode)) {
             status = errno ? errno : ENOTDIR;
         } else {
             strcpy(session->cwd, result);

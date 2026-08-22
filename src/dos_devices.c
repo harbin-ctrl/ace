@@ -975,8 +975,29 @@ int ace_dos_devices_name_from_path(const char *path, char *result,
         errno = EINVAL;
         return -1;
     }
-    if (find_mount_for_path(path, canonical, sizeof(canonical), &best,
-                            &device) != 0)
+    if (normalize_lexical_absolute_path(path, canonical, sizeof(canonical)) != 0)
+        return -1;
+
+    /* The device view is in the FMM's mount namespace, not ours.  Its paths
+     * are nevertheless real ACE paths and must round-trip as the volume they
+     * represent, never as the /run directory in which the FMM happens to
+     * keep its private roots.  Check them before the host mount table, whose
+     * longest match would otherwise call this rootfs:run/ace-... . */
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++) {
+        struct ace_dos_device *candidate = &devices[index];
+
+        if (!candidate->in_use || !candidate->view_path[0] ||
+            !path_is_beneath(canonical, candidate->view_path))
+            continue;
+        if (!device || strlen(candidate->view_path) > strlen(best.mount_path)) {
+            device = candidate;
+            snprintf(best.mount_path, sizeof(best.mount_path), "%s",
+                     candidate->view_path);
+            strcpy(best.root, "/");
+        }
+    }
+    if (!device && find_mount_for_path(canonical, canonical, sizeof(canonical),
+                                       &best, &device) != 0)
         return -1;
 
     if (device->label[0] && ace_dos_devices_lookup(device->label) == 1)
@@ -1009,7 +1030,22 @@ int ace_dos_devices_volume_root_for_path(const char *path, char *result,
         errno = EINVAL;
         return -1;
     }
-    if (find_mount_for_path(path, canonical, sizeof(canonical), &mount,
+    if (normalize_lexical_absolute_path(path, canonical, sizeof(canonical)) != 0)
+        return -1;
+    /* See ace_dos_devices_name_from_path(): a private device root is the
+     * volume root while walking a view path, even though this process's host
+     * mount table can only see the /run directory which contains it. */
+    for (size_t index = 0; index < MAX_DOS_DEVICES; index++)
+        if (devices[index].in_use && devices[index].view_path[0] &&
+            path_is_beneath(canonical, devices[index].view_path)) {
+            if (snprintf(result, result_size, "%s", devices[index].view_path) >=
+                (int)result_size) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            return 0;
+        }
+    if (find_mount_for_path(canonical, canonical, sizeof(canonical), &mount,
                             &device) != 0)
         return -1;
     (void)device;
