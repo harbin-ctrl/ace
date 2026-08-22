@@ -31,15 +31,17 @@ int ace_fmm_volume_dispatch(const struct ace_privilege_request *request,
                                  char *reply, size_t reply_size,
                                  size_t *reply_length, int *host_errno);
 
-/* Whether the private mount namespace has been created.  The supervisor asks
-   before forking an CRM: a worker outside the namespace would not
-   see the device view it exists to reach. */
+/* Whether the private mount namespace has been created.  Nothing outside this
+   worker decides anything by it -- the namespace is the supervisor's to make,
+   once, before any worker exists -- but a request that needs one and finds
+   none is answered from here. */
 int namespace_is_ready(void);
 
-/* Where the device roots hang, or "" before the view has been prepared.  The
-   supervisor hands this to the CRM: it is the subtree that worker
-   is allowed to resolve inside, and it is the only one it is given. */
-const char *ace_fmm_volume_view_root(void);
+/* Create the private mount namespace, once, in the supervisor and before
+   either worker is forked -- so that both live in the same one.  A failure is
+   remembered and reported to every later request that needed it, rather than
+   letting a worker quietly make a second namespace of its own. */
+int ace_fmm_volume_start_namespace(int *host_errno);
 
 /* Unmount everything this worker mounted, in reverse order.  Called on the
    way out, including the way out that a dead broker causes. */

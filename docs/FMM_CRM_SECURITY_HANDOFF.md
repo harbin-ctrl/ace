@@ -35,7 +35,8 @@ when needed.
 
 ## The agreed process model
 
-The model is two privileged processes, both reached through the user's broker:
+The model is a root supervisor with one worker per kind of privilege, all
+reached through the user's broker:
 
 ```text
   ace-shell / ace-console       ordinary user, talks only to the broker
@@ -44,28 +45,53 @@ The model is two privileged processes, both reached through the user's broker:
       ace-broker                ordinary user; owns env, cwd, assigns,
            |                    aliases, path translation, sessions
            |
-           +---- authenticated once ----> volume FMM/CRM service   root
-           |                              owns the private mount namespace,
-           |                              the mounts, the device view
+           +---- authenticated once ----> root supervisor          root
+           |                              creates the private mount namespace,
+           |                              forks and reaps, routes by class,
+           |                              performs no privileged operation
            |                                     |
-           |                                     | forks, inside that namespace
-           |                                     v
-           +---- second channel --------> CRM     root
-                                          one typed file operation at a time,
-                                          returns descriptors
+           |          private channel, volume ---+--- forks, in that namespace
+           |          records only         |     |
+           |                               v     v
+           |                        volume worker    CRM        root
+           |                        the namespace's  one typed file
+           |                        mounts and the   operation at a time,
+           |                        device view      returns descriptors
+           |                                               ^
+           +---- second channel ---------------------------+
 ```
 
-The workers are separate processes rather than modules in one, and the reason
-is stronger than tidiness. The CRM is forked after the namespace
-exists, so it is inside it; it closes the supervisor's channel on the way in,
-so it holds no route to the volume side. "The CRM must not be able
-to issue volume operations" therefore stops being a check that can be got
-wrong and becomes a connection that does not exist.
+The supervisor is the only root peer the broker ever authenticates, and it is
+deliberately the least capable process in the picture: it translates no
+pathname, mounts nothing, opens nothing, and holds no state beyond child pids,
+their channels, and the view root the volume worker reported. Volume-class
+records are forwarded down the private channel and access-class work happens
+on a channel the broker holds directly, so neither worker has a descriptor
+reaching the other.
 
-One authentication covers both. The user authorised ACE, not a particular
+The workers are separate processes rather than modules in one, and the reason
+is stronger than tidiness. Each closes every channel that is not its own on
+the way in: the volume worker never holds the broker's, and the CRM holds
+neither the broker's route to the volume side nor the supervisor's. "The CRM
+must not be able to issue volume operations" therefore stops being a check
+that can be got wrong and becomes a connection that does not exist.
+
+The namespace is created in the supervisor, once, before either worker is
+forked. That ordering is what makes the split work: `fork()` shares a mount
+namespace and `unshare()` does not, so two workers that each unshared for
+themselves would hold two private views of the disks that looked identical and
+were not -- and the CRM's would be the one without the device the volume
+worker had mounted. Creating a container is not mount policy; every decision
+about what may be mounted, and where, stays in the volume worker, which is the
+only process here that calls `mount()` at all. Where the namespace cannot be
+had, the session continues without a device view rather than failing to start,
+and the failure is remembered so that no worker quietly makes one of its own
+later.
+
+One authentication covers all of it. The user authorised ACE, not a particular
 number of helper processes, and asking a second time for one decision is the
-prompt fatigue this design already refused once. The supervisor forks the
-worker and passes its channel back to the broker over the existing descriptor
+prompt fatigue this design already refused once. The supervisor forks each
+worker and passes the broker's channels back over the existing descriptor
 mechanism.
 
 ### Why the private namespace survives an unprivileged broker
@@ -160,7 +186,10 @@ particular, it must not provide a generic root `execve()` operation to ACE
 scripts, ARexx, or malformed commands.
 
 The FMM/CRM service is launched only for a session that has opted into privileged
-requests. It may be launched lazily on the first operation requiring it.
+requests, and lazily: `--root` says a session may ask for privilege, not that
+it has, and nothing root-side exists until the first operation that needs it.
+Its supervisor keeps no filesystem or shell semantics of its own -- see the
+process model above.
 
 ### Volume worker
 
@@ -206,8 +235,9 @@ precise status.
 
 The CRM cannot issue volume-worker operations, and this is now
 structural rather than enforced. It is a separate process, forked by the
-supervisor after the namespace exists so that it is inside it, and it closes
-the supervisor's channel on the way in. There is no capability bit meaning
+supervisor into the namespace the supervisor made before either worker
+existed, and it closes both the supervisor's channel and the private channel
+to the volume worker on the way in. There is no capability bit meaning
 "may not mount" -- there is nothing to mount with and nobody to ask. The class
 check in the worker remains as a stated answer beside the structural one, so
 that a reader of either reaches the same conclusion.
@@ -275,6 +305,7 @@ The common layer should attempt the operation as the user first. Only
 `EACCES`/`EPERM`-type results should trigger a FMM/CRM service request. `ENOENT`,
 `EROFS`, invalid names, I/O errors, and other ordinary failures must not be
 silently converted into root requests.
+
 
 This lets commands remain unchanged:
 
@@ -501,9 +532,11 @@ this design exists to avoid.
 
 ### Chunk C: the two privileged processes, then de-root the broker
 
-C1 and C2 are done: the volume worker owns the namespace, the mounts, and the
-device view, and the supervisor forks an CRM inside that namespace
-and hands the broker its channel.
+C1 and C2 are done: the supervisor makes the namespace and then owns two
+kinds of child inside it -- a volume worker holding the mounts and the device
+view, and an CRM per request whose channel it hands back to the broker. The
+supervisor itself serves nothing: volume records are relayed to the volume
+worker over a private channel and the reply relayed back unchanged.
 
 C3 is done. `prepare_device_view()` asks the FMM/CRM service instead of mounting;
 `broker.c` no longer unshares anything; `broker_client.c`'s namespace joining

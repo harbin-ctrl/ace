@@ -47,6 +47,9 @@ struct volume_entry {
 static struct volume_entry volumes[VOLUME_MAX_DEVICES];
 static char view_root[PATH_MAX];
 static int namespace_ready;
+/* The errno from the supervisor's one attempt at a namespace, or 0 if it has
+   not tried or did not fail.  Inherited by every worker it forks. */
+static int namespace_failure;
 
 /*
  * The filesystems ACE will mount, and the ones it will not.
@@ -335,11 +338,6 @@ static int ensure_view_root(uid_t served_uid)
     return 0;
 }
 
-const char *ace_fmm_volume_view_root(void)
-{
-    return view_root;
-}
-
 int namespace_is_ready(void)
 {
     return namespace_ready;
@@ -369,11 +367,24 @@ static struct volume_entry *free_entry(void)
  * out to the rest of the system: ACE's view of the disks is ACE's, and a
  * device the user asked ACE to show should not appear under the desktop's
  * file manager as a side effect.
+ *
+ * This runs once, in the supervisor, before either worker exists -- see
+ * ace_fmm_volume_start_namespace().  By the time the volume worker is serving
+ * requests the answer is already settled, and it is the same answer the
+ * access worker is living with, which is the property that matters: two
+ * processes that unshared separately would hold two private views of the
+ * disks that looked identical and were not.
  */
 static int init_namespace(int *host_errno)
 {
     if (namespace_ready)
         return ACE_PRIVILEGE_OK;
+    if (namespace_failure) {
+        /* Decided already, and not by this process.  Retrying here would
+           succeed into a namespace the access worker is not in. */
+        *host_errno = namespace_failure;
+        return ACE_PRIVILEGE_HOST_ERROR;
+    }
     if (unshare(CLONE_NEWNS) != 0 ||
         mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
         *host_errno = errno;
@@ -381,6 +392,26 @@ static int init_namespace(int *host_errno)
     }
     namespace_ready = 1;
     return ACE_PRIVILEGE_OK;
+}
+
+/*
+ * The one attempt.
+ *
+ * A failure is remembered rather than returned and forgotten, because the
+ * supervisor's response to it is to carry on: a session with no device view
+ * is a perfectly ordinary session, and refusing to start one would mean an
+ * unprivileged ACE could not run at all.  What must not happen is a later
+ * request quietly making a second, private namespace in the volume worker --
+ * so the failure is recorded here, inherited by the fork, and reported to
+ * every request that needed the namespace it did not get.
+ */
+int ace_fmm_volume_start_namespace(int *host_errno)
+{
+    int status = init_namespace(host_errno);
+
+    if (status != ACE_PRIVILEGE_OK)
+        namespace_failure = *host_errno ? *host_errno : EPERM;
+    return status;
 }
 
 static int do_mount(const struct ace_privilege_request *request,
